@@ -1,0 +1,2524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>药品监管网课 · 语音转字幕</title>
+<script>
+/* 主题要在首屏前定下来，否则会闪一下白 */
+(function(){
+  try{
+    var d = JSON.parse(localStorage.getItem('asr_prefs_v1') || 'null');
+    var t = (d && d.theme) ? d.theme
+          : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    var q = new URLSearchParams(location.search).get('theme');   // 便于分享/截图指定主题
+    if(q === 'dark' || q === 'light') t = q;
+    document.documentElement.dataset.theme = t;
+    if(d && d.font != null){
+      document.documentElement.style.setProperty('--fs', [13.5,14,15.5,17][d.font] + 'px');
+    }
+  }catch(e){}
+})();
+</script>
+<style>
+  :root{
+    --bg:#f4f5f7; --card:#fff; --line:#e3e5e8; --line-strong:#c7ccd4;
+    --text:#1f2328; --muted:#6b7280; --faint:#9aa1ab;
+    --primary:#2563eb; --primary-hover:#1d4ed8; --primary-weak:#eff4ff; --on-primary:#fff;
+    --ok:#0f9d58; --ok-bg:#e8f7ef; --ok-line:#c7ecd4;
+    --warn:#c2410c; --warn-fg:#b45309; --danger:#b91c1c; --info-fg:#0369a1;
+    --active:#fff7e6; --active-line:#f0a020; --hit:#fff3b0;
+    --soft:#fbfcfd; --soft2:#f6f7f9; --hover:#fafbfc; --field:#fff;
+    --b-high:#fee2e2; --b-mid:#fef3c7; --b-low:#e0f2fe;
+    --badge-bg:#eef2f7; --badge-fg:#5b6673;
+    --note-bg:#fffbf0; --note-line:#fde8c0; --note-fg:#8a5a12;
+    --toast-bg:#1f2328; --toast-fg:#fff; --media-bg:#0f1115;
+    --shadow:0 8px 28px rgba(15,17,21,.14);
+    --fs:14px;
+    /* 设计令牌：字号 4 档 / 圆角 3 档 / 控件高度 2 档（见 DESIGN.md） */
+    --fs-11:11px; --fs-12:12px; --fs-13:13px; --fs-15:15px;
+    --r-6:6px; --r-8:8px; --r-12:12px;
+    --ctl-h:34px; --ctl-h-sm:30px;
+  }
+  /* 暗色主题：降低纯黑纯白对比，减少眩光 —— 干眼症用这个 */
+  html[data-theme="dark"]{
+    --bg:#14171a; --card:#1b1f24; --line:#2b3138; --line-strong:#3c444c;
+    --text:#d9dee4; --muted:#98a2ae; --faint:#7d8794;
+    --primary:#6da4ff; --primary-hover:#8ab6ff; --primary-weak:#1c293c; --on-primary:#0d1117;
+    --ok:#4ec98d; --ok-bg:#1b2f24; --ok-line:#2c5a41;
+    --warn:#e0a24a; --warn-fg:#e0b467; --danger:#ef8a8a; --info-fg:#7cc2e8;
+    --active:#33290f; --active-line:#c98a12; --hit:#4a4020;
+    --soft:#20252b; --soft2:#232830; --hover:#252b32; --field:#20252b;
+    --b-high:#4a2528; --b-mid:#4a3c1b; --b-low:#1e3547;
+    --badge-bg:#2a3138; --badge-fg:#a7b2be;
+    --note-bg:#2a2418; --note-line:#4c3e1d; --note-fg:#d9c08a;
+    --toast-bg:#e6e9ed; --toast-fg:#14171a; --media-bg:#0b0d10;
+    --shadow:0 8px 28px rgba(0,0,0,.5);
+  }
+  html{color-scheme:light}
+  html[data-theme="dark"]{color-scheme:dark}
+  *{box-sizing:border-box}
+  [hidden]{display:none !important}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+       font-size:var(--fs);line-height:1.6}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);
+         border-radius:var(--r-6);padding:5px 12px;transition:.15s;min-height:var(--ctl-h-sm)}
+  button:hover{border-color:var(--line-strong);background:var(--hover)}
+  button.primary{background:var(--primary);border-color:var(--primary);color:var(--on-primary)}
+  button.primary:hover{background:var(--primary-hover)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .btn-lg{min-height:var(--ctl-h);padding:6px 16px}
+  input[type=text],input[type=number],select,textarea{font:inherit;border:1px solid var(--line);
+        border-radius:var(--r-6);padding:6px 10px;background:var(--field);color:var(--text)}
+  input[type=text],input[type=number],select{min-height:var(--ctl-h-sm)}
+  input[type=text]:focus,input[type=number]:focus,select:focus,textarea:focus{outline:2px solid var(--primary-weak);
+        border-color:var(--primary)}
+
+  /* 顶栏 */
+  .topbar{display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--card);
+          border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+  .brand{font-weight:600;font-size:var(--fs-15);white-space:nowrap}
+  .brand small{display:block;font-weight:400;font-size:var(--fs-11);color:var(--muted)}
+  .spacer{flex:1}
+  .filechip{font-size:var(--fs-12);color:var(--muted);max-width:280px;overflow:hidden;
+            text-overflow:ellipsis;white-space:nowrap}
+  .prefs{display:flex;gap:6px;align-items:center;padding-left:8px;
+         border-left:1px solid var(--line)}
+  .iconbtn{padding:4px 9px;line-height:1.2;min-width:36px;font-size:var(--fs-13);min-height:26px}
+  .iconbtn sup{font-size:var(--fs-11);margin-left:1px;color:var(--muted)}
+
+  /* 主体 */
+  .wrap > *{min-width:0}
+  .wrap{display:grid;grid-template-columns:minmax(360px,42%) 1fr;
+        gap:14px;padding:14px 18px;align-items:start}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-8);overflow:hidden}
+  .pad{padding:12px}
+
+  /* 上传 */
+  #drop{border:2px dashed var(--line-strong);border-radius:var(--r-8);padding:26px 16px;text-align:center;
+        color:var(--muted);cursor:pointer;background:var(--soft2)}
+  #drop.over{border-color:var(--primary);background:var(--primary-weak);color:var(--primary)}
+  #drop b{color:var(--text)}
+
+  /* 播放器 */
+  #mediaWrap{background:var(--soft);display:flex;align-items:center;justify-content:center}
+  #mediaWrap.video{background:var(--media-bg);min-height:220px}
+  #mediaWrap video{width:100%;display:block}
+  #mediaWrap audio{width:calc(100% - 32px);height:46px;margin:12px 16px}
+  .player{display:flex;align-items:center;gap:8px;padding:9px 10px;border-top:1px solid var(--line);
+          flex-wrap:wrap;background:var(--card)}
+  .tcode{font-variant-numeric:tabular-nums;font-size:var(--fs-12);color:var(--muted);
+         min-width:112px;text-align:center}
+
+  /* 字幕列表 */
+  .toolbar{display:flex;align-items:center;gap:6px;padding:8px 10px;
+           border-bottom:1px solid var(--line);flex-wrap:wrap;background:var(--card)}
+  .toolbar .sep{width:1px;height:20px;background:var(--line);margin:0 2px}
+  .tb-right{display:flex;gap:6px;align-items:center;margin-left:auto}
+  .chk{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-12);color:var(--muted);
+       cursor:pointer;white-space:nowrap}
+
+  /* 下载菜单 */
+  .menu-wrap{position:relative}
+  #btnDownload{background:var(--primary);border-color:var(--primary);color:var(--on-primary);font-weight:500}
+  #btnDownload:hover{background:var(--primary-hover)}
+  #btnDownload:disabled{background:var(--soft2);border-color:var(--line);color:var(--faint);font-weight:400}
+  .menu{position:absolute;top:calc(100% + 6px);right:0;background:var(--card);border:1px solid var(--line);
+        border-radius:var(--r-8);box-shadow:0 10px 28px rgba(15,17,21,.13);min-width:232px;
+        padding:5px;z-index:40}
+  .menu a{display:block;padding:7px 10px;border-radius:var(--r-6);cursor:pointer;font-size:var(--fs-13);
+          color:var(--text)}
+  .menu a:hover{background:var(--primary-weak);color:var(--primary)}
+  .menu a span{display:block;font-size:var(--fs-11);color:var(--muted);margin-top:1px}
+  .menu a:hover span{color:var(--primary)}
+  .menu .line{height:1px;background:var(--line);margin:4px 6px}
+  #findBar{display:none;gap:6px;align-items:center;padding:8px 12px;
+           border-bottom:1px solid var(--line);background:var(--soft);flex-wrap:wrap}
+  #findBar.show{display:flex}
+  #findBar input{width:140px;padding:4px 8px;font-size:var(--fs-13)}
+  #findInfo{font-size:var(--fs-12);color:var(--muted);min-width:70px}
+
+  #cueList{height:calc(100vh - 300px);min-height:320px;overflow-y:auto;padding:6px 0}
+  .cue{display:grid;grid-template-columns:62px 1fr;gap:10px;padding:7px 14px;
+       cursor:pointer;border-left:3px solid transparent;position:relative}
+  .cue:hover{background:var(--soft)}
+  .cue.active{background:var(--active);border-left-color:var(--active-line)}
+  .cue .t{font-size:var(--fs-12);color:var(--faint);font-variant-numeric:tabular-nums;padding-top:1px}
+  .cue.active .t{color:var(--warn);font-weight:600}
+  .cue .x{outline:none;word-break:break-word;font-size:calc(var(--fs) + 0.5px);line-height:1.75}
+  .cue .x[contenteditable=true]{background:var(--field);box-shadow:0 0 0 2px var(--primary-weak);
+      border-radius:var(--r-6);padding:1px 4px}
+  .cue .x.hit{background:var(--hit)}
+  .cue.dirty .t::after{content:"●";color:var(--primary);margin-left:3px;font-size:var(--fs-11)}
+  .empty{padding:40px 20px;text-align:center;color:var(--muted);font-size:var(--fs-13)}
+
+  /* 日志 */
+  #log{max-height:130px;overflow-y:auto;font:12px/1.55 ui-monospace,Consolas,monospace;
+       color:var(--muted);white-space:pre-wrap;background:var(--soft);border-top:1px solid var(--line);
+       padding:8px 12px}
+  .status{display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:var(--fs-12);
+          border-top:1px solid var(--line);color:var(--muted)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--line-strong)}
+  .dot.run{background:var(--active-line);animation:bl 1s infinite}
+  .dot.done{background:var(--ok)} .dot.err{background:var(--danger)}
+  @keyframes bl{50%{opacity:.3}}
+
+  /* ══════════ 改稿工作台 ══════════ */
+  .tabs{display:flex;gap:2px;background:var(--soft2);padding:3px;border-radius:var(--r-8)}
+  .tab{border:none;background:transparent;padding:4px 15px;border-radius:var(--r-6);font-size:var(--fs-13);
+       color:var(--muted)}
+  .tab.active{background:var(--card);color:var(--text);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  body.rev-mode .lo-tx{display:none !important}
+  .wrap.rev{grid-template-columns:1fr 400px;align-items:stretch;
+            height:calc(100vh - 84px);padding-top:14px;padding-bottom:14px}
+  .wrap.rev > .card{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  #revText{flex:1;min-height:0;overflow-y:auto;border:none;border-radius:0;padding:16px 22px;
+           resize:none;outline:none;font-size:calc(var(--fs) + 1px);line-height:2.05;
+           font-family:"Microsoft YaHei",system-ui,sans-serif;
+           background:var(--card)}
+  #revText::placeholder{color:var(--faint);line-height:1.9}
+  .steps{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);overflow-x:auto}
+  .step{flex:0 0 auto;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r-8);
+        background:var(--card);font-size:var(--fs-12);line-height:1.4;text-align:left;color:var(--text)}
+  .step b{display:block;font-size:var(--fs-12);font-weight:600}
+  .step i{font-style:normal;font-size:var(--fs-11);color:var(--muted)}
+  .step.done{background:var(--ok-bg);border-color:var(--ok-line)}
+  .step.cur{background:var(--primary-weak);border-color:var(--primary)}
+  .step.cur b{color:var(--primary)}
+  .step.pending{color:var(--faint);border-style:dashed;background:var(--soft2)}
+  .revbar{display:flex;align-items:center;gap:8px;padding:9px 12px;
+          border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .revtitle{font-weight:600;font-size:var(--fs-13)}
+  .revtag{font-size:var(--fs-11);padding:1px 7px;border-radius:var(--r-6);background:var(--badge-bg);color:var(--badge-fg)}
+  .revtag.auto{background:var(--ok-bg);color:var(--ok)}
+  .revtag.semi{background:var(--b-mid);color:var(--warn-fg)}
+  .revtag.manual{background:var(--b-high);color:var(--danger)}
+  .revfoot{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);
+           background:var(--soft);font-size:var(--fs-12);color:var(--muted)}
+  .revside .sidehead{display:flex;align-items:baseline;gap:8px;padding:11px 14px;
+                     border-bottom:1px solid var(--line)}
+  .revside .sidehead span{font-size:var(--fs-12);color:var(--muted)}
+  .sidebody{padding:12px 14px;overflow-y:auto;flex:1;min-height:0;font-size:var(--fs-12);line-height:1.65}
+  .issue{border:1px solid var(--line);border-radius:var(--r-8);padding:9px 10px;margin-bottom:8px}
+  .issue .t{display:flex;align-items:center;gap:6px;font-weight:600;font-size:var(--fs-12);margin-bottom:4px}
+  .issue .q{background:var(--soft2);border-radius:var(--r-6);padding:4px 7px;margin:5px 0;
+            word-break:break-all;color:var(--text)}
+  .issue .d{color:var(--muted);line-height:1.6;font-size:var(--fs-12)}
+  .issue .ops{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+  .issue .ops button{padding:3px 9px;font-size:var(--fs-12)}
+  .issue.pair .q{font-size:var(--fs-12)}
+  .badge{font-size:var(--fs-11);font-weight:400;padding:1px 6px;border-radius:var(--r-6);background:var(--badge-bg);color:var(--badge-fg)}
+  .badge.high{background:var(--b-high);color:var(--danger)}
+  .badge.mid{background:var(--b-mid);color:var(--warn-fg)}
+  .badge.low{background:var(--b-low);color:var(--info-fg)}
+  .kv{color:var(--muted);margin:7px 0}
+  .kv b{color:var(--text)}
+  .sidebody .desc{color:var(--muted);margin:0 0 10px;padding-bottom:9px;
+                  border-bottom:1px dashed var(--line)}
+  .tbl{width:100%;border-collapse:collapse;font-size:var(--fs-12);margin:8px 0}
+  .tbl td,.tbl th{border:1px solid var(--line);padding:4px 6px;text-align:left;vertical-align:top}
+  .tbl th{background:var(--soft2);font-weight:600}
+  .wordchip{display:flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--line);
+            border-radius:var(--r-6);margin-bottom:5px}
+  .wordchip b{font-size:var(--fs-13)}
+  .wordchip .c{color:var(--muted);font-size:var(--fs-12)}
+  .wordchip button{margin-left:auto;padding:2px 8px;font-size:var(--fs-12)}
+  .note{background:var(--note-bg);border:1px solid var(--note-line);border-radius:var(--r-8);padding:8px 10px;
+        font-size:var(--fs-12);color:var(--note-fg);line-height:1.65;margin:8px 0}
+  .note b{color:var(--note-fg)}
+
+  /* ══════════ 文件卡片 / 任务 / 波形 / 行内时间 / 对齐 ══════════ */
+  .filecard{border:1px solid var(--line);border-radius:var(--r-8);padding:10px 12px;background:var(--soft)}
+  .fc-top{display:flex;align-items:center;gap:10px}
+  .fc-icon{width:34px;height:34px;border-radius:var(--r-8);background:var(--primary-weak);
+           color:var(--primary);display:flex;align-items:center;justify-content:center;
+           font-size:var(--fs-15);flex:0 0 auto}
+  .fc-main{min-width:0;flex:1}
+  .fc-name{font-size:var(--fs-13);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .fc-meta{font-size:var(--fs-12);color:var(--muted);margin-top:1px}
+  .fc-path{font-size:var(--fs-11);color:var(--faint);font-family:ui-monospace,Consolas,monospace;
+           margin:8px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  .fc-path:hover{color:var(--primary)}
+  .fc-actions{display:flex;gap:6px;justify-content:flex-end;align-items:center}
+  .fc-state{font-size:var(--fs-11);color:var(--muted);margin-right:auto}
+
+  .cardhead{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;
+            border-bottom:1px solid var(--line);font-size:var(--fs-13)}
+  .tasklist{max-height:230px;overflow-y:auto}
+  .taskrow{display:flex;align-items:center;gap:8px;padding:7px 12px;
+           border-bottom:1px solid var(--line);font-size:var(--fs-12)}
+  .taskrow:last-child{border-bottom:none}
+  .taskrow .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .taskrow .st{color:var(--muted);font-size:var(--fs-11);white-space:nowrap}
+  .taskrow .act{display:flex;gap:4px}
+  .taskrow .act button{padding:2px 7px;font-size:var(--fs-11);min-height:24px}
+  .taskrow .dot{width:6px;height:6px}
+  .dot.warn{background:var(--warn)}
+  .empty.small{padding:16px 12px;font-size:var(--fs-12)}
+
+  .wavewrap{padding:6px 10px 3px;border-top:1px solid var(--line);background:var(--card)}
+  #wave{display:block;width:100%;height:64px;cursor:crosshair;touch-action:none}
+  .wavehint{display:flex;justify-content:space-between;font-size:var(--fs-11);color:var(--faint);padding:0 2px 2px}
+
+  .editbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--line);
+           background:var(--soft);flex-wrap:wrap}
+  .editbar .mini{font-size:var(--fs-11);color:var(--muted)}
+  .editbar input[type=number]{width:64px;padding:3px 6px;font-size:var(--fs-12);min-height:26px}
+  .save-state{font-size:var(--fs-11);color:var(--faint);white-space:nowrap;margin-left:6px}
+  .save-state.ok{color:var(--ok)}
+  .save-state.dirty{color:var(--warn-fg)}
+  .save-state.err{color:var(--danger)}
+
+  .cue{grid-template-columns:186px 1fr}
+  .times{display:flex;align-items:center;gap:3px;padding-top:1px;
+         font-variant-numeric:tabular-nums;flex-wrap:wrap}
+  .tin{width:78px;padding:1px 3px;font-size:var(--fs-11);font-family:ui-monospace,Consolas,monospace;
+       color:var(--muted);background:transparent;border:1px solid transparent;
+       border-radius:var(--r-6);text-align:center;min-height:22px}
+  .tin:hover{border-color:var(--line);color:var(--muted)}
+  .tin:focus{outline:none;border-color:var(--primary);background:var(--field);color:var(--text)}
+  .cue.active .tin{color:var(--warn)}
+  .times .arrow{color:var(--faint);font-size:var(--fs-11)}
+  .times .diff{font-size:var(--fs-11);color:var(--warn-fg);border:1px solid var(--note-line);
+               border-radius:var(--r-6);padding:0 3px;background:var(--note-bg);cursor:help}
+  .cue.dirty .times::after{content:"●";color:var(--primary);margin-left:2px;font-size:var(--fs-11)}
+  .cue.low{box-shadow:inset 2px 0 0 var(--warn)}
+  .issue .ops button{min-height:26px}
+  #alignScript{width:100%;height:170px;resize:vertical;font-size:var(--fs-13)}
+  .align-modes{display:flex;gap:14px;flex-wrap:wrap;margin-top:4px}
+
+  /* 弹窗 */
+  .mask{position:fixed;inset:0;background:rgba(15,17,21,.45);display:none;
+        align-items:center;justify-content:center;z-index:50}
+  .mask.show{display:flex}
+  .modal{background:var(--card);border-radius:var(--r-12);width:min(760px,94vw);max-height:88vh;
+         display:flex;flex-direction:column;overflow:hidden}
+  .modal h3{margin:0;padding:14px 18px;border-bottom:1px solid var(--line);font-size:var(--fs-15)}
+  .modal h3 .sub{font-weight:400;font-size:var(--fs-12);color:var(--faint);margin-left:10px}
+  .modal .body{padding:16px 18px;overflow-y:auto}
+  .modal .foot{padding:12px 18px;border-top:1px solid var(--line);display:flex;
+               gap:8px;justify-content:flex-end;background:var(--soft)}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:var(--fs-12);color:var(--muted);margin-bottom:5px}
+  .field textarea{width:100%;height:70px;resize:vertical;font-size:var(--fs-13)}
+  .hint{font-size:var(--fs-12);color:var(--faint);margin-top:4px;display:flex;
+        justify-content:space-between;gap:12px;align-items:baseline}
+  .hint .cnt{color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+  /* 口语词弹窗：五组两列 */
+  .modal.wide{width:min(880px,95vw)}
+  .tgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
+  .tgrid .field.wide{grid-column:1/-1}
+  .field label em{font-style:normal;font-size:var(--fs-11);color:var(--muted);
+                  background:var(--soft2);border:1px solid var(--line);
+                  border-radius:var(--r-6);padding:1px 5px;margin-left:6px}
+  .field textarea.mini{height:84px}
+  .tgrid .field.wide textarea{height:74px}
+  .guards{margin-top:2px;border-top:1px dashed var(--line);padding-top:10px}
+  .guards summary{cursor:pointer;font-size:var(--fs-12);color:var(--muted);outline:none}
+  .guards summary:hover{color:var(--primary)}
+  .guards ul{margin:8px 0 0;padding-left:18px;font-size:var(--fs-12);
+             color:var(--faint);line-height:1.8}
+  .guards li{margin-bottom:3px}
+  .guards code{background:var(--soft2);border-radius:var(--r-6);padding:0 3px;color:var(--text)}
+  .guards b{color:var(--warn-fg);font-weight:600}
+  @media(max-width:660px){ .tgrid{grid-template-columns:1fr} }
+
+  /* 待人工判断的改写建议 */
+  #tipPanel{margin:9px 12px 0;border:1px solid var(--note-line);background:var(--note-bg);
+            border-radius:var(--r-8);padding:9px 12px;font-size:var(--fs-12);color:var(--note-fg)}
+  #tipPanel summary{cursor:pointer;font-weight:600;outline:none}
+  #tipPanel ul{margin:7px 0 2px;padding-left:18px;line-height:1.8;color:var(--muted)}
+  #tipPanel li{margin-bottom:2px}
+  .hint .cnt b{color:var(--primary);font-weight:600}
+
+  .toast{position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(20px);
+         background:var(--toast-bg);color:var(--toast-fg);padding:9px 18px;border-radius:var(--r-8);font-size:var(--fs-13);
+         opacity:0;pointer-events:none;transition:.25s;z-index:80}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  @media(max-width:1080px){.wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">药品监管网课 · 语音转字幕<small>本地运行 · 音频不出本机</small></div>
+  <div class="tabs">
+    <button class="tab active" id="tabTranscribe">转写</button>
+    <button class="tab" id="tabRevise">改稿</button>
+  </div>
+  <div class="spacer"></div>
+  <span class="filechip lo-tx" id="fileChip">未选择文件</span>
+  <select class="lo-tx" id="model">
+    <option value="qwen3-asr">Qwen3-ASR · 精度优先</option>
+    <option value="paraformer">Paraformer · 速度优先</option>
+  </select>
+  <select class="lo-tx" id="lang">
+    <option value="Chinese">中文</option>
+    <option value="auto">自动检测</option>
+  </select>
+  <label class="chk lo-tx"><input type="checkbox" id="clean" checked>清理口语</label>
+  <button class="primary lo-tx" id="btnStart" disabled>开始转写</button>
+  <div class="prefs">
+    <button id="btnFont" class="iconbtn" title="调整字号">A<sup id="fontTag">中</sup></button>
+    <button id="btnTheme" class="iconbtn" title="切换暗色 / 浅色">◐</button>
+  </div>
+</div>
+
+<div class="wrap" id="wsTranscribe">
+  <!-- 左：上传 + 播放器 -->
+  <div>
+    <div class="card">
+      <div class="pad">
+        <div id="drop">
+          <div style="font-size:var(--fs-15)"><b>把音视频拖到这里</b>，或点击选择</div>
+          <div style="font-size:var(--fs-12);margin-top:6px">支持 mp4 / mkv / mov / mp3 / wav / m4a 等</div>
+        </div>
+        <div id="fileCard" class="filecard" hidden>
+          <div class="fc-top">
+            <div class="fc-icon" id="fcIcon">♪</div>
+            <div class="fc-main">
+              <div class="fc-name" id="fcName">—</div>
+              <div class="fc-meta" id="fcMeta">—</div>
+            </div>
+            <span class="dot" id="fcDot"></span>
+          </div>
+          <div class="fc-path" id="fcPath" title="点击复制本机缓存路径">—</div>
+          <div class="fc-actions">
+            <span class="fc-state" id="fcState">待识别</span>
+            <button id="fcReselect">重新选择</button>
+            <button class="primary btn-lg" id="fcStart" disabled>开始识别</button>
+          </div>
+        </div>
+        <input type="file" id="fileInput" accept="audio/*,video/*" hidden>
+      </div>
+      <div id="mediaWrap" hidden></div>
+      <div class="player" id="playerBar" hidden>
+        <button id="btnPrev" title="上一句 (↑)">⟨ 上一句</button>
+        <button id="btnPlay" title="播放/暂停 (空格)">播放</button>
+        <button id="btnNext" title="下一句 (↓)">下一句 ⟩</button>
+        <span class="tcode" id="tcode">00:00 / 00:00</span>
+        <select id="rate" title="倍速" style="padding:4px 6px">
+          <option value="0.5">0.5×</option><option value="0.75">0.75×</option>
+          <option value="1" selected>1×</option><option value="1.25">1.25×</option>
+          <option value="1.5">1.5×</option><option value="2">2×</option>
+        </select>
+        <button id="btnShot" title="截取当前画面">截图</button>
+        <label class="chk" style="margin-left:auto"><input type="checkbox" id="follow" checked>跟随播放</label>
+      </div>
+      <div class="wavewrap" id="waveWrap" hidden>
+        <canvas id="wave"></canvas>
+        <div class="wavehint"><span>点击定位 · Ctrl+滚轮缩放 · 双击全览</span><span id="waveDur"></span></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="status">
+        <span class="dot" id="dot"></span><span id="statusText">等待上传</span>
+      </div>
+      <div id="log" hidden></div>
+    </div>
+    <div class="card" style="margin-top:14px" id="taskCard">
+      <div class="cardhead"><b>任务</b><span id="taskCount" style="color:var(--muted);font-size:var(--fs-11)"></span></div>
+      <div id="taskList" class="tasklist"><div class="empty small">暂无任务</div></div>
+    </div>
+  </div>
+
+  <!-- 右：校对区 -->
+  <div class="card">
+    <div class="toolbar">
+      <button id="btnUndo" class="iconbtn" disabled title="撤销 (Ctrl+Z)">↶</button>
+      <button id="btnRedo" class="iconbtn" disabled title="重做 (Ctrl+Y)">↷</button>
+      <div class="sep"></div>
+      <button id="btnFind">查找替换</button>
+      <div class="sep"></div>
+      <button id="btnTerms">编辑口语词</button>
+      <button id="btnReclean" disabled>重新清理</button>
+      <button id="btnQC" disabled title="按 Netflix / EBU 标准检查阅读速度与时轴">体检</button>
+      <button id="btnAlign" disabled title="用讲义 / PPT 文字稿校准术语与时间轴">文稿对齐</button>
+      <div class="tb-right">
+      <span id="saveState" class="save-state">未保存</span>
+      <button id="btnSave" disabled title="保存校对稿">保存</button>
+      <button id="btnToRevise" disabled title="把转写稿送进七遍改稿流程">改稿 →</button>
+      <div class="menu-wrap">
+        <button id="btnDownload" disabled>下载字幕 ▾</button>
+        <div class="menu" id="dlMenu" hidden>
+          <a data-kind="srt">字幕 SRT<span>可直接导入剪映、PR</span></a>
+          <a data-kind="vtt">字幕 VTT<span>网页播放器、B 站通用</span></a>
+          <a data-kind="txt">纯文本 TXT<span>每句一行，便于二次编辑</span></a>
+          <a data-kind="md">Markdown<span>整段成文，可贴进笔记软件</span></a>
+          <div class="line"></div>
+          <a data-kind="report">变更报告<span>口语删除与术语校正明细</span></a>
+          <a data-kind="copy">复制全文<span>直接存到剪贴板</span></a>
+        </div>
+      </div>
+      </div>
+    </div>
+    <div class="editbar">
+      <span class="mini">间隙</span>
+      <input type="number" id="gapMs" value="200" min="0" max="5000" step="50"
+             title="合并间隔不超过该值的相邻字幕">
+      <span class="mini">ms</span>
+      <button id="btnMergeGaps" title="把间隔很小的碎句并成一条">合并碎句</button>
+      <!-- // modified(v1.2): 借鉴 Aegisub Timing Post-Processor / Subtitle Edit 的 Apply Minimum Gap -->
+      <button id="btnFixTiming" title="消除重叠并保证相邻字幕至少 0.12s 间隔，文字不变">时间轴整理</button>
+      <div id="alignToggle" class="tabs" hidden style="padding:2px;margin-left:auto">
+        <button class="tab" data-m="script">按文稿</button>
+        <button class="tab" data-m="asr">按识别</button>
+      </div>
+    </div>
+    <div id="findBar">
+      <input type="text" id="findInput" placeholder="查找内容">
+      <input type="text" id="replaceInput" placeholder="替换为">
+      <button id="btnReplaceAll">全部替换</button>
+      <button id="btnFindClose">关闭</button>
+      <span id="findInfo"></span>
+    </div>
+    <div id="tipPanel" hidden></div>
+    <div id="cueList">
+      <div class="empty">转写完成后，字幕会显示在这里。<br>
+        点击任意一句可跳转播放，双击文字可直接修改。<br>
+        完成后用上方「下载」导出 SRT / TXT / Markdown。</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 改稿工作台 ══════════ -->
+<div class="wrap rev" id="wsRevise" hidden>
+  <div class="card">
+    <div class="steps" id="revSteps"></div>
+    <div class="revbar">
+      <span class="revtitle" id="revTitle">原稿</span>
+      <span class="revtag" id="revTag">不动</span>
+      <div class="spacer"></div>
+      <button id="btnRevPrev" disabled>上一步</button>
+      <button id="btnRevRerun" disabled>重跑本遍</button>
+      <button class="primary" id="btnRevRun" disabled>执行第 1 遍</button>
+    </div>
+    <textarea id="revText" spellcheck="false" placeholder="把转写稿粘贴到这里，或点右侧「用当前转写结果」加载。&#10;&#10;约定：每句一行。第一遍只删填充词，从这一份原稿开始，后面每遍都不会覆盖原稿。"></textarea>
+    <div class="revfoot">
+      <span id="revStats">尚未开始</span>
+      <div class="spacer"></div>
+      <div class="menu-wrap">
+        <button id="btnRevExport" disabled>导出成稿 ▾</button>
+        <div class="menu" id="revMenu" hidden>
+          <a data-fmt="docx">Word 文档<span>公文版式：仿宋三号，行距 28 磅</span></a>
+          <a data-fmt="md">Markdown<span>带标题，可贴进笔记软件</span></a>
+          <a data-fmt="txt">纯文本<span>每段一行</span></a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card revside">
+    <div class="sidehead"><b id="sideTitle">改稿说明</b><span id="sideMeta"></span></div>
+    <div id="sideBody" class="sidebody"></div>
+  </div>
+</div>
+
+<!-- 字幕体检 -->
+<div class="mask" id="qcMask">
+  <div class="modal" style="width:min(700px,94vw)">
+    <h3>字幕体检 <span id="qcSummary" style="font-weight:400;font-size:var(--fs-12);color:var(--muted);margin-left:6px"></span></h3>
+    <div class="body" id="qcBody"></div>
+    <div class="foot">
+      <button id="qcFix">一键修复时间轴</button>
+      <span style="font-size:var(--fs-12);color:var(--muted);line-height:1.4">
+        只调时间，不改文字</span>
+      <div class="spacer"></div>
+      <button id="qcClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 口语词弹窗 -->
+<div class="mask" id="termsMask">
+  <div class="modal wide">
+    <h3>编辑口语词<span class="sub">各词用空格分隔，逗号、顿号也可以</span></h3>
+    <div class="body">
+      <div class="tgrid">
+        <div class="field wide">
+          <label>语气词 <em>无条件删除</em></label>
+          <textarea id="t1" class="mini" placeholder="呃 嗯 啊 哦　用空格分隔，逗号顿号也行"></textarea>
+          <div class="hint">
+            <span>嗯、啊、呃、哦、诶、哎、嘛、哈。「嘛/哈」只在句尾删，不伤「干嘛」「哈哈」。</span>
+            <span class="cnt" id="c1">共 0 个</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>句首填充 <em>仅句首删</em></label>
+          <textarea id="t2" class="mini"></textarea>
+          <div class="hint">
+            <span>后接名词时保留：「这个文件」「那个条款」不动。</span>
+            <span class="cnt" id="c2">共 0 个</span>
+          </div>
+        </div>
+        <div class="field">
+          <label>句尾确认 <em>仅句尾删</em></label>
+          <textarea id="t3" class="mini"></textarea>
+          <div class="hint">
+            <span>「是不是在岗」这类句中用法不动。</span>
+            <span class="cnt" id="c3">共 0 个</span>
+          </div>
+        </div>
+        <div class="field wide">
+          <label>口头冗余 <em>整体删</em></label>
+          <textarea id="t4" class="mini"></textarea>
+          <div class="hint">
+            <span>「所以说」前文有因果时保留并建议改「因此」。</span>
+            <span class="cnt" id="c4">共 0 个</span>
+          </div>
+        </div>
+        <div class="field wide">
+          <label>组合填充 <em>优先整段删</em></label>
+          <textarea id="t5" class="mini"></textarea>
+          <div class="hint">
+            <span>最先处理，否则会被拆成单个词删碎。</span>
+            <span class="cnt" id="c5">共 0 个</span>
+          </div>
+        </div>
+      </div>
+      <details class="guards">
+        <summary>哪些词不删、只给建议（7 组判别）</summary>
+        <ul>
+          <li><code>我们／咱们</code> 单位自称（后接监管、要求、局、单位、规定…）→ 建议改「我局／本单位」，<b>不删</b>；泛称引导（我们来看…）→ 删「我们」，保留「来看…」</li>
+          <li><code>这个／那个</code> 后接名词 → 保留；后接逗号顿号 → 无论位置都删</li>
+          <li><code>实际上／其实／事实上</code> 后接「是、但是、而是、并非、相反」→ 保留；充当口头禅 → 删</li>
+          <li><code>基本上／大概／差不多</code> 后跟数字、法条、金额 → 保留并回听核对；否则删</li>
+          <li><code>应该讲／可以说／换句话说</code> 有解释功能 → 建议精简为「即」；当填充 → 删</li>
+          <li><code>大家可以看到／请注意</code> 课件引导句 → 建议精简为「注意／参见」；同一篇超过 2 次的部分删</li>
+          <li><code>嘛／哈</code> 只在句尾删，「干嘛」「哈哈」「喇嘛」不动</li>
+        </ul>
+      </details>
+    </div>
+    <div class="foot">
+      <button id="termsCancel">取消</button>
+      <button class="primary" id="termsSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 文稿对齐 -->
+<div class="mask" id="alignMask">
+  <div class="modal">
+    <h3>文稿对齐<span class="sub">用讲义 / PPT 文字稿校准术语与时间轴</span></h3>
+    <div class="body">
+      <div class="field">
+        <label>课程文稿 <em>讲义、PPT 备注、讲稿都可以</em></label>
+        <textarea id="alignScript" placeholder="粘贴文稿；每句一行或整段都行。&#10;&#10;对齐会以文稿为准修正术语，并按识别时间轴重新分配每句的时间。"></textarea>
+        <div class="hint">
+          <span>支持导入 .txt / .md 文件</span>
+          <span class="cnt" id="alignCount">0 字</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>输出方式</label>
+        <div class="align-modes">
+          <label class="chk"><input type="radio" name="alignMode" value="script" checked>按文稿（术语更准）</label>
+          <label class="chk"><input type="radio" name="alignMode" value="asr">按识别（保留口语）</label>
+        </div>
+      </div>
+      <div class="note">对齐只改文字与句间时间，不动音频；会替换当前字幕，可用 Ctrl+Z 撤销。</div>
+    </div>
+    <div class="foot">
+      <button id="alignFileBtn">导入文件</button>
+      <input type="file" id="alignFile" accept=".txt,.md,text/plain" hidden>
+      <div class="spacer"></div>
+      <button id="alignCancel">取消</button>
+      <button class="primary" id="alignRun">开始对齐</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = {
+  fileId:null, kind:null, taskId:null, timer:null,
+  stem:'', cues:[], raw:[], dirty:false, mode:'clean',
+  cur:-1, player:null, playing:false, reportText:'',
+  demo: location.search.includes('demo=1'),
+  fileName:'', fileSize:0, filePath:'',
+  peaks:null, waveBase:null, waveView:{start:0, end:0}, waveDragging:false,
+  align:null, alignMode:'script',
+  saveTimer:null, saving:false
+};
+
+/* ---------- 主题与字号 ---------- */
+const PREFS_KEY = 'asr_prefs_v1';
+const FS_STEPS = [13.5, 14, 15.5, 17];
+const FS_LABEL = ['小', '中', '大', '特大'];
+const prefs = {theme:'light', font:1};
+
+(function initPrefs(){
+  try{
+    const d = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null');
+    if(d) Object.assign(prefs, d);
+  }catch(e){}
+  const t = document.documentElement.dataset.theme;
+  if(t) prefs.theme = t;
+  if(!FS_STEPS[prefs.font]) prefs.font = 1;
+})();
+
+function applyPrefs(){
+  document.documentElement.dataset.theme = prefs.theme;
+  document.documentElement.style.setProperty('--fs', FS_STEPS[prefs.font] + 'px');
+  const tag = $('#fontTag');
+  if(tag) tag.textContent = FS_LABEL[prefs.font];
+  const btn = $('#btnTheme');
+  if(btn){
+    btn.textContent = prefs.theme === 'dark' ? '☀' : '◐';
+    btn.title = prefs.theme === 'dark' ? '切换到浅色' : '切换到暗色（护眼）';
+  }
+  try{ localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); }catch(e){}
+  if(state.peaks) setTimeout(drawWave, 0);
+}
+applyPrefs();
+$('#btnTheme').onclick = ()=>{
+  prefs.theme = prefs.theme === 'dark' ? 'light' : 'dark';
+  applyPrefs();
+  toast(prefs.theme === 'dark' ? '已切换到暗色（护眼）' : '已切换到浅色');
+};
+$('#btnFont').onclick = ()=>{
+  prefs.font = (prefs.font + 1) % FS_STEPS.length;
+  applyPrefs();
+  toast('字号：' + FS_LABEL[prefs.font]);
+};
+
+/* ---------- 基础 ---------- */
+function toast(msg){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._t); t._t = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function fmtTime(sec){
+  sec = Math.max(0, Math.floor(sec||0));
+  const m = Math.floor(sec/60), s = sec%60;
+  return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+}
+function fmtTimeMs(sec){
+  const total = Math.max(0, Math.round((Number(sec)||0)*1000));
+  const h = Math.floor(total/3600000);
+  const m = Math.floor(total%3600000/60000);
+  const s = Math.floor(total%60000/1000);
+  const ms = total%1000;
+  const base = String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+'.'+String(ms).padStart(3,'0');
+  return h ? h+':'+base : base;
+}
+function parseTime(str){
+  str = String(str||'').trim();
+  if(!str) return NaN;
+  if(/^\d+(\.\d+)?$/.test(str)) return parseFloat(str);
+  const parts = str.split(':').map(Number);
+  if(parts.some(isNaN)) return NaN;
+  if(parts.length === 2) return parts[0]*60 + parts[1];
+  if(parts.length === 3) return parts[0]*3600 + parts[1]*60 + parts[2];
+  return NaN;
+}
+function setStatus(text, cls){
+  $('#statusText').textContent = text;
+  $('#dot').className = 'dot' + (cls ? ' '+cls : '');
+}
+function logLine(msg){
+  const box = $('#log'); box.hidden = false;
+  box.textContent += msg + '\n';
+  box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- 上传 ---------- */
+const drop = $('#drop'), fileInput = $('#fileInput');
+drop.onclick = ()=>fileInput.click();
+drop.ondragover = e=>{e.preventDefault();drop.classList.add('over');};
+drop.ondragleave = ()=>drop.classList.remove('over');
+drop.ondrop = e=>{
+  e.preventDefault(); drop.classList.remove('over');
+  if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+};
+fileInput.onchange = ()=>{ if(fileInput.files[0]) upload(fileInput.files[0]); };
+$('#fcReselect').onclick = ()=>fileInput.click();
+$('#fcStart').onclick = ()=>$('#btnStart').click();
+$('#fcPath').onclick = async ()=>{
+  if(!state.filePath) return;
+  try{ await navigator.clipboard.writeText(state.filePath); toast('本机缓存路径已复制'); }
+  catch(e){ toast('复制失败'); }
+};
+
+function setFileStatus(text, cls){
+  const dot = $('#fcDot'); if(dot) dot.className = 'dot' + (cls ? ' '+cls : '');
+  const st = $('#fcState'); if(st) st.textContent = text;
+}
+function renderFileCard(d){
+  state.fileName = d.name || ''; state.fileSize = d.size || 0;
+  state.filePath = d.path || '';
+  const name = d.name || '未命名';
+  const ext = (name.match(/\.[^.]+$/) || [''])[0].replace('.','').toUpperCase();
+  $('#fcName').textContent = name;
+  $('#fcName').title = name;
+  $('#fcMeta').textContent =
+    `${(d.size/1048576).toFixed(1)} MB · ${d.kind==='video'?'视频':'音频'}${ext?' · '+ext:''}`;
+  $('#fcPath').textContent = d.path || '（本机缓存）';
+  $('#fcPath').title = d.path || '';
+  $('#fcIcon').textContent = d.kind === 'video' ? '▶' : '♪';
+  $('#drop').hidden = true;
+  $('#fileCard').hidden = false;
+  setFileStatus('待识别','');
+  $('#fcStart').hidden = false;
+  $('#fcStart').disabled = false;
+}
+
+async function upload(file){
+  setStatus('上传中…','run');
+  setFileStatus('上传中…','run');
+  const fd = new FormData(); fd.append('file', file);
+  try{
+    const r = await fetch('/api/upload', {method:'POST', body:fd});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    state.fileId = d.file_id; state.kind = d.kind;
+    state.stem = (d.name||'transcript').replace(/\.[^.]+$/,'');
+    state.peaks = null; state.waveBase = null; state.align = null;
+    $('#waveWrap').hidden = true;
+    $('#alignToggle').hidden = true;
+    $('#fileChip').textContent = d.name + ' · ' + (d.size/1048576).toFixed(1) + ' MB';
+    $('#btnStart').disabled = false;
+    renderFileCard(d);
+    setStatus('已上传，可以开始转写','done');
+    mountPlayer(d.media_url, d.kind);
+    loadPeaks();
+  }catch(e){ setStatus('上传失败：'+e.message,'err'); setFileStatus('上传失败','err'); }
+}
+
+function mountPlayer(url, kind){
+  const wrap = $('#mediaWrap');
+  wrap.hidden = false; wrap.innerHTML = '';
+  wrap.classList.toggle('video', kind === 'video');
+  const el = document.createElement(kind === 'video' ? 'video' : 'audio');
+  if(url) el.src = url;                 // 演示模式没有音频源，别让浏览器去请求页面本身
+  el.controls = true; el.preload = 'metadata';
+  wrap.appendChild(el);
+  state.player = el;
+  $('#playerBar').hidden = false;
+  el.ontimeupdate = onTick;
+  el.onplay = ()=>{ state.playing = true; $('#btnPlay').textContent='暂停'; };
+  el.onpause = ()=>{ state.playing = false; $('#btnPlay').textContent='播放'; };
+  el.onloadedmetadata = ()=>{ $('#tcode').textContent =
+      '00:00 / ' + fmtTime(el.duration); };
+  $('#btnShot').disabled = (kind !== 'video');
+  if(state.peaks) drawWave();
+}
+
+/* ---------- 波形 ---------- */
+function demoPeaks(dur){
+  const n = 1200, mins = [], maxs = [];
+  for(let i=0;i<n;i++){
+    const env = 0.18 + 0.62*Math.abs(Math.sin(i/19))*(0.55+0.45*Math.abs(Math.sin(i/7.3)));
+    const v = Math.min(0.95, env);
+    mins.push(-v); maxs.push(v);
+  }
+  return {duration:dur||52, bucket_ms:100, mins, maxs};
+}
+
+async function loadPeaks(){
+  if(state.demo){
+    state.peaks = demoPeaks(52);
+    state.waveView = {start:0, end:52};
+    $('#waveWrap').hidden = false;
+    const el = $('#waveDur');
+    if(el) el.textContent = fmtTime(52);
+    drawWave();
+    return;
+  }
+  if(!state.fileId && !state.stem) return;
+  const q = new URLSearchParams();
+  if(state.stem) q.set('stem', state.stem);
+  if(state.fileId) q.set('file_id', state.fileId);
+  q.set('n','2400');
+  try{
+    const r = await fetch('/api/peaks?'+q.toString());
+    const d = await r.json();
+    if(d.error || !d.mins || !d.mins.length){
+      // modified(v1.2): 原来静默 return，波形加载失败时用户完全看不出原因
+      console.warn('[wave]', d.error || '波形数据为空');
+      return;
+    }
+    state.peaks = d;
+    state.waveView = {start:0, end:d.duration || 0};
+    $('#waveWrap').hidden = false;
+    const el = $('#waveDur');
+    if(el) el.textContent = fmtTime(d.duration);
+    drawWave();
+  }catch(e){ console.warn('[wave]', e); }   // modified(v1.2): 不再静默吞异常
+}
+
+function waveMetrics(){
+  const cv = $('#wave'); if(!cv) return null;
+  const rect = cv.getBoundingClientRect();
+  if(!rect.width || !rect.height) return null;
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.round(rect.width*dpr), h = Math.round(rect.height*dpr);
+  if(cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; }
+  const ctx = cv.getContext('2d');
+  return {cv, ctx, w:rect.width, h:rect.height, dpr};
+}
+
+function buildWaveBase(){
+  const m = waveMetrics(); if(!m || !state.peaks) return;
+  const {w,h,dpr} = m;
+  const off = document.createElement('canvas');
+  off.width = Math.round(w*dpr); off.height = Math.round(h*dpr);
+  const ctx = off.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+  const d = state.peaks, dur = d.duration || 1;
+  const v = state.waveView, t0 = v.start, span = Math.max(0.01, (v.end||dur)-t0);
+  const mid = h/2;
+  const css = getComputedStyle(document.documentElement);
+  const line = css.getPropertyValue('--line-strong').trim() || '#c7ccd4';
+  const primary = css.getPropertyValue('--primary').trim() || '#2563eb';
+  ctx.strokeStyle = line; ctx.globalAlpha = .45;
+  for(const c of state.cues){
+    if(c.start < t0 || c.start > t0+span) continue;
+    const x = (c.start - t0)/span*w;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = primary;
+  const n = d.mins.length;
+  // modified(v1.2): 原来把整段波形平铺到全画布，完全忽略 waveView；
+  // Ctrl+滚轮缩放后句边界线与播放头按窗口算、波形却始终画全曲，三者错位。
+  // 现在把每个像素映射到它代表的时间区间对应的桶：缩小时取区间 min/max
+  // 聚合（不漏瞬态峰值），放大时自然重复同一桶。
+  const bucketDur = dur / Math.max(1, n);
+  for(let x=0; x<w; x++){
+    const ta = t0 + (x / w) * span;
+    const tb = t0 + ((x + 1) / w) * span;
+    let a = Math.floor(ta / bucketDur), b = Math.ceil(tb / bucketDur);
+    a = Math.max(0, Math.min(n - 1, a));
+    b = Math.max(a + 1, Math.min(n, b));
+    const stepK = Math.max(1, Math.floor((b - a) / 64));
+    let lo = 0, hi = 0;
+    for(let k=a; k<b; k+=stepK){
+      lo = Math.min(lo, d.mins[k] || 0);
+      hi = Math.max(hi, d.maxs[k] || 0);
+    }
+    const y1 = mid - hi*mid*0.9, y2 = mid - lo*mid*0.9;
+    ctx.fillRect(x, y1, 1, Math.max(1, y2-y1));
+  }
+  state.waveBase = off;
+}
+
+function paintWave(){
+  const m = waveMetrics(); if(!m || !state.waveBase) return;
+  const {ctx,w,h,dpr} = m;
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,m.cv.width,m.cv.height);
+  ctx.drawImage(state.waveBase,0,0);
+  if(!state.player || !state.peaks) return;
+  const dur = state.peaks.duration || 1;
+  const v = state.waveView, t0 = v.start, span = Math.max(0.01,(v.end||dur)-t0);
+  const t = state.player.currentTime;
+  if(t < t0 || t > t0+span) return;
+  const x = (t-t0)/span*w;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--warn').trim() || '#c2410c';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke();
+}
+
+function drawWave(){ buildWaveBase(); paintWave(); }
+
+function waveSeek(e){
+  const cv = $('#wave'); if(!cv || !state.peaks) return;
+  const rect = cv.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+  const v = state.waveView, dur = state.peaks.duration || 1;
+  const span = Math.max(0.01, (v.end||dur)-v.start);
+  seek(v.start + (x/rect.width)*span);
+  paintWave();
+}
+$('#wave').onpointerdown = e=>{ state.waveDragging = true; waveSeek(e); };
+$('#wave').onpointermove = e=>{ if(state.waveDragging) waveSeek(e); };
+window.addEventListener('pointerup', ()=>state.waveDragging = false);
+$('#wave').ondblclick = ()=>{
+  if(!state.peaks) return;
+  state.waveView = {start:0, end:state.peaks.duration};
+  drawWave();
+};
+$('#wave').onwheel = e=>{
+  if(!e.ctrlKey || !state.peaks) return;
+  e.preventDefault();
+  const rect = $('#wave').getBoundingClientRect();
+  const x = (e.clientX - rect.left) / rect.width;
+  const dur = state.peaks.duration || 1;
+  const v = state.waveView;
+  const span = Math.max(0.01, (v.end || dur) - v.start);
+  const factor = e.deltaY < 0 ? 0.8 : 1.25;
+  const newSpan = Math.max(2, Math.min(dur, span * factor));
+  const center = v.start + x * span;
+  let start = center - x * newSpan;
+  start = Math.max(0, Math.min(dur - newSpan, start));
+  state.waveView = {start, end:start + newSpan};
+  drawWave();
+};
+window.addEventListener('resize', ()=>{ if(state.peaks) drawWave(); });
+
+/* ---------- 播放控制 ---------- */
+function seek(t){
+  if(!state.player) return;
+  state.player.currentTime = Math.max(0, t);
+  // modified(v1.2): currentTime 异步生效，立即 paintWave 常把播放头画在旧位置
+  requestAnimationFrame(()=>{ paintWave(); setTimeout(paintWave, 80); });
+}
+function onTick(){
+  const p = state.player; if(!p) return;
+  $('#tcode').textContent = fmtTime(p.currentTime) + ' / ' + fmtTime(p.duration);
+  const t = p.currentTime;
+  let idx = state.cues.findIndex(c => t >= c.start && t < c.end);
+  if(idx !== state.cur){ setActive(idx); }
+  paintWave();
+}
+function setActive(idx){
+  state.cur = idx;
+  document.querySelectorAll('.cue').forEach((el,i)=>
+    el.classList.toggle('active', i === idx));
+  if(idx >= 0 && $('#follow').checked){
+    const el = document.querySelectorAll('.cue')[idx];
+    if(el) el.scrollIntoView({block:'center', behavior:'smooth'});
+  }
+}
+$('#btnPlay').onclick = ()=>{ const p=state.player; if(!p)return;
+  p.paused ? p.play() : p.pause(); };
+$('#btnPrev').onclick = ()=>jump(-1);
+$('#btnNext').onclick = ()=>jump(1);
+function jump(dir){
+  const p = state.player; if(!p || !state.cues.length) return;
+  const t = p.currentTime;
+  let target = -1;
+  if(dir < 0){
+    for(let i = state.cues.length-1; i >= 0; i--){
+      if(state.cues[i].start < t - 0.35){ target = i; break; }
+    }
+    if(target < 0) target = 0;
+  }else{
+    for(let i = 0; i < state.cues.length; i++){
+      if(state.cues[i].start > t + 0.35){ target = i; break; }
+    }
+    if(target < 0) target = state.cues.length - 1;
+  }
+  seek(state.cues[target].start);
+  if(p.paused) p.play();
+}
+$('#rate').onchange = e=>{ if(state.player) state.player.playbackRate = parseFloat(e.target.value); };
+
+/* ---------- 截图 ---------- */
+$('#btnShot').onclick = ()=>{
+  const v = state.player;
+  if(!v || state.kind !== 'video'){ toast('仅视频支持截图'); return; }
+  if(!v.videoWidth || !v.videoHeight){ toast('画面还没准备好，稍等一下再试'); return; }
+  const cv = document.createElement('canvas');
+  cv.width = v.videoWidth; cv.height = v.videoHeight;
+  cv.getContext('2d').drawImage(v, 0, 0, cv.width, cv.height);
+  cv.toBlob(b=>{
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = `${state.stem}_${fmtTime(v.currentTime).replace(':','-')}.png`;
+    a.click(); URL.revokeObjectURL(a.href);
+    toast('截图已保存');
+  }, 'image/png');
+};
+
+/* ---------- 转写 ---------- */
+$('#btnStart').onclick = async ()=>{
+  if(!state.fileId) return;
+  $('#btnStart').disabled = true;
+  $('#fcStart').disabled = true;
+  $('#log').textContent = ''; $('#log').hidden = false;
+  setStatus('排队中…','run');
+  setFileStatus('排队中…','run');
+  const fd = new FormData();
+  fd.append('file_id', state.fileId);
+  fd.append('model', $('#model').value);
+  fd.append('clean', $('#clean').checked ? 'true' : 'false');
+  fd.append('language', $('#lang').value);
+  const r = await fetch('/api/transcribe', {method:'POST', body:fd});
+  const d = await r.json();
+  if(d.error){
+    setStatus(d.error,'err'); setFileStatus('失败','err');
+    $('#btnStart').disabled=false; $('#fcStart').disabled=false; return;
+  }
+  state.taskId = d.task_id;
+  refreshTasks();
+  poll();
+};
+
+async function poll(){
+  clearTimeout(state.timer);
+  const r = await fetch('/api/task/'+state.taskId);
+  const d = await r.json();
+  if(d.logs && d.logs.length){
+    $('#log').textContent = d.logs.join('\n');
+    $('#log').scrollTop = $('#log').scrollHeight;
+  }
+  if(d.status === 'queued'){
+    const pos = d.position ? `（第 ${d.position} 位）` : '';
+    setStatus('排队中…'+pos,'run');
+    setFileStatus('排队中','run');
+    state.timer = setTimeout(poll, 1500);
+    return;
+  }
+  if(d.status === 'done'){
+    setStatus('转写完成','done');
+    setFileStatus('识别完成','done');
+    renderResult(d.result);
+    $('#btnStart').disabled = false;
+    $('#fcStart').disabled = false;
+    refreshTasks();
+    return;
+  }
+  if(d.status === 'error'){
+    setStatus('失败：'+(d.error||'未知错误'),'err');
+    setFileStatus('识别失败','err');
+    $('#btnStart').disabled = false;
+    $('#fcStart').disabled = false;
+    refreshTasks();
+    return;
+  }
+  if(d.status === 'interrupted' || d.status === 'cancelled'){
+    setStatus(d.error || '任务中断','err');
+    setFileStatus(d.status === 'cancelled' ? '已取消' : '已中断','err');
+    $('#btnStart').disabled = false;
+    $('#fcStart').disabled = false;
+    refreshTasks();
+    return;
+  }
+  setStatus('转写中…（Qwen3 较慢，请耐心等待）','run');
+  setFileStatus('识别中…','run');
+  state.timer = setTimeout(poll, 2000);
+}
+
+function renderResult(res){
+  if(!res){ setStatus('结果读取失败，可在任务里重试','err'); return; }
+  state.stem = res.stem || state.stem;
+  state.raw = JSON.parse(JSON.stringify(res.cues || []));
+  state.mode = res.clean_cues ? 'clean' : 'raw';
+  state.cues = JSON.parse(JSON.stringify(res.clean_cues || res.cues || []));
+  state.reportText = res.report_text || '';
+  state.align = null; state.alignMode = 'script';
+  $('#alignToggle').hidden = true;
+  drawCues();
+  renderTips([]);                         // 新结果，清掉上一轮的建议
+  // 先把按钮放开，再做历史记账 —— 记账出问题也不能挡住主流程
+  $('#btnReclean').disabled = false;
+  $('#btnSave').disabled = false;
+  $('#btnDownload').disabled = false;
+  $('#btnToRevise').disabled = false;
+  $('#btnQC').disabled = false;
+  $('#btnAlign').disabled = false;
+  hist.stack = []; hist.pos = -1;          // 新结果不继承旧历史
+  // modified(v1.2): 「加载结果」不是用户编辑。原来 snapshot 会触发
+  // scheduleSave，1.2s 后把刚生成的稿子写成草稿，无声覆盖上一轮校对成果；
+  // 还会与 80ms 后的 restoreDraft 竞态，并误报「未保存」拦住离开页面。
+  clearTimeout(state.saveTimer);
+  state.dirty = false;
+  setSaveState('', '');
+  try{ snapshot('转写完成', {autosave:false}); }catch(e){ console.warn('history', e); }
+  loadPeaks();
+  if(!state.demo) setTimeout(()=>restoreDraft(), 80);
+  toast(`完成：${state.cues.length} 句 / ${res.chars} 字，耗时 ${res.elapsed}s`);
+}
+
+/* ---------- 任务列表（持久化 + 队列） ---------- */
+function taskDot(s){
+  if(s === 'done') return 'done';
+  if(s === 'error') return 'err';
+  if(s === 'interrupted' || s === 'cancelled') return 'warn';
+  return 'run';
+}
+function taskStatus(t){
+  if(t.status === 'queued') return '排队';
+  if(t.status === 'running') return '识别中';
+  if(t.status === 'done') return t.elapsed ? `${Math.round(t.elapsed)}s` : '完成';
+  if(t.status === 'error') return '失败';
+  if(t.status === 'interrupted') return '中断';
+  if(t.status === 'cancelled') return '已取消';
+  return t.status || '';
+}
+function renderTasks(list){
+  const box = $('#taskList'); if(!box) return;
+  const cnt = $('#taskCount');
+  if(cnt) cnt.textContent = list.length ? `${list.length} 条` : '';
+  if(!list.length){
+    box.innerHTML = '<div class="empty small">暂无任务</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for(const t of list){
+    const row = document.createElement('div');
+    row.className = 'taskrow ' + (t.status || '');
+    const dot = document.createElement('span');
+    dot.className = 'dot ' + taskDot(t.status);
+    row.appendChild(dot);
+
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = t.name || t.stem || t.id;
+    nm.title = nm.textContent;
+    row.appendChild(nm);
+
+    const st = document.createElement('span');
+    st.className = 'st';
+    st.textContent = taskStatus(t);
+    row.appendChild(st);
+
+    const act = document.createElement('span');
+    act.className = 'act';
+    if(t.status === 'queued'){
+      const b = document.createElement('button');
+      b.textContent = '取消';
+      b.onclick = ()=>taskAct(t.id, 'cancel');
+      act.appendChild(b);
+    }else if(['error','interrupted','cancelled'].includes(t.status)){
+      const b = document.createElement('button');
+      b.textContent = '重试';
+      b.onclick = ()=>taskAct(t.id, 'retry');
+      act.appendChild(b);
+    }else if(t.status === 'done' && t.stem){
+      const b = document.createElement('button');
+      b.textContent = '打开';
+      b.onclick = ()=>taskAct(t.id, 'open');
+      act.appendChild(b);
+    }
+    row.appendChild(act);
+    frag.appendChild(row);
+  }
+  box.innerHTML = '';
+  box.appendChild(frag);
+}
+async function refreshTasks(){
+  if(state.demo) return;
+  try{
+    const r = await fetch('/api/tasks');
+    const d = await r.json();
+    renderTasks(d.tasks || []);
+  }catch(e){}
+}
+async function taskAct(id, action){
+  try{
+    if(action === 'open'){
+      const r = await fetch('/api/task/'+id);
+      const d = await r.json();
+      if(d.error || !d.result){ toast(d.error || '结果还没准备好'); return; }
+      state.taskId = id;
+      state.fileId = null;
+      state.kind = d.kind || 'audio';
+      renderResult(d.result);
+      renderFileCard({name:d.name || d.result.stem, size:d.size || 0,
+                      kind:d.kind || 'audio', path:d.path || ''});
+      $('#fcStart').hidden = true;
+      $('#btnStart').disabled = true;
+      if(d.name){
+        $('#fileChip').textContent = d.name +
+          (d.size ? ' · ' + (d.size/1048576).toFixed(1) + ' MB' : '');
+      }
+      mountPlayer('/api/task/'+id+'/media', d.kind || 'audio');
+      if(state.peaks) drawWave();
+      setStatus('已打开历史任务','done');
+      setFileStatus('识别完成','done');
+      return;
+    }
+    const r = await fetch(`/api/task/${id}/${action}`, {method:'POST'});
+    const d = await r.json();
+    toast(d.error || (action === 'retry' ? '已重新排队' : '已取消'));
+    refreshTasks();
+  }catch(e){ toast('操作失败'); }
+}
+
+function timeInput(i, key, val){
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.className = 'tin';
+  inp.value = fmtTimeMs(val);
+  inp.dataset.i = i; inp.dataset.k = key;
+  inp.title = '↑↓ 微调 0.1s，Shift+↑↓ 1s；也可直接输入 mm:ss.mmm';
+  inp.onclick = e=>e.stopPropagation();
+  inp.onpointerdown = e=>e.stopPropagation();
+  inp.onkeydown = e=>{
+    if(e.key === 'Enter'){ e.preventDefault(); inp.blur(); return; }
+    if(e.key === 'Escape'){ inp.value = fmtTimeMs(state.cues[i][key]); inp.blur(); return; }
+    if(e.key === 'ArrowUp' || e.key === 'ArrowDown'){
+      e.preventDefault();
+      const cur = parseTime(inp.value);
+      if(isNaN(cur)) return;
+      const step = (e.shiftKey ? 1 : 0.1) * (e.key === 'ArrowUp' ? 1 : -1);
+      inp.value = fmtTimeMs(Math.max(0, cur + step));
+    }
+  };
+  inp.onblur = ()=>applyTimeEdit(inp, i, key);
+  return inp;
+}
+
+function applyTimeEdit(inp, i, key){
+  const c = state.cues[i]; if(!c) return;
+  const v = parseTime(inp.value);
+  if(isNaN(v)){
+    inp.value = fmtTimeMs(c[key]);
+    toast('时间格式：mm:ss.mmm，或直接写秒数');
+    return;
+  }
+  let min = 0, max = Infinity;
+  if(key === 'start'){
+    max = c.end - 0.05;
+  } else {
+    min = c.start + 0.05;
+    const nx = state.cues[i+1];
+    // modified(v1.2): 时间轴乱序时 max 可能小于 min，Math.max(min, ...)
+    // 会把结束时间硬设成 start+0.05 反而压住下一条；先夹到 min
+    if(nx) max = Math.max(min, nx.start - 0.001);
+    else if(state.player && state.player.duration) max = state.player.duration;
+  }
+  const clamped = Math.max(min, Math.min(max, v));
+  if(Math.abs(clamped - v) > 0.0005){
+    toast(key === 'start' ? '开始时间不能晚于本条结束'
+                         : '结束时间不能早于开始，也不能压住下一条');
+  }
+  if(Math.abs(clamped - c[key]) < 0.0005){
+    inp.value = fmtTimeMs(c[key]);
+    return;
+  }
+  c[key] = +clamped.toFixed(3);
+  inp.value = fmtTimeMs(c[key]);
+  const row = inp.closest('.cue');
+  if(row) row.classList.add('dirty');
+  state.dirty = true;
+  snapshot('调整时间');
+  drawWave();
+}
+
+function drawCues(){
+  const box = $('#cueList');
+  box.innerHTML = '';
+  if(!state.cues.length){
+    box.innerHTML = '<div class="empty">没有可显示的字幕</div>'; return;
+  }
+  const frag = document.createDocumentFragment();
+  state.cues.forEach((c, i)=>{
+    const row = document.createElement('div');
+    row.className = 'cue';
+    row.dataset.i = i;
+
+    const times = document.createElement('div');
+    times.className = 'times';
+    times.appendChild(timeInput(i, 'start', c.start));
+    const arrow = document.createElement('span');
+    arrow.className = 'arrow'; arrow.textContent = '→';
+    times.appendChild(arrow);
+    times.appendChild(timeInput(i, 'end', c.end));
+    if(c.similarity !== undefined && c.similarity < 0.8){
+      const b = document.createElement('span');
+      b.className = 'diff';
+      b.textContent = '差异';
+      b.title = '识别原文：' + (c.asr_text || '（无）');
+      times.appendChild(b);
+      row.classList.add('low');
+    }
+
+    const x = document.createElement('div');
+    x.className = 'x'; x.textContent = c.text;
+    x.ondblclick = e=>{
+      e.stopPropagation();
+      x.contentEditable = 'true'; x.focus();
+      document.execCommand && document.getSelection().selectAllChildren(x);
+    };
+    x.onblur = ()=>{
+      x.contentEditable = 'false';
+      const v = x.textContent.trim();
+      if(!v){                                    // 清空等于放弃修改，恢复原文
+        x.textContent = state.cues[i].text;
+        toast('内容为空，已还原');
+        return;
+      }
+      if(v !== state.cues[i].text){
+        state.cues[i].text = v;
+        row.classList.add('dirty'); state.dirty = true;
+        snapshot('修改字幕');
+        drawWave();
+      }
+    };
+    x.onkeydown = e=>{ if(e.key === 'Enter'){ e.preventDefault(); x.blur(); } };
+    row.appendChild(times); row.appendChild(x);
+    row.onclick = ()=>{ seek(c.start); };
+    frag.appendChild(row);
+  });
+  box.appendChild(frag);
+  state.cur = -1;
+}
+
+/* ---------- 查找替换 ---------- */
+$('#btnFind').onclick = ()=>{
+  const bar = $('#findBar');
+  bar.classList.toggle('show');
+  if(bar.classList.contains('show')) $('#findInput').focus();
+};
+$('#btnFindClose').onclick = ()=>{
+  $('#findBar').classList.remove('show');
+  document.querySelectorAll('.cue .x').forEach(e=>e.classList.remove('hit'));
+  $('#findInfo').textContent = '';
+};
+$('#findInput').oninput = ()=>{
+  const q = $('#findInput').value.trim();
+  document.querySelectorAll('.cue .x').forEach(e=>e.classList.remove('hit'));
+  if(!q){ $('#findInfo').textContent=''; return; }
+  let n = 0;
+  document.querySelectorAll('.cue .x').forEach(e=>{
+    if(e.textContent.includes(q)){ e.classList.add('hit'); n++; }
+  });
+  $('#findInfo').textContent = `命中 ${n} 句`;
+};
+$('#btnReplaceAll').onclick = ()=>{
+  const q = $('#findInput').value, r = $('#replaceInput').value;
+  if(!q){ toast('请先填写查找内容'); return; }
+  let n = 0;
+  state.cues.forEach(c=>{
+    if(c.text.includes(q)){ c.text = c.text.split(q).join(r); n++; }
+  });
+  if(!n){ toast('没有匹配内容'); return; }
+  drawCues(); state.dirty = true;
+  snapshot('查找替换');
+  toast(`已替换 ${n} 句`);
+  $('#findInput').dispatchEvent(new Event('input'));
+};
+
+/* ---------- 口语词 ---------- */
+/* 分隔规则：换行、中文/英文逗号、顿号、分号、句号问号感叹号、空格（含全角）都算分隔。
+   若某个词本身含空格（如英文口头语 you know），用引号把它包起来即可。 */
+const TERM_RE = /"[^"\n]*"|“[^”\n]*”|'[^'\n]*'|‘[^’\n]*’|「[^」\n]*」|[^\s，,、;；。.！!？?…：:（）()]+/g;
+
+function splitTerms(raw){
+  const out = [];
+  for(const m of String(raw || '').matchAll(TERM_RE)){
+    let t = m[0].replace(/^["“”'‘’「」\s]+|["“”'‘’「」\s]+$/g, '');  // 去掉包裹的引号括号
+    t = t.replace(/^[（(]?\d+[.、)）]\s*/, '');                    // 去掉行首编号 1. / 2、 / (3)
+    t = t.replace(/^[-•·*]\s*/, '').trim();                        // 去掉项目符号
+    if(t && /[\u4e00-\u9fffA-Za-z]/.test(t)) out.push(t);          // 丢掉纯数字、纯符号
+  }
+  return [...new Set(out)];                                        // 去重，保留首次出现顺序
+}
+
+// 五组口语词：id 对应 textarea，key 对应 rules/filler_words.json 的组名
+const TERM_GROUPS = [
+  {id:'#t1', cnt:'#c1', key:'语气词'},
+  {id:'#t2', cnt:'#c2', key:'句首填充'},
+  {id:'#t3', cnt:'#c3', key:'句尾确认'},
+  {id:'#t4', cnt:'#c4', key:'口头冗余'},
+  {id:'#t5', cnt:'#c5', key:'组合填充'},
+];
+
+function refreshTermCount(){
+  for(const g of TERM_GROUPS){
+    $(g.cnt).innerHTML = `共 <b>${splitTerms($(g.id).value).length}</b> 个`;
+  }
+}
+TERM_GROUPS.forEach(g => $(g.id).addEventListener('input', refreshTermCount));
+
+// 语气词里「嘛/哈/嘞/咧」属于「只在句尾删」，保存时要分流回去，
+// 否则会被当成无条件删，误伤「干嘛」「哈哈」
+let tailOnlyWords = [];
+
+$('#btnTerms').onclick = async ()=>{
+  const d = await (await fetch('/api/terms')).json();
+  const groups = d.groups || {};
+  for(const g of TERM_GROUPS){
+    const spec = groups[g.key] || {};
+    // 语气词组把句尾叹词也一并展示，让用户看得到全部词
+    const words = [...(spec.words || []), ...(spec.tail_only || [])];
+    // 空格分隔一行展示：词多了以后按行排会拉得很长，编辑时要一直滚
+    $(g.id).value = words.join(' ');
+  }
+  tailOnlyWords = (groups['语气词'] || {}).tail_only || [];
+  refreshTermCount();
+  $('#termsMask').classList.add('show');
+};
+$('#termsCancel').onclick = ()=>$('#termsMask').classList.remove('show');
+$('#termsSave').onclick = async ()=>{
+  const groups = {};
+  for(const g of TERM_GROUPS) groups[g.key] = splitTerms($(g.id).value);
+
+  const tailSet = new Set(tailOnlyWords);
+  const tailKept = groups['语气词'].filter(w => tailSet.has(w));
+  groups['语气词'] = groups['语气词'].filter(w => !tailSet.has(w));
+
+  const r = await fetch('/api/terms', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({groups, tail_only: {'语气词': tailKept}})});
+  if(r.ok){
+    $('#termsMask').classList.remove('show');
+    const n = k => (groups[k] || []).length;
+    toast(`已保存：语气词 ${n('语气词') + tailKept.length} / 句首 ${n('句首填充')} / 句尾 ${n('句尾确认')} / 冗余 ${n('口头冗余')} / 组合 ${n('组合填充')}`);
+  } else toast('保存失败');
+};
+
+/* ---------- 重新清理 ---------- */
+/* 待人工判断的建议：单位自称、含数字的约量、有解释功能的短语等。
+   这些工具不擅自改，只摆出来让人定夺。 */
+function renderTips(list){
+  const box = $('#tipPanel');
+  box.innerHTML = '';
+  if(!list || !list.length){ box.hidden = true; return; }
+  const det = document.createElement('details');
+  const sum = document.createElement('summary');
+  sum.textContent = `${list.length} 条待人工判断（工具没改原文，点开逐条看）`;
+  det.appendChild(sum);
+  const ul = document.createElement('ul');
+  list.forEach(s=>{
+    const li = document.createElement('li');
+    li.textContent = s;                 // 用 textContent，避免内容里的 < > 被当标签
+    ul.appendChild(li);
+  });
+  det.appendChild(ul);
+  box.appendChild(det);
+  box.hidden = false;
+}
+
+$('#btnReclean').onclick = async ()=>{
+  if(!state.raw.length){ toast('没有原始字幕'); return; }
+  // 重新清理是从原始字幕重跑，会覆盖手工修改 —— 先明确告知
+  const edited = state.cues.some((c, i)=> !state.raw[i] || c.text !== state.raw[i].text);
+  if(edited && !confirm('校对区已有手工修改。\n重新清理会用原始字幕重跑，这些修改会被覆盖（之后可按 Ctrl+Z 撤销）。\n确定继续吗？')) return;
+  setStatus('重新清理中…','run');
+  const fd = new FormData();
+  fd.append('file_id', state.fileId || '');
+  fd.append('cues_json', JSON.stringify(state.raw));
+  const r = await fetch('/api/reclean', {method:'POST', body:fd});
+  const d = await r.json();
+  if(d.error){ setStatus(d.error,'err'); return; }
+  state.cues = d.cues; drawCues(); state.dirty = true;
+  snapshot('重新清理');
+  renderTips(d.suggestions);
+  setStatus('重新清理完成','done');
+  const tip = (d.suggestions && d.suggestions.length) ? `，另有 ${d.suggestions.length} 条待你判断` : '';
+  toast(`已按新词表清理，${d.changed} 句有变化${tip}`);
+};
+
+/* ---------- 保存 / 导出 ---------- */
+$('#btnSave').onclick = ()=>doSave(true);
+/* ---------- 下载 ---------- */
+const EXT = {srt:'srt', vtt:'vtt', txt:'txt', md:'md', report:'md'};   // modified: 补 vtt
+
+$('#btnDownload').onclick = e=>{
+  e.stopPropagation();
+  const m = $('#dlMenu');
+  m.hidden = !m.hidden;
+};
+document.addEventListener('click', ()=>{ $('#dlMenu').hidden = true; });
+$('#dlMenu').onclick = e=>{
+  e.stopPropagation();
+  const a = e.target.closest('a[data-kind]');
+  if(!a) return;
+  $('#dlMenu').hidden = true;
+  downloadAs(a.dataset.kind);
+};
+
+async function downloadAs(kind){
+  if(!state.cues.length){ toast('还没有可下载的字幕'); return; }
+
+  if(kind === 'copy'){
+    const text = state.cues.map(c=>c.text).join('\n');
+    try{
+      await navigator.clipboard.writeText(text);
+      toast(`已复制 ${state.cues.length} 句到剪贴板`);
+    }catch(e){ toast('复制失败，浏览器可能限制了剪贴板权限'); }
+    return;
+  }
+
+  const r = await fetch('/api/export', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({stem: state.stem || 'transcript',
+                          cues: state.cues, kind, report: state.reportText})
+  });
+  if(!r.ok){ toast('导出失败'); return; }
+  const blob = await r.blob();
+  const name = `${state.stem || 'transcript'}.${EXT[kind] || 'txt'}`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  toast('已下载 ' + name);
+}
+
+/* ══════════════════ 撤销 / 重做 ══════════════════ */
+const hist = { stack: [], pos: -1 };
+
+function setSaveState(text, cls){
+  const el = $('#saveState'); if(!el) return;
+  el.textContent = text;
+  el.className = 'save-state' + (cls ? ' ' + cls : '');
+}
+function scheduleSave(){
+  if(state.demo || !state.stem || !state.cues.length) return;
+  state.dirty = true;
+  setSaveState('未保存','dirty');
+  clearTimeout(state.saveTimer);
+  state.saveTimer = setTimeout(()=>doSave(false), 1200);
+}
+async function doSave(manual){
+  if(!state.stem || !state.cues.length) return;
+  if(state.saving) return;
+  state.saving = true;
+  setSaveState('保存中…','dirty');
+  try{
+    const r = await fetch('/api/save', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({stem:state.stem, cues:state.cues})});
+    const d = await r.json();
+    if(d.ok){
+      state.dirty = false;
+      const t = new Date();
+      setSaveState('已保存 '+t.toTimeString().slice(0,8),'ok');
+      if(manual) toast('已保存校对稿');
+    }else{
+      setSaveState('保存失败','err');
+      if(manual) toast('保存失败');
+    }
+  }catch(e){
+    setSaveState('保存失败','err');
+    if(manual) toast('保存失败');
+  }finally{
+    state.saving = false;
+    // modified(v1.2): 保存进行中产生的新编辑，其定时器会被 state.saving
+    // 挡掉且不再重试，那次改动就永远丢盘；这里补一次排程。
+    if(state.dirty) scheduleSave();
+  }
+}
+async function restoreDraft(){
+  if(state.demo || !state.stem) return;
+  try{
+    const r = await fetch('/api/draft?stem='+encodeURIComponent(state.stem));
+    const d = await r.json();
+    if(!d.exists || !d.cues || !d.cues.length) return;
+    if(!(d.draft_mtime > d.raw_mtime)) return;
+    if(JSON.stringify(d.cues) === JSON.stringify(state.cues)) return;
+    state.cues = d.cues;
+    drawCues();
+    // modified(v1.2): 恢复的是已落盘的稿子，不该标脏，也不该再回写一次
+    state.dirty = false;
+    snapshot('恢复上次校对稿', {autosave:false});
+    drawWave();
+    toast('已恢复上次自动保存的校对稿');
+  }catch(e){}
+}
+
+function snapshot(label, opts){
+  // modified(v1.2): 增加 autosave 开关，区分「用户编辑」与「加载/恢复」
+  try{
+    _snapshot(label, opts || {});
+  }catch(e){ console.warn('snapshot failed', e); }
+}
+function _snapshot(label, opts){
+  const data = JSON.stringify(state.cues);
+  if(hist.pos >= 0 && hist.stack[hist.pos] && hist.stack[hist.pos].data === data) return;
+  hist.stack = hist.stack.slice(0, hist.pos + 1);
+  hist.stack.push({data, label});
+  if(hist.stack.length > 80) hist.stack.shift();
+  hist.pos = hist.stack.length - 1;
+  syncHistBtns();
+  if(opts.autosave !== false) scheduleSave();
+  else { state.dirty = false; clearTimeout(state.saveTimer); }  // modified(v1.2)
+  drawWave();
+}
+function syncHistBtns(){
+  const u = $('#btnUndo'), r = $('#btnRedo');
+  if(!u) return;
+  u.disabled = hist.pos <= 0;
+  r.disabled = hist.pos >= hist.stack.length - 1;
+}
+function histGo(delta){
+  const n = hist.pos + delta;
+  if(n < 0 || n >= hist.stack.length) return;
+  hist.pos = n;
+  state.cues = JSON.parse(hist.stack[n].data);
+  drawCues(); state.dirty = true; syncHistBtns();
+  scheduleSave(); drawWave();
+  toast(delta < 0 ? '已撤销：' + (hist.stack[n+1]?.label || '') : '已重做');
+}
+$('#btnUndo').onclick = ()=>histGo(-1);
+$('#btnRedo').onclick = ()=>histGo(1);
+
+/* ══════════════════ 字幕体检（Netflix / EBU 标准） ══════════════════ */
+/* 参考：Netflix 中文每行 16 全角字符、单条最短 833ms、最长 7s、相邻间隔 200ms；
+   EBU 阅读速度 12–16 字符/秒。中文按字计，舒适区取 9 字/秒。 */
+const QC = { minDur:0.83, maxDur:7, minGap:0.12, softCps:9, hardCps:12, maxChars:20 };
+const qcEsc = s => String(s == null ? '' : s)
+  .replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function charCount(t){
+  return (String(t || '').match(/[\u4e00-\u9fff\u3400-\u4dbf0-9A-Za-z]/g) || []).length;
+}
+
+function qcScan(cues){
+  const out = [];
+  cues.forEach((c, i)=>{
+    const dur = Math.max(0.001, c.end - c.start);
+    const n = charCount(c.text);
+    const cps = n / dur;
+    const push = (kind, sev, title, detail)=>out.push({i, kind, sev, title, detail, t:c.start});
+    if(n === 0) push('empty', 'high', '空字幕', '这条只有标点或空白，建议删掉。');
+    if(dur < QC.minDur) push('short', 'mid', '停留太短',
+      `${dur.toFixed(2)} 秒，低于 ${QC.minDur} 秒下限，来不及看清。`);
+    if(dur > QC.maxDur) push('long', 'mid', '停留太长',
+      `${dur.toFixed(1)} 秒，超过 ${QC.maxDur} 秒上限。`);
+    if(cps > QC.hardCps) push('fast', 'high', '读得太快',
+      `${cps.toFixed(1)} 字/秒，超过 ${QC.hardCps}，几乎读不完，建议精简或拆分。`);
+    else if(cps > QC.softCps) push('fast', 'low', '偏快',
+      `${cps.toFixed(1)} 字/秒，舒适区是 ${QC.softCps} 以内。`);
+    if(n > QC.maxChars) push('wide', 'low', '单条太长',
+      `${n} 字，建议不超过 ${QC.maxChars} 字（Netflix 中文为每行 16 字）。`);
+    const nx = cues[i + 1];
+    if(nx){
+      const gap = nx.start - c.end;
+      if(gap < -0.01) push('overlap', 'high', '时间重叠', `与下一条重叠 ${Math.abs(gap).toFixed(2)} 秒。`);
+      else if(gap < QC.minGap) push('flash', 'low', '间隔太窄', `只隔 ${gap.toFixed(2)} 秒，切换时会闪。`);
+    }
+  });
+  return out;
+}
+
+function qcOpen(){
+  if(!state.cues.length){ toast('还没有字幕'); return; }
+  const issues = qcScan(state.cues);
+  const body = $('#qcBody'); body.innerHTML = '';
+  const dur = state.cues.reduce((a, c)=>a + Math.max(0, c.end - c.start), 0);
+  const chars = state.cues.reduce((a, c)=>a + charCount(c.text), 0);
+  $('#qcSummary').textContent =
+    `${state.cues.length} 条 · 平均 ${(chars / Math.max(0.1, dur)).toFixed(1)} 字/秒 · ${issues.length} 处待处理`;
+
+  if(!issues.length){
+    body.innerHTML = '<p style="color:var(--ok)">按 Netflix / EBU 标准检查，没有发现问题。</p>';
+  }else{
+    const order = {high:0, mid:1, low:2};
+    issues.sort((a, b)=>(order[a.sev] - order[b.sev]) || (a.i - b.i));
+    issues.forEach(it=>{
+      const d = document.createElement('div');
+      d.className = 'issue';
+      d.innerHTML = `<div class="t">${it.title}
+          <span class="badge ${it.sev}">${{high:'要紧',mid:'建议改',low:'提示'}[it.sev]}</span>
+          <span class="badge">第 ${it.i + 1} 条 · ${fmtTime(state.cues[it.i].start)}</span></div>
+        <div class="q">${qcEsc(state.cues[it.i].text) || '（空）'}</div>
+        <div class="d">${it.detail}</div>`;
+      const ops = document.createElement('div'); ops.className = 'ops';
+      const b1 = document.createElement('button');
+      b1.textContent = '定位';
+      b1.onclick = ()=>{ seek(it.t); setActive(it.i); qcClose(); };
+      ops.appendChild(b1);
+      if(['short', 'overlap', 'flash'].includes(it.kind)){
+        const b = document.createElement('button');
+        b.textContent = '延长这条';
+        b.onclick = ()=>{ qcFixOne(it.i); qcOpen(); };
+        ops.appendChild(b);
+      }
+      if(['wide', 'fast', 'long'].includes(it.kind)){
+        const b = document.createElement('button');
+        b.textContent = '拆成两条';
+        b.onclick = ()=>{ splitCue(it.i); qcOpen(); };
+        ops.appendChild(b);
+      }
+      if(it.i > 0 && ['short', 'empty', 'fast', 'wide'].includes(it.kind)){
+        const b = document.createElement('button');
+        b.textContent = '并入上一条';
+        b.onclick = ()=>{ mergeCue(it.i); qcOpen(); };
+        ops.appendChild(b);
+      }
+      if(it.kind === 'empty'){
+        const b = document.createElement('button');
+        b.textContent = '删除这条';
+        b.onclick = ()=>{ state.cues.splice(it.i, 1); drawCues(); snapshot('删除空字幕'); qcOpen(); };
+        ops.appendChild(b);
+      }
+      d.appendChild(ops);
+      body.appendChild(d);
+    });
+  }
+  $('#qcMask').classList.add('show');
+}
+function qcClose(){ $('#qcMask').classList.remove('show'); }
+
+function qcFixOne(i){
+  const c = state.cues[i], nx = state.cues[i + 1];
+  const limit = nx ? nx.start - QC.minGap : c.start + QC.maxDur;
+  c.end = Math.min(Math.max(c.end, c.start + QC.minDur), Math.max(limit, c.start + 0.3));
+  drawCues(); state.dirty = true;
+  snapshot('调整时间');
+}
+
+function qcFixAll(){
+  if(!state.cues.length) return;
+  const c = state.cues;
+  c.forEach(x=>{ if(x.end <= x.start) x.end = x.start + 0.5; });
+
+  // 逐条保证最小间隔：前一条压不下去，就把后一条往后挪一点点
+  for(let i = 1; i < c.length; i++){
+    if(c[i].start < c[i - 1].end + QC.minGap - 0.001){
+      const floor = c[i].start - QC.minGap;
+      if(floor >= c[i - 1].start + 0.25){
+        c[i - 1].end = floor;
+      }else{
+        c[i - 1].end = c[i - 1].start + 0.25;
+        c[i].start = c[i - 1].end + QC.minGap;
+      }
+    }
+  }
+  // 补最短停留（不能顶到后一条）
+  for(let i = 0; i < c.length; i++){
+    const cap = c[i + 1] ? c[i + 1].start - QC.minGap : c[i].start + QC.maxDur;
+    if(c[i].end - c[i].start < QC.minDur && cap >= c[i].start + 0.25){
+      c[i].end = Math.min(c[i].start + QC.minDur, cap);
+    }
+    if(c[i].end <= c[i].start) c[i].end = c[i].start + 0.25;
+  }
+  drawCues(); state.dirty = true;
+  snapshot('修复时间轴');
+  toast('时间轴已修复');
+  qcOpen();
+}
+
+function mergeCue(i){
+  if(i <= 0 || !state.cues[i - 1]){ toast('第一条没有上一条可合并'); return false; }
+  const a = state.cues[i - 1], b = state.cues[i];
+  a.text = a.text.replace(/[，,、。；]$/, '') + '，' + b.text.replace(/^[，,、。；]/, '');
+  a.end = Math.max(a.end, b.end);
+  state.cues.splice(i, 1);
+  drawCues(); state.dirty = true;
+  snapshot('合并字幕');
+  toast('已并入上一条');
+  return true;
+}
+
+function splitCue(i){
+  const c = state.cues[i];
+  if(!c) return false;
+  const text = c.text.trim();
+  if(charCount(text) < 4){ toast('太短，拆不开'); return false; }
+  const PUNC = '，。、；：！？,.;:!? ';
+  const mid = Math.floor(text.length / 2);
+  let cut = -1;
+  for(let d = 0; d < 8 && cut < 0; d++){
+    for(const p of [mid - d, mid + d]){
+      if(p > 1 && p < text.length - 1 && PUNC.includes(text[p])){ cut = p; break; }
+    }
+  }
+  if(cut < 0) cut = mid;
+  const skip = PUNC.includes(text[cut]) ? 1 : 0;
+  const a = text.slice(0, cut + skip).trim();
+  const b = text.slice(cut + skip).trim();
+  if(!a || !b){ toast('拆分失败，请手动改'); return false; }
+  const ratio = a.length / (a.length + b.length);
+  const t = c.start + (c.end - c.start) * ratio;
+  state.cues.splice(i, 1,
+    {start:c.start, end:+t.toFixed(3), text:a},
+    {start:+t.toFixed(3), end:c.end, text:b});
+  drawCues(); state.dirty = true;
+  snapshot('拆分字幕');
+  toast('已拆成两条');
+  return true;
+}
+
+/* ---------- 间隙合并 ---------- */
+$('#btnMergeGaps').onclick = ()=>{
+  if(!state.cues.length){ toast('还没有字幕'); return; }
+  let th = parseFloat($('#gapMs').value);
+  if(isNaN(th)) th = 200;
+  th = Math.max(0, Math.min(5000, th)) / 1000;
+  const out = [];
+  let merged = 0;
+  for(const c of state.cues){
+    const prev = out[out.length - 1];
+    const gap = prev ? c.start - prev.end : Infinity;
+    const combined = prev ? prev.text.length + c.text.length : 0;
+    if(prev && gap <= th && combined <= 60){
+      const a = prev.text.replace(/[，,、。；;]$/, '');
+      const b = c.text.replace(/^[，,、。；;]/, '');
+      prev.text = a + (a && b ? '，' : '') + b;
+      prev.end = Math.max(prev.end, c.end);
+      merged++;
+    }else{
+      out.push({...c});
+    }
+  }
+  if(!merged){
+    toast(`没有间隔 ≤ ${Math.round(th*1000)}ms 的相邻句`);
+    return;
+  }
+  state.cues = out;
+  drawCues(); state.dirty = true;
+  snapshot('合并碎句'); drawWave();
+  toast(`合并了 ${merged} 处，剩 ${out.length} 条`);
+};
+
+/* ---------- 时间轴整理 ---------- */
+// modified(v1.2): 借鉴 Aegisub Timing Post-Processor 的「Make adjacent
+// subtitles continuous」与 Subtitle Edit 的 Apply Minimum Gap。体检只报问题，
+// 这里给一键修复；只动时间不动文字，且全程不制造新重叠。
+$('#btnFixTiming').onclick = ()=>{
+  if(!state.cues.length){ toast('还没有字幕'); return; }
+  const MIN_GAP = 0.12;      // 与「字幕体检」的间隔口径一致
+  const MIN_DUR = 0.2;       // 极短句至少留 0.2s
+  let fixed = 0;
+  const cs = state.cues;
+  for(const c of cs){
+    if(c.end - c.start < MIN_DUR){
+      c.end = +(c.start + MIN_DUR).toFixed(3);
+      fixed++;
+    }
+  }
+  for(let i=0; i<cs.length-1; i++){
+    const a = cs[i], b = cs[i+1];
+    const gap = b.start - a.end;
+    if(gap >= MIN_GAP) continue;
+    const shrink = Math.min(MIN_GAP - gap, Math.max(0, a.end - a.start - MIN_DUR));
+    if(shrink > 0) a.end = +(a.end - shrink).toFixed(3);
+    const still = MIN_GAP - (b.start - a.end);
+    if(still > 0){
+      b.start = +(b.start + still).toFixed(3);
+      if(b.end < b.start + MIN_DUR) b.end = +(b.start + MIN_DUR).toFixed(3);
+    }
+    fixed++;
+  }
+  if(!fixed){ toast('时间轴已经整齐，无需调整'); return; }
+  drawCues();
+  snapshot('时间轴整理');
+  drawWave();
+  toast(`整理 ${fixed} 处：重叠已消除，相邻间隔 ≥ ${Math.round(MIN_GAP*1000)}ms`);
+};
+
+/* ---------- 文稿对齐 ---------- */
+function syncAlignToggle(){
+  const box = $('#alignToggle'); if(!box) return;
+  box.querySelectorAll('button[data-m]').forEach(b=>{
+    b.classList.toggle('active', b.dataset.m === state.alignMode);
+  });
+}
+$('#btnAlign').onclick = ()=>{
+  if(!state.stem){ toast('请先转写'); return; }
+  $('#alignCount').textContent = '0 字';
+  $('#alignMask').classList.add('show');
+  setTimeout(()=>$('#alignScript').focus(), 60);
+};
+$('#alignScript').oninput = ()=>{
+  $('#alignCount').textContent = $('#alignScript').value.length + ' 字';
+};
+$('#alignCancel').onclick = ()=>$('#alignMask').classList.remove('show');
+$('#alignMask').onclick = e=>{
+  if(e.target.id === 'alignMask') $('#alignMask').classList.remove('show');
+};
+$('#alignFileBtn').onclick = ()=>$('#alignFile').click();
+$('#alignFile').onchange = async ()=>{
+  const f = $('#alignFile').files[0]; if(!f) return;
+  const t = await f.text();
+  $('#alignScript').value = t;
+  $('#alignScript').dispatchEvent(new Event('input'));
+  $('#alignFile').value = '';
+};
+$('#alignRun').onclick = async ()=>{
+  const script = $('#alignScript').value.trim();
+  if(script.length < 10){ toast('文稿至少 10 个字'); return; }
+  if(state.dirty && !confirm('当前校对稿有未保存的修改。\n对齐会替换字幕，可用 Ctrl+Z 撤销。继续吗？')) return;
+  const btn = $('#alignRun');
+  btn.disabled = true; btn.textContent = '对齐中…';
+  try{
+    const r = await fetch('/api/align', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({stem:state.stem, script})});
+    const d = await r.json();
+    if(d.error){ toast(d.error); return; }
+    state.align = {
+      script: d.cues.map(c=>({...c})),
+      asr: d.cues.map(c=>({...c, text:c.asr_text || c.text}))
+    };
+    state.alignMode = document.querySelector('input[name="alignMode"]:checked').value;
+    state.cues = JSON.parse(JSON.stringify(state.align[state.alignMode]));
+    drawCues(); state.dirty = true;
+    snapshot('文稿对齐'); drawWave();
+    $('#alignMask').classList.remove('show');
+    $('#alignToggle').hidden = false;
+    syncAlignToggle();
+    toast(`对齐完成：${d.total} 句，平均相似度 ${(d.similarity*100).toFixed(0)}%`);
+  }catch(e){ toast('对齐失败：'+e.message); }
+  finally{ btn.disabled = false; btn.textContent = '开始对齐'; }
+};
+$('#alignToggle').onclick = e=>{
+  const b = e.target.closest('button[data-m]');
+  if(!b || !state.align || b.dataset.m === state.alignMode) return;
+  if(state.dirty && !confirm('切换会覆盖当前字幕（可撤销）。继续吗？')) return;
+  state.alignMode = b.dataset.m;
+  state.cues = JSON.parse(JSON.stringify(state.align[state.alignMode]));
+  drawCues(); state.dirty = true;
+  snapshot('切换对齐方式'); drawWave();
+  syncAlignToggle();
+  toast(state.alignMode === 'script' ? '已切换到按文稿' : '已切换到按识别');
+};
+
+$('#btnQC').onclick = qcOpen;
+$('#qcClose').onclick = qcClose;
+$('#qcFix').onclick = qcFixAll;
+$('#qcMask').onclick = e=>{ if(e.target.id === 'qcMask') qcClose(); };
+
+/* ══════════════════ 改稿工作台（七遍法） ══════════════════ */
+
+const rvEsc = s => String(s == null ? '' : s)
+  .replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const rvCjk = s => (String(s || '').match(/[\u4e00-\u9fff]/g) || []).length;
+
+const rv = {
+  stem:'', step:0, text:'', versions:{}, issues:{}, notes:{},
+  keep:{}, density:'mid', checked:{}, meta:null, busy:false
+};
+const RV_KEY = 'asr_rev_v1';
+let rvSaveTimer = null;
+
+function rvStore(){
+  try{
+    localStorage.setItem(RV_KEY, JSON.stringify({
+      stem:rv.stem, step:rv.step, versions:rv.versions, issues:rv.issues,
+      notes:rv.notes, keep:rv.keep, density:rv.density, checked:rv.checked, text:rv.text
+    }));
+  }catch(e){}
+}
+function rvRestore(){
+  try{
+    const d = JSON.parse(localStorage.getItem(RV_KEY) || 'null');
+    if(!d || !d.versions) return false;
+    Object.assign(rv, d);
+    return Object.keys(rv.versions).length > 0;
+  }catch(e){ return false; }
+}
+function rvPersist(n, text){
+  clearTimeout(rvSaveTimer);
+  rvSaveTimer = setTimeout(()=>{
+    fetch('/api/revise/save', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({stem: rv.stem || '未命名', pass:n, text})}).catch(()=>{});
+  }, 1200);
+}
+
+async function rvInit(){
+  if(rv.meta) return;
+  const d = await (await fetch('/api/revise/meta')).json();
+  rv.meta = d.passes;
+}
+
+/* ---------- 工作区切换 ---------- */
+async function switchWs(name){
+  const isRev = name === 'revise';
+  document.body.classList.toggle('rev-mode', isRev);
+  $('#wsTranscribe').hidden = isRev;
+  $('#wsRevise').hidden = !isRev;
+  $('#tabTranscribe').classList.toggle('active', !isRev);
+  $('#tabRevise').classList.toggle('active', isRev);
+  if(!isRev) return;
+  await rvInit();
+  if(!rv.stem) rv.stem = state.stem || '未命名';
+  rvRender();
+}
+$('#tabTranscribe').onclick = ()=>switchWs('transcribe');
+$('#tabRevise').onclick = ()=>switchWs('revise');
+
+$('#btnToRevise').onclick = async ()=>{
+  await switchWs('revise');
+  if(!rv.versions[0] || !rv.versions[0].trim()) rvLoadFromTranscribe();
+};
+
+/* ---------- 渲染 ---------- */
+function rvRender(){
+  if(!rv.meta) return;
+  const m = rv.meta.find(p => p.n === rv.step) || rv.meta[0];
+  $('#revTitle').textContent = rv.step === 0 ? '原稿' : `第 ${rv.step} 遍 · ${m.name}`;
+  const tag = $('#revTag');
+  tag.className = 'revtag ' + m.level;
+  tag.textContent = {auto:'全自动', semi:'半自动', manual:'人工'}[m.level] || '';
+  $('#revText').value = rv.versions[rv.step] ?? '';
+  rvRenderSteps(); rvStats(); rvRenderSide();
+  $('#btnRevPrev').disabled = rv.step === 0;
+  $('#btnRevRerun').disabled = rv.step === 0 || rv.busy;
+  const run = $('#btnRevRun');
+  run.disabled = rv.step >= 7 || rv.busy;
+  run.textContent = rv.step >= 7 ? '七遍已完成' : `执行第 ${rv.step + 1} 遍`;
+  const last = Math.max(...Object.keys(rv.versions).map(Number));
+  $('#btnRevExport').disabled = !(rv.versions[last] && rv.versions[last].trim());
+}
+
+function rvRenderSteps(){
+  const box = $('#revSteps'); box.innerHTML = '';
+  for(const p of rv.meta){
+    const has = rv.versions[p.n] !== undefined;
+    const b = document.createElement('button');
+    b.className = 'step ' + (p.n === rv.step ? 'cur' : (has ? 'done' : 'pending'));
+    b.innerHTML = `<b>${p.n === 0 ? '原稿' : '第 ' + p.n + ' 遍'}</b><i>${rvEsc(p.name)}</i>`;
+    b.title = p.desc;
+    b.onclick = ()=>{
+      if(!has && p.n !== 0){ toast('这一遍还没跑'); return; }
+      rvGoto(p.n);
+    };
+    box.appendChild(b);
+  }
+}
+
+function rvGoto(n){
+  rv.step = n;
+  rv.text = rv.versions[n] ?? '';
+  rvRender(); rvStore();
+}
+
+function rvStats(){
+  const cur = rvCjk(rv.versions[rv.step] ?? '');
+  const base = rvCjk(rv.versions[0] ?? '');
+  let s = `第 ${rv.step} 遍 · ${cur} 字`;
+  if(rv.step > 0 && base){
+    const pct = Math.round((1 - cur / base) * 100);
+    s += ` · 较原稿${pct >= 0 ? '压缩 ' + pct : '增加 ' + (-pct)}%`;
+  }
+  $('#revStats').textContent = s;
+}
+
+function rvAdd(box, html){
+  const t = document.createElement('div');
+  t.innerHTML = html;
+  while(t.firstChild) box.appendChild(t.firstChild);
+}
+
+function rvRenderSide(){
+  const box = $('#sideBody'); box.innerHTML = '';
+  const n = rv.step;
+  const m = rv.meta.find(p => p.n === n) || rv.meta[0];
+  $('#sideTitle').textContent = n === 0 ? '改稿说明' : `第 ${n} 遍 · ${m.name}`;
+  $('#sideMeta').textContent = {auto:'工具全自动', semi:'工具建议 + 人工确认', manual:'人工判断'}[m.level] || '';
+  rvAdd(box, `<div class="desc">${rvEsc(m.desc)}</div>`);
+  if(n === 0) rvSide0(box);
+  else if(n === 1) rvSide1(box);
+  else if(n === 2) rvSide2(box);
+  else if(n === 3) rvSideIssues(box, 3, '没有发现明显的重复。同义改写式的绕圈工具抓不到，需要你边读边删。');
+  else if(n === 4) rvSideIssues(box, 4, '没有发现语法问题。');
+  else if(n === 5) rvSideIssues(box, 5, '没有命中口语词。');
+  else if(n === 6) rvSide6(box);
+  else if(n === 7) rvSide7(box);
+}
+
+/* ---------- 各遍侧栏 ---------- */
+function rvSide0(box){
+  const cues = (state.raw && state.raw.length) ? state.raw : state.cues;
+  const has = cues && cues.length;
+  const btn = document.createElement('button');
+  btn.className = 'primary';
+  btn.textContent = has ? `用当前转写结果加载（${cues.length} 句）` : '暂无转写结果';
+  btn.disabled = !has;
+  btn.style.width = '100%';
+  btn.onclick = rvLoadFromTranscribe;
+  box.appendChild(btn);
+
+  rvAdd(box, `<div class="note"><b>这套流程的核心是「分遍」，不是「一次改好」。</b>
+    第一遍就想让稿子像写的，会把讲话人的声音整个抹掉 —— 那是录音里最值钱的东西。</div>`);
+  rvAdd(box, `<table class="tbl">
+    <tr><th>遍次</th><th>动作</th><th>谁来做</th></tr>
+    <tr><td>1</td><td>删填充词</td><td>工具</td></tr>
+    <tr><td>2</td><td>分段</td><td>工具</td></tr>
+    <tr><td>3</td><td>去绕圈</td><td>你判断</td></tr>
+    <tr><td>4</td><td>语法修复</td><td>工具建议，你确认</td></tr>
+    <tr><td>5</td><td>书面化</td><td>你按语境选</td></tr>
+    <tr><td>6</td><td>事实核对</td><td>必须人工</td></tr>
+    <tr><td>7</td><td>通读朗读</td><td>必须人工</td></tr>
+  </table>`);
+  rvAdd(box, `<div class="note">原稿单独存一份，任何一遍都不会覆盖它。每执行一遍，
+    服务端会留一个版本文件（v0–v7），随时可以退回来看。</div>`);
+}
+
+function rvSide1(box){
+  const nt = rv.notes[1] || {};
+  const words = nt.removed_by_word || {};
+  const total = Object.values(words).reduce((a, b) => a + b, 0);
+  rvAdd(box, `<div class="kv">共删除 <b>${total}</b> 处填充词</div>`);
+  const top = nt.top || [];
+  if(!top.length){ rvAdd(box, '<p>这一遍没删到填充词 —— 稿子本来就干净。</p>'); return; }
+  rvAdd(box, '<p>删得最多的几个词。若其中某个是说话人的标志性习惯，留两三处，别全磨平：</p>');
+  for(const w of top){
+    const d = document.createElement('div');
+    d.className = 'wordchip';
+    d.innerHTML = `<b>${rvEsc(w.word)}</b><span class="c">删了 ${w.count} 处</span>`;
+    const b = document.createElement('button');
+    b.textContent = rv.keep[w.word] ? '已保留' : '保留 2 处';
+    b.disabled = !!rv.keep[w.word];
+    b.onclick = ()=>{ rv.keep[w.word] = 2; rvRunPass(1); };
+    d.appendChild(b);
+    box.appendChild(d);
+  }
+  rvAdd(box, `<div class="note">调整后会从原稿重跑第 1 遍，后面几遍需要重做。</div>`);
+
+  const edit = document.createElement('button');
+  edit.textContent = '编辑口语词表';
+  edit.style.width = '100%';
+  edit.onclick = ()=>$('#btnTerms').click();
+  box.appendChild(edit);
+  rvAdd(box, `<div class="note" style="margin-top:8px">上面统计的就是词表在起作用。
+    改完词表回到这里点「重跑本遍」，第 1 遍会用新词表重来。</div>`);
+}
+
+function rvSide2(box){
+  const nt = rv.notes[2] || {};
+  rvAdd(box, `<div class="kv">切成 <b>${nt.paras || 0}</b> 段，最长一段 <b>${nt.longest || 0}</b> 字</div>`);
+  rvAdd(box, '<p>分段密度：</p>');
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:10px';
+  [['low','少一些'],['mid','适中'],['high','多一些']].forEach(([k, label])=>{
+    const b = document.createElement('button');
+    b.textContent = label;
+    if(rv.density === k) b.className = 'primary';
+    b.onclick = ()=>{ rv.density = k; rvRunPass(2); };
+    row.appendChild(b);
+  });
+  box.appendChild(row);
+  (nt.spec || []).forEach(p=>{
+    const d = document.createElement('div');
+    d.className = 'issue pair';
+    d.innerHTML = `<div class="t">第 ${p.para} 段<span class="badge">${p.chars} 字</span></div>
+      <div class="q">${rvEsc(p.head)}…</div>`;
+    box.appendChild(d);
+  });
+  rvAdd(box, `<div class="note">工具按话题标记、设问和字数切。不满意可以直接在左边按回车手动分段，再点「重跑本遍」不会覆盖你手改的部分 —— 手改请留在编辑区。</div>`);
+}
+
+function rvSideIssues(box, n, emptyText){
+  const list = rv.issues[n] || [];
+  if(!list.length){ rvAdd(box, `<p>${emptyText}</p>`); return; }
+  rvAdd(box, `<div class="kv">共 <b>${list.length}</b> 处待判断</div>`);
+  list.forEach((it, i)=>{
+    const d = document.createElement('div');
+    d.className = 'issue';
+    const sev = it.severity || 'mid';
+    d.innerHTML = `<div class="t">${rvEsc(it.title)}
+        <span class="badge ${sev}">${{high:'要紧', mid:'建议改', low:'提示'}[sev] || ''}</span></div>
+      <div class="q">${rvEsc(it.quote)}</div>
+      <div class="d">${rvEsc(it.detail)}</div>`;
+    if(it.options && it.options.length){
+      const ops = document.createElement('div');
+      ops.className = 'ops';
+      it.options.forEach(opt=>{
+        const b = document.createElement('button');
+        b.textContent = opt.label;
+        b.onclick = ()=>rvApply(n, i, opt);
+        ops.appendChild(b);
+      });
+      const skip = document.createElement('button');
+      skip.textContent = '保留原样';
+      skip.onclick = ()=>rvSkipIssue(n, i);
+      ops.appendChild(skip);
+      d.appendChild(ops);
+    } else {
+      const ops = document.createElement('div');
+      ops.className = 'ops';
+      const b = document.createElement('button');
+      b.textContent = '已手动处理';
+      b.onclick = ()=>rvSkipIssue(n, i);
+      ops.appendChild(b);
+      d.appendChild(ops);
+    }
+    box.appendChild(d);
+  });
+}
+
+function rvSide6(box){
+  const items = (rv.notes[6] || {}).items || [];
+  if(!items.length){ rvAdd(box, '<p>稿子里没有数字、法条、日期这类需要回听的硬信息。</p>'); return; }
+  const done = items.filter(it => rv.checked[rvChkKey(it)]).length;
+  rvAdd(box, `<div class="kv">已核对 <b>${done}</b> / ${items.length}</div>`);
+  items.forEach(it=>{
+    const k = rvChkKey(it);
+    const d = document.createElement('label');
+    d.className = 'issue';
+    d.style.cssText = 'display:block;cursor:pointer';
+    d.innerHTML = `<div class="t"><input type="checkbox" ${rv.checked[k] ? 'checked' : ''}>
+        <span class="badge">${rvEsc(it.kind)}</span>${rvEsc(it.value)}</div>
+      <div class="d">${rvEsc(it.context)}</div>`;
+    d.querySelector('input').onchange = e=>{
+      if(e.target.checked) rv.checked[k] = 1; else delete rv.checked[k];
+      rvStore(); rvRenderSide();
+    };
+    box.appendChild(d);
+  });
+  rvAdd(box, `<div class="note"><b>这一步必须人工。</b>每个数字、法条、引述都要能追溯到原录音，
+    不编造、不补全、不「合理润色」。工具只负责把它们挑出来。</div>`);
+}
+
+function rvSide7(box){
+  rvAdd(box, '<p>听一遍。哪里读着磕绊、哪里不像本人说话，就退回去改。</p>');
+  const b = document.createElement('button');
+  b.className = 'primary';
+  b.textContent = '生成朗读音频';
+  b.style.width = '100%';
+  b.onclick = async ()=>{
+    b.disabled = true; b.textContent = '正在合成…';
+    try{
+      const text = (rv.versions[rv.step] || '').replace(/\n+/g, '。').slice(0, 1500);
+      const r = await fetch('/api/revise/tts', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})});
+      const d = await r.json();
+      if(d.error){ toast(d.error); b.disabled = false; b.textContent = '生成朗读音频'; return; }
+      const au = document.createElement('audio');
+      au.controls = true; au.autoplay = true; au.style.cssText = 'width:100%;margin-top:10px';
+      au.src = d.url;
+      box.appendChild(au);
+      if(d.truncated) rvAdd(box, `<div class="note">只念了前 ${d.chars} 字（合成有长度上限）。</div>`);
+    }catch(e){ toast('合成失败'); }
+    b.disabled = false; b.textContent = '重新生成';
+  };
+  box.appendChild(b);
+  const list = rv.issues[7] || [];
+  if(list.length){
+    rvAdd(box, `<div class="kv" style="margin-top:12px">还有 <b>${list.length}</b> 处读起来可能不顺</div>`);
+    list.slice(0, 12).forEach(it=>{
+      rvAdd(box, `<div class="issue"><div class="t">${rvEsc(it.title)}</div>
+        <div class="q">${rvEsc(it.quote)}</div><div class="d">${rvEsc(it.detail)}</div></div>`);
+    });
+  }
+  rvAdd(box, `<div class="note">全磨平的稿子「像没有人写的」。留两三个最能代表说话人的习惯，
+    比通篇干净更重要。</div>`);
+}
+
+/* ---------- 执行与编辑 ---------- */
+const rvChkKey = it => `${rv.stem}|${it.kind}|${it.value}`;
+
+async function rvRunPass(n){
+  if(rv.busy) return;
+  const src = rv.versions[n - 1];
+  if(src === undefined){ toast('请先完成上一遍'); return; }
+  rv.busy = true;
+  const run = $('#btnRevRun');
+  run.textContent = '执行中…'; run.disabled = true;
+  try{
+    const opts = n === 1 ? {keep: rv.keep} : (n === 2 ? {density: rv.density} : {});
+    const r = await fetch('/api/revise', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({pass:n, text:src, opts})});
+    const d = await r.json();
+    if(d.error){ toast(d.error); return; }
+    const wiped = Object.keys(rv.versions).filter(k => Number(k) > n).length;
+    for(let k = n + 1; k <= 7; k++){
+      delete rv.versions[k]; delete rv.issues[k]; delete rv.notes[k];
+    }
+    rv.versions[n] = d.text;
+    rv.issues[n] = d.issues || [];
+    rv.notes[n] = d.notes || {};
+    rv.step = n; rv.text = d.text;
+    rvPersist(n, d.text);
+    rvStore(); rvRender();
+    const c = (d.issues || []).length;
+    toast(c ? `第 ${n} 遍完成，有 ${c} 处待确认` : `第 ${n} 遍完成` + (wiped ? '（后面的遍次需重做）' : ''));
+  }finally{
+    rv.busy = false; rvRender();
+  }
+}
+
+function rvApply(n, idx, opt){
+  const list = rv.issues[n] || [];
+  const it = list[idx];
+  if(!it) return;
+  const lines = String(rv.versions[n] || '').split('\n');
+  const li = (opt.line !== undefined && opt.line !== null) ? opt.line : it.line;
+  let line = lines[li];
+  if(line === undefined){ toast('定位失败，请手动修改'); return; }
+
+  let ok = false;
+  if(opt.regex){
+    const nv = line.replace(new RegExp(opt.regex, 'g'), opt.replace);
+    ok = nv !== line; line = nv;
+  } else if(opt.find){
+    const p = line.indexOf(opt.find);
+    if(p >= 0){
+      line = line.slice(0, p) + (opt.with || '') + line.slice(p + opt.find.length);
+      ok = true;
+    }
+  }
+  if(!ok){ toast('没找到要改的内容，可能已经改过了'); return; }
+
+  lines[li] = line;
+  let removedAt = -1;
+  if(!line.trim() && lines.length > 1){ lines.splice(li, 1); removedAt = li; }
+  rv.versions[n] = lines.join('\n');
+  rv.text = rv.versions[n];
+
+  if(removedAt >= 0){
+    list.forEach(x=>{
+      if(x.line > removedAt) x.line--;
+      (x.options || []).forEach(o=>{
+        if(o.line !== undefined && o.line !== null && o.line > removedAt) o.line--;
+      });
+    });
+  }
+  list.splice(idx, 1);
+  $('#revText').value = rv.text;
+  rvPersist(n, rv.text); rvStore(); rvStats(); rvRenderSide();
+  toast('已改');
+}
+
+function rvSkipIssue(n, idx){
+  const list = rv.issues[n];
+  if(!list) return;
+  list.splice(idx, 1);
+  rvStore(); rvRenderSide();
+  toast('已跳过，保留原样');
+}
+
+function rvLoadFromTranscribe(){
+  const cues = (state.raw && state.raw.length) ? state.raw : state.cues;
+  if(!cues || !cues.length){ toast('还没有转写结果'); return; }
+  if(rv.versions[0] && rv.versions[0].trim() &&
+     !confirm('已经有一份原稿了，用转写结果覆盖吗？')) return;
+  rv.stem = state.stem || '未命名';
+  rv.versions = {0: cues.map(c => c.text).join('\n')};
+  rv.issues = {}; rv.notes = {}; rv.keep = {}; rv.checked = {}; rv.step = 0;
+  rv.text = rv.versions[0];
+  rvPersist(0, rv.text); rvStore(); rvRender();
+  toast(`已载入 ${cues.length} 句，可以开始第 1 遍`);
+}
+
+/* ---------- 事件绑定 ---------- */
+$('#revText').addEventListener('input', e=>{
+  rv.text = e.target.value;
+  rv.versions[rv.step] = rv.text;
+  rvStats(); rvStore(); rvPersist(rv.step, rv.text);
+});
+$('#btnRevRun').onclick = ()=>rvRunPass(rv.step + 1);
+$('#btnRevRerun').onclick = ()=>rvRunPass(rv.step);
+$('#btnRevPrev').onclick = ()=>{ if(rv.step > 0) rvGoto(rv.step - 1); };
+
+$('#btnRevExport').onclick = e=>{
+  e.stopPropagation();
+  $('#revMenu').hidden = !$('#revMenu').hidden;
+};
+document.addEventListener('click', e=>{
+  if(!e.target.closest('.menu-wrap')) $('#revMenu').hidden = true;
+});
+document.querySelectorAll('#revMenu a').forEach(a=>{
+  a.onclick = async ()=>{
+    const fmt = a.dataset.fmt;
+    const text = rv.versions[rv.step] ?? rv.text;
+    if(!text.trim()){ toast('没有内容可导出'); return; }
+    const r = await fetch('/api/revise/export', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({fmt, stem: rv.stem || '成稿', text})});
+    if(!r.ok){ toast('导出失败'); return; }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement('a');
+    el.href = url; el.download = `${rv.stem || '成稿'}.${fmt}`;
+    el.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    $('#revMenu').hidden = true;
+    toast('已导出 ' + el.download);
+  };
+});
+
+/* 快捷键：改稿区里 Ctrl+Enter 跑下一遍 */
+document.addEventListener('keydown', e=>{
+  if(e.ctrlKey && e.key === 'Enter' && !$('#wsRevise').hidden){
+    e.preventDefault();
+    if(rv.step < 7) rvRunPass(rv.step + 1);
+  }
+});
+
+
+/* ---------- 演示模式：URL 加 ?demo=1 查看有数据时的界面 ---------- */
+if(location.search.includes('demo=1')){
+  const demo = [
+    {index:1,start:0.25,end:2.15,text:'各位同仁，大家好。'},
+    {index:2,start:2.73,end:6.75,text:'那么今天我们来讲一下两品一械的这个监管要求。'},
+    {index:3,start:7.41,end:10.43,text:'我们来看第一个部分'},
+    {index:4,start:10.43,end:13.65,text:'药品经营质量管理规范的基本框架。'},
+    {index:5,start:14.23,end:17.08,text:'这个大家在日常检查中间呢，'},
+    {index:6,start:17.08,end:19.93,text:'一定要注意那个批号的追溯问题。'},
+    {index:7,start:20.45,end:26.29,text:'就是说我们发现很多企业在冷链药品的温湿度监测上是不到位的。'},
+    {index:8,start:26.83,end:28.89,text:'这里要特别强调的是，'},
+    {index:9,start:28.89,end:35.26,text:'药品上市许可持有人不得委托无资质的企业储运药品。'},
+    {index:10,start:35.26,end:40.19,text:'飞行检查的时候，我们会重点看记录是不是完整。'},
+    {index:11,start:40.61,end:41.93,text:'假药和劣药的界定标准，大家一定要搞清楚。'},
+    {index:12,start:42.55,end:51.63,text:'无证经营和挂靠经营、走票过票，这些都属于严重违法行为，禁止出租出借证照。'}
+  ];
+  setTimeout(()=>{
+    mountPlayer('', 'audio');
+    renderFileCard({name:'演示课程.mp3', size:12.4*1048576, kind:'audio',
+                    path:'（演示模式，不读取本机文件）'});
+    $('#fileChip').textContent = '演示课程.mp3 · 12.4 MB';
+    renderResult({stem:'演示课程', cues:demo, clean_cues:demo, chars:326, elapsed:5.3,
+                  report_text:'（演示模式下不显示变更报告）'});
+    setFileStatus('识别完成','done');
+    setStatus('演示模式（真实转写结果样例）','done');
+  }, 200);
+}
+
+/* 截图/演示用：URL 加 menu=1 时自动展开下载菜单 */
+if(location.search.includes('menu=1')){
+  setTimeout(()=>{ const m=$('#dlMenu'); if(m) m.hidden = false; }, 500);
+}
+
+/* 截图/演示用：URL 加 align=1 时自动打开文稿对齐 */
+if(location.search.includes('align=1')){
+  setTimeout(()=>{ const b=$('#btnAlign'); if(b) b.click(); }, 700);
+}
+
+/* 截图/调试用：URL 加 open=1 时自动打开最近一条已完成任务 */
+if(location.search.includes('open=1')){
+  setTimeout(async ()=>{
+    try{
+      const r = await fetch('/api/tasks');
+      const d = await r.json();
+      const t = (d.tasks || []).find(x => x.status === 'done');
+      if(t) taskAct(t.id, 'open');
+    }catch(e){}
+  }, 700);
+}
+
+/* 调试/回归参数：zoom=1 把波形放大到中间 20%，用于核对缩放后
+   波形本体与句边界线、播放头是否同步（v1.1 曾在这里错位） */
+if(location.search.includes('zoom=1')){
+  setTimeout(()=>{
+    if(!state.peaks) return;
+    const dur = state.peaks.duration || 1;
+    state.waveView = {start: dur*0.4, end: dur*0.6};
+    drawWave();
+  }, 1800);
+}
+/* 调试/回归参数：fix=1 自动触发一次时间轴整理 */
+if(location.search.includes('fix=1')){
+  setTimeout(()=>{ const b=$('#btnFixTiming'); if(b) b.click(); }, 2000);
+}
+
+/* 上次没改完的稿子：刷新后自动恢复（只存本机浏览器） */
+rvRestore();
+
+/* 任务列表：启动时接回历史任务，之后每 4 秒刷新一次 */
+if(!state.demo){
+  refreshTasks();
+  setInterval(()=>{ if(!document.hidden) refreshTasks(); }, 4000);
+}
+
+/* 有未保存的校对稿时离开，提醒一下 */
+window.addEventListener('beforeunload', e=>{
+  if(state.dirty){ e.preventDefault(); e.returnValue = ''; }
+});
+
+/* ---------- 快捷键 ---------- */
+document.addEventListener('keydown', e=>{
+  const tag = (e.target.tagName||'').toLowerCase();
+  if(tag === 'input' || tag === 'textarea' || e.target.isContentEditable) return;
+  const p = state.player;
+  const inTx = !$('#wsTranscribe').hidden;
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === 'z' && inTx){
+    e.preventDefault(); histGo(e.shiftKey ? 1 : -1); return;
+  }
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === 'y' && inTx){
+    e.preventDefault(); histGo(1); return;
+  }
+  if(e.code === 'Space'){ e.preventDefault(); if(p) p.paused ? p.play() : p.pause(); }
+  else if(e.key === 'ArrowLeft'){ e.preventDefault(); if(p) seek(p.currentTime-5); }
+  else if(e.key === 'ArrowRight'){ e.preventDefault(); if(p) seek(p.currentTime+5); }
+  else if(e.key === 'ArrowUp'){ e.preventDefault(); jump(-1); }
+  else if(e.key === 'ArrowDown'){ e.preventDefault(); jump(1); }
+  else if((e.ctrlKey||e.metaKey) && e.key === 'f'){ e.preventDefault(); $('#btnFind').click(); }
+});
+</script>
+</body>
+</html>
