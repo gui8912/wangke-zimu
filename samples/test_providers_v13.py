@@ -189,8 +189,10 @@ def unit():
     d = S.api_diff({"before": "甲\n乙", "after": "甲\n乙改\n丙"})
     assert d["restored"] == "甲\n乙" and d["ops"]
     h = S.api_health()
-    assert h["version"] == "1.3" and h["provider"] == "local-qwen3"
-    ok("服务端函数：providers / diff / health v1.3")
+    # 【修改 v1.4】原来硬编码 == "1.3"，每次升版都要改测试；改为下限比较
+    ver = tuple(int(x) for x in str(h["version"]).split("."))
+    assert ver >= (1, 3) and h["provider"] == "local-qwen3", h
+    ok(f"服务端函数：providers / diff / health v{h['version']}")
 
     # 12. /api/tracks 路径穿越防护
     old_out = S.OUT

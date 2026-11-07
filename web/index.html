@@ -76,7 +76,10 @@
         border-color:var(--primary)}
 
   /* 顶栏 */
-  .topbar{display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--card);
+  /* 【修改 v1.4】加 flex-wrap：顶栏控件随功能增多（识别源/数字规整/云端整理稿）
+     已接近 1400px 临界宽度，窄窗口下必须能换行，否则会挤压或溢出 */
+  .topbar{display:flex;align-items:center;gap:12px;row-gap:6px;flex-wrap:wrap;
+          padding:10px 18px;background:var(--card);
           border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
   .brand{font-weight:600;font-size:var(--fs-15);white-space:nowrap}
   .brand small{display:block;font-weight:400;font-size:var(--fs-11);color:var(--muted)}
@@ -376,6 +379,8 @@
     <option value="auto">自动检测</option>
   </select>
   <label class="chk lo-tx"><input type="checkbox" id="clean" checked>清理口语</label>
+  <label class="chk lo-tx" title="百分之九十八点五 → 98.5%、三百五十家 → 350家；法规条款号（第一百二十条）与监管术语（四不两直）永不改动">
+    <input type="checkbox" id="itn" checked>数字规整</label>
   <label class="chk lo-tx" title="云端自带整理稿时跳过本地口语清理，避免双重改写">
     <input type="checkbox" id="useScriptTrack" disabled>云端整理稿</label>
   <button class="primary lo-tx" id="btnStart" disabled>开始转写</button>
@@ -1234,6 +1239,8 @@ $('#btnStart').onclick = async ()=>{
   fd.append('provider', $('#model').value);
   fd.append('use_script_track', $('#useScriptTrack').checked ? 'true' : 'false');
   fd.append('clean', $('#clean').checked ? 'true' : 'false');
+  // 【新增 v1.4】数字规整；关闭时服务端保留纯汉字数字写法
+  fd.append('itn', $('#itn').checked ? 'true' : 'false');
   fd.append('language', $('#lang').value);
   const r = await fetch('/api/transcribe', {method:'POST', body:fd});
   const d = await r.json();
@@ -1692,6 +1699,8 @@ $('#btnReclean').onclick = async ()=>{
   const fd = new FormData();
   fd.append('file_id', state.fileId || '');
   fd.append('cues_json', JSON.stringify(state.raw));
+  // 【新增 v1.4】重新清理同样遵守数字规整开关
+  fd.append('itn', $('#itn').checked ? 'true' : 'false');
   const r = await fetch('/api/reclean', {method:'POST', body:fd});
   const d = await r.json();
   if(d.error){ setStatus(d.error,'err'); return; }

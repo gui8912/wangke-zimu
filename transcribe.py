@@ -422,7 +422,8 @@ def write_outputs(item: dict, stem: str, outdir: Path, meta: dict) -> dict:
 def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True,
                  outdir=None, device: str = "cpu", hotword_file=None,
                  language: str = "Chinese", log=print,
-                 provider_key: str = None, use_script_track: bool = False) -> dict:
+                 provider_key: str = None, use_script_track: bool = False,
+                 itn: bool = True) -> dict:
     """完整流程，命令行与图形界面共用。返回结构化结果。
 
     【修改 v1.3】新增 provider_key / use_script_track 两个可选参数，默认 None/False
@@ -534,7 +535,8 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
     if do_clean:
         import clean_transcript as ct
         cleaner = ct.Cleaner(ct.load_rules(BASE / "rules" / "filler_words.json"),
-                             ct.load_corrections(BASE / "terms" / "corrections.txt"))
+                             ct.load_corrections(BASE / "terms" / "corrections.txt"),
+                             itn=itn)   # 【新增 v1.4】受限数字规整
 
         # 文档走句子级（不按字幕断行，读起来是完整句子）
         doc, rows = [], []
@@ -593,7 +595,9 @@ def process(src: Path, args, outdir: Path, hotword: str):
                      log=lambda m: print(f"  {m}"),
                      # 【新增 v1.3】CLI 也能指定识别源；不传则保持原行为
                      provider_key=getattr(args, "provider", None),
-                     use_script_track=getattr(args, "use_script_track", False))
+                     use_script_track=getattr(args, "use_script_track", False),
+                     # 【新增 v1.4】数字规整默认开，--no-itn 可关
+                     itn=not getattr(args, "no_itn", False))
     print(f"    → {r['srt_path'].name}")
 
 
@@ -614,6 +618,10 @@ def main():
                          "tencent-cloud/volcengine-doubao")
     ap.add_argument("--use-script-track", action="store_true",
                     help="云端自带整理稿时跳过本地口语清理，避免双重改写")
+    # 【新增 v1.4】数字规整（默认开）：百分之九十八点五 → 98.5%；
+    # 条款号（第一百二十条）与监管术语（四不两直）永不改动
+    ap.add_argument("--no-itn", action="store_true",
+                    help="关闭数字规整，保留纯汉字数字写法")
     ap.add_argument("--list-models", action="store_true")
     args = ap.parse_args()
 

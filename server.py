@@ -392,7 +392,9 @@ def _worker(task_id: str):
                            language=task.get("language") or "Chinese", log=log,
                            # 【新增 v1.3】识别源与双轨开关；未指定时走本地，零回归
                            provider_key=task.get("provider"),
-                           use_script_track=bool(task.get("use_script_track")))
+                           use_script_track=bool(task.get("use_script_track")),
+                           # 【新增 v1.4】数字规整；历史任务无此字段时默认开
+                           itn=bool(task.get("itn", True)))
         raw_cues = parse_cues(r["raw_srt_text"])
         clean_cues = parse_cues(r["clean_srt_text"]) if r["clean_srt_text"] else None
 
@@ -534,7 +536,8 @@ async def media(fid: str):
 @app.post("/api/transcribe")
 async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
                      clean: bool = Form(True), language: str = Form("Chinese"),
-                     provider: str = Form(""), use_script_track: bool = Form(False)):
+                     provider: str = Form(""), use_script_track: bool = Form(False),
+                     itn: bool = Form(True)):
     info = UPLOADS.get(file_id)
     if not info:
         return JSONResponse({"error": "请先上传文件"}, status_code=400)
@@ -569,7 +572,9 @@ async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
                   "path": str(info["path"]), "model": model, "clean": clean,
                   "language": language, "created": time.time(),
                   # 【新增 v1.3】
-                  "provider": pid, "use_script_track": bool(use_script_track)}
+                  "provider": pid, "use_script_track": bool(use_script_track),
+                  # 【新增 v1.4】数字规整开关
+                  "itn": bool(itn)}
     _persist(tid)
     JOB_Q.put(tid)
     _prune_tasks(MAX_TASKS)
@@ -723,7 +728,8 @@ def save_terms(payload: dict):
 
 
 @app.post("/api/reclean")
-async def reclean(file_id: str = Form(...), cues_json: str = Form(...)):
+async def reclean(file_id: str = Form(...), cues_json: str = Form(...),
+                  itn: bool = Form(True)):
     """用当前口语词表重新清理一份字幕（输入是前端当前的原始 cues）"""
     # modified: 原来直接 json.loads，非法 JSON 会 500；这里统一兜成 400
     try:
@@ -734,7 +740,8 @@ async def reclean(file_id: str = Form(...), cues_json: str = Form(...)):
         return JSONResponse({"error": f"字幕数据格式错误：{exc}"}, status_code=400)
 
     cleaner = CT.Cleaner(CT.load_rules(RULES),
-                         CT.load_corrections(BASE / "terms" / "corrections.txt"))
+                         CT.load_corrections(BASE / "terms" / "corrections.txt"),
+                         itn=itn)   # 【新增 v1.4】受限数字规整
     out, hit, tips, seen = [], 0, [], set()      # modified: 去重从 O(n²) 列表查改成 set
     for c in cues:
         if not isinstance(c, dict):
@@ -862,7 +869,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.3",       # 【修改 v1.3】
+    return {"ok": True, "version": "1.4",       # 【修改 v1.4】
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

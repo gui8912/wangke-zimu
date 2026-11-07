@@ -28,6 +28,12 @@ BASE = Path(__file__).resolve().parent
 RULES = BASE / "rules" / "filler_words.json"
 CORRECTIONS = BASE / "terms" / "corrections.txt"
 
+# 【新增 v1.4】受限 ITN：只转明确计量语境的中文数字，条款号与监管术语不动
+try:
+    import itn_zh as ITN
+except Exception:            # 缺模块时不影响原有清洗
+    ITN = None
+
 # 句首 / 句尾判定用的标点集合
 _PUNCT = "，。！？；：、,.;:?!…"
 _HEAD_RE = r"(^|[%s\s])" % re.escape(_PUNCT)
@@ -89,10 +95,14 @@ def _first_pos(snippet: str) -> str:
 # ────────────────────────── 清洗核心 ──────────────────────────
 
 class Cleaner:
-    def __init__(self, cfg: dict, corrections: list, strict: bool = False):
+    def __init__(self, cfg: dict, corrections: list, strict: bool = False,
+                 itn: bool = True):
         self.cfg = cfg
         self.corrections = corrections
         self.strict = strict
+        # 【新增 v1.4】数字规整开关；只影响「百分之九十八点五→98.5%」这类
+        # 明确计量表述，条款号（第一百二十条）与监管术语（四不两直）永不改动
+        self.itn = itn
         self.protect = [re.compile(p) for p in cfg.get("protect_patterns", [])]
         self.warn_ratio = cfg.get("warn_shrink_ratio", 0.5)
 
@@ -117,6 +127,7 @@ class Cleaner:
 
         self.g_phrase = {}       # 组合填充 / 口头冗余：整段删
         self.g_always = []       # 语气词：直接 replace
+        self.g_solo = {}         # 【新增 v1.4】单字语气词：仅独立出现才删
         self.g_tail = {}         # 语气词：仅句尾
         self.g_head = {}         # 句首填充
         self.g_loose = {}        # 这个/那个 后接标点即删
@@ -138,7 +149,19 @@ class Cleaner:
             elif mode == "always":
                 tails = set(spec.get("tail_only", []))
                 # tail_only 里的词只走句尾规则，不能被无条件删掉
-                self.g_always = [w for w in words if w not in tails]
+                # 【新增 v1.4】standalone_only：会组成常用词的单字语气词，
+                # 只在「独立出现」时删 —— 前面是句首/标点/空白，或后面是标点/末尾。
+                # 起因：「货值金额」被无条件 replace 成「货值金」（实测复现）。
+                # 同类风险词：呢绒/酒吧/哈欠，本版未纳入（药监场景组词率极低），
+                # 若遇到同类问题，把该字加进 standalone_only 即可。
+                solo = set(spec.get("standalone_only", []))
+                for w in sorted(solo, key=len, reverse=True):
+                    self.g_solo[w] = re.compile(
+                        r"(?:^|(?<=[%s\s]))%s|%s(?=[%s\s]|$)"
+                        % (re.escape(_PUNCT), re.escape(w),
+                           re.escape(w), re.escape(_PUNCT)))
+                self.g_always = [w for w in words
+                                 if w not in tails and w not in solo]
                 for w in sorted(spec.get("tail_only", []), key=len, reverse=True):
                     unless = "".join("(?<!%s)" % re.escape(c)
                                      for c in spec.get("tail_unless_prev", []))
@@ -214,6 +237,16 @@ class Cleaner:
                 text = merged
                 changes.append(("重复合并", f"{n} 处", n))
 
+        # 【新增 v1.4】4.5) 数字规整（受限 ITN）
+        # 放在标点收尾之前：先让「百分之九十八点五」变成「98.5%」，
+        # 再统一处理逗号句号，避免 % 与标点各自收尾时产生「，%」这类残迹。
+        # 只改数字写法，不改字、不删词，故对时间轴与对齐无影响。
+        if self.itn and ITN is not None:
+            normed, itn_log = ITN.normalize(text)
+            if itn_log and normed != text:
+                text = normed
+                changes.append(("数字规整", f"×{len(itn_log)}", len(itn_log)))
+
         # 5) 标点与空白收尾
         text = self._tidy_punct(text)
 
@@ -242,6 +275,10 @@ class Cleaner:
                 n = text.count(w)
                 text = text.replace(w, "")
                 total += n
+        # 【新增 v1.4】standalone_only：仅独立出现才删，保护词内字（金额/额度/余额）
+        for w, pat in self.g_solo.items():
+            text, n = pat.subn("", text)
+            total += n
         for w, pat in self.g_tail.items():
             text, n = pat.subn("", text)
             total += n
@@ -582,6 +619,9 @@ def main():
     ap.add_argument("-o", "--outdir", default=str(BASE / "out"), help="输出目录")
     ap.add_argument("--strict", action="store_true", help="严格模式：关闭重复合并")
     ap.add_argument("--no-repeat", action="store_true", help="同 --strict")
+    # 【新增 v1.4】默认开启数字规整；需要保留纯汉字数字时关闭
+    ap.add_argument("--no-itn", action="store_true",
+                    help="关闭数字规整（保留「百分之九十八点五」原样）")
     args = ap.parse_args()
 
     src = Path(args.input)
@@ -589,7 +629,8 @@ def main():
         sys.exit(f"找不到输入文件：{src}")
 
     cleaner = Cleaner(load_rules(RULES), load_corrections(CORRECTIONS),
-                      strict=args.strict or args.no_repeat)
+                      strict=args.strict or args.no_repeat,
+                      itn=not args.no_itn)
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
