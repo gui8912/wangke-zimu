@@ -1,6 +1,51 @@
 # 药品医疗器械监管网课 · 语音转字幕/文稿工具
 
-纯本地运行，不上传音频。适配药品、医疗器械监督管理专业术语。
+**默认纯本地**（音视频不出本机）；自 1.3 起可选云端识别源，内容不涉密时可用。
+适配药品、医疗器械监督管理专业术语。
+
+## 1.3 可插拔识别源与双轨整理稿（2026-11-08）
+
+**背景**：用户确认音视频可出本机、可在云端运行、内容不涉密。调研
+`yc-2018/DoubaoVoiceIME`、豆包输入法「智能文字整理」、微信输入法「文字整理 / AI 录音笔」
+后，决定不照搬逆向 SDK，而是接官方云 API，并把「字幕」与「讲稿」分轨。
+
+**为什么分轨**：云端顺滑 / 口语转书面语会改字。若直接拿整理稿做字幕，
+`align.py:159` 的字级时间戳对齐（rapidfuzz，阈值 55）会失效、音画不同步。
+
+```
+云端 ASR 一次调用
+ ├─ 轨 A 字幕轨 subtitle = 原文 + 词级时间戳 → SRT/VTT、波形、align.py   ← 一个字都不改
+ └─ 轨 B 讲稿轨 script   = 顺滑/书面语文本 → revise.py 七遍改稿 → DOCX/MD ← 允许改措辞
+```
+
+- 新增 `asr_providers.py`：Provider 抽象层 + `Tracks` 双轨结构 + 厂商响应映射纯函数 +
+  diff / 一键回退。密钥只走环境变量，**不写仓库**。
+- 本地源 `local-qwen3`（默认）/ `local-paraformer` 行为与 1.2 **完全一致**，零回归。
+- 云端骨架 `tencent-cloud`（腾讯云 `ResTextFormat=5`，`FinalSentence`+`Words` 原文轨、
+  `WrittenText` 整理稿轨）、`volcengine-doubao`（豆包语义顺滑 + 请求级热词）。
+  **本版只提供可插拔骨架与字段映射，HTTP 调用待接入**；未配置密钥时下拉置灰、
+  提交任务拦为 400，不会发请求、不伪造文本。
+- 新增接口：`/api/providers`、`/api/tracks`、`/api/diff`；`/api/health` 升 1.3。
+- 前端：顶栏「识别源」下拉、「云端整理稿」开关（默认关；勾选后跳过本地口语清理，
+  避免同一次识别产出两份互相竞争的整理稿）、「整理稿对比」弹窗
+  （左原文 / 右整理稿逐段标差异）、一键恢复识别原稿、用整理稿另起一份改稿。
+- 产物：`<stem>.tracks.json`（双轨）、`<stem>.script.txt`（讲稿轨，仅有整理稿时生成）；
+  原 `<stem>.json` 结构不变，align.py / 历史任务照常工作。
+- 回归：`python samples/test_providers_v13.py`（18 项）；既有全套回归全绿。
+
+**接入云端前需要**：开通腾讯云或火山引擎账号，配置下列环境变量（勿写进 config 或仓库），
+再实现 `asr_providers.py` 里两家 provider 的 `_submit` / `_poll`：
+
+| 源 | 环境变量 | 备注 |
+|---|---|---|
+| 腾讯云 | `ASR_TENCENT_SECRET_ID`、`ASR_TENCENT_SECRET_KEY`、`ASR_TENCENT_APPID` | `ResTextFormat=5` 增值付费；音频需公网可达 URL，base64 仅 <5MB |
+| 火山引擎 | `ASR_VOLC_APP_KEY`、`ASR_VOLC_ACCESS_KEY`、`ASR_VOLC_SECRET_KEY` | 录音文件识别 0.8 元/小时；音频 <5 小时且 <512MB |
+| 通用 | `ASR_PROVIDER` | 默认识别源；云端未配置时自动回落本地 |
+
+**术语保护**：云端热词表用 `asr_providers.hotword_terms()` 从 `terms/hotwords.txt` 生成
+（每词 <10 字，超长的「药品经营质量管理规范」等会被剔除，需人工复核）。
+ITN 数字规整可能把「第一百二十条」写成「第120条」，LLM 可能替换监管术语，
+**必须保留轨 A 原文并人工核对**。
 
 ## 工程位置（2026-11-02 迁移）
 
@@ -56,6 +101,7 @@ asr-pipeline/
 ├── clean_transcript.py      口语清理引擎（可审核、可回滚）
 ├── revise.py                七遍改稿引擎（口播稿 → 阅读稿）+ Word 公文版式导出
 ├── align.py                 文稿对齐（讲义 → 字级时间轴，不重跑模型）
+├── asr_providers.py         【1.3】识别源抽象层 + 双轨结构 + 云厂商响应映射
 ├── DESIGN.md                UI 设计令牌与反模式
 ├── terms/
 │   ├── hotwords.txt         热词表（识别时偏置，提升专业词命中）
@@ -268,6 +314,11 @@ python transcribe.py -i ./课程/
 
 # 换引擎：速度优先
 python transcribe.py -i 网课.mp4 --model paraformer
+
+# 【1.3】指定识别源（默认 local-qwen3，等价上例第一行）
+python transcribe.py -i 网课.mp4 --provider local-qwen3
+# 云端源有整理稿时，跳过本地口语清理避免双重改写（需先配密钥并接入 HTTP）
+python transcribe.py -i 网课.mp4 --provider tencent-cloud --use-script-track
 ```
 
 ## 三步工序
@@ -289,7 +340,9 @@ python transcribe.py -i 网课.mp4 --model paraformer
 | `*.raw.srt` | 原始字幕（含时间戳，未经清理） |
 | `*.clean.srt` | 清理后字幕，可直接导入剪辑软件 |
 | `*.clean.txt` | 清理后纯文本 |
-| `*.json` | 结构化数据（句级时间戳），供下游程序用 |
+| `*.json` | 结构化数据（句级 + 字级时间戳），供文稿对齐用；1.3 起 `meta.provider` 记识别源 |
+| `*.tracks.json` | 【1.3】双轨：字幕原文轨 + 讲稿整理轨（本地识别时整理轨为空） |
+| `*.script.txt` | 【1.3】讲稿轨纯文本，仅在有云端整理稿时生成，不参与字幕 |
 | `*.report.md` | 逐条变更报告，人工审核用 |
 
 ## 只清洗已有字幕

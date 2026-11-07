@@ -40,6 +40,7 @@ import transcribe as T          # noqa: E402
 import clean_transcript as CT   # noqa: E402
 import revise as RV             # noqa: E402
 import align as AL              # noqa: E402
+import asr_providers as P       # noqa: E402  【新增 v1.3】识别源抽象层
 
 REV = OUT / "rev"
 
@@ -303,8 +304,20 @@ def _rehydrate(task: dict):
         def read(p):
             return Path(p).read_text(encoding="utf-8") if p and Path(p).exists() else ""
 
+        stem = task.get("stem") or Path(raw).stem.replace(".raw", "")
+        # 【新增 v1.3】历史任务也能恢复双轨整理稿；没有 tracks 文件时按本地源处理，
+        # 老任务（v1.2 及以前）不会因此打不开。
+        script_text, script_source, provider_id = "", "", task.get("provider") or "local-qwen3"
+        tp = OUT / f"{stem}.tracks.json"
+        if tp.exists():
+            try:
+                tr = P.Tracks.from_dict(json.loads(tp.read_text(encoding="utf-8")))
+                script_text, script_source = tr.script_text, tr.script_source
+                provider_id = tr.provider or provider_id
+            except Exception:
+                pass
         task["result"] = {
-            "stem": task.get("stem") or Path(raw).stem.replace(".raw", ""),
+            "stem": stem,
             "cues": raw_cues,
             "clean_cues": clean_cues,
             "doc_text": read(files.get("raw_txt")),
@@ -314,6 +327,13 @@ def _rehydrate(task: dict):
             "chars": task.get("chars") or 0,
             "model": task.get("model") or "",
             "files": files,
+            # 【新增 v1.3】
+            "provider": provider_id,
+            "script_text": script_text,
+            "has_script": bool(script_text and script_source),
+            "script_source": script_source,
+            "tracks_file": str(tp) if tp.exists() else "",
+            "script_file": str(OUT / f"{stem}.script.txt"),
         }
     except Exception as exc:
         # modified(v1.2): 原来静默吞掉，历史任务打不开却毫无线索
@@ -369,7 +389,10 @@ def _worker(task_id: str):
     try:
         r = T.run_pipeline(src, task.get("model") or "qwen3-asr",
                            task.get("clean", True), outdir=OUT,
-                           language=task.get("language") or "Chinese", log=log)
+                           language=task.get("language") or "Chinese", log=log,
+                           # 【新增 v1.3】识别源与双轨开关；未指定时走本地，零回归
+                           provider_key=task.get("provider"),
+                           use_script_track=bool(task.get("use_script_track")))
         raw_cues = parse_cues(r["raw_srt_text"])
         clean_cues = parse_cues(r["clean_srt_text"]) if r["clean_srt_text"] else None
 
@@ -394,6 +417,13 @@ def _worker(task_id: str):
             "chars": r["chars"],
             "model": task["model"],
             "files": task["files"],
+            # 【新增 v1.3】双轨信息给前端：有整理稿才开放 diff / 采用 / 回退
+            "provider": r.get("provider") or "local-qwen3",
+            "script_text": r.get("script_text") or "",
+            "has_script": bool(r.get("has_script")),
+            "script_source": r.get("script_source") or "",
+            "tracks_file": str(r.get("tracks_path") or ""),
+            "script_file": str(r.get("script_txt_path") or ""),
         }
         task["status"] = "done"
         task["finished"] = time.time()
@@ -503,7 +533,8 @@ async def media(fid: str):
 
 @app.post("/api/transcribe")
 async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
-                     clean: bool = Form(True), language: str = Form("Chinese")):
+                     clean: bool = Form(True), language: str = Form("Chinese"),
+                     provider: str = Form(""), use_script_track: bool = Form(False)):
     info = UPLOADS.get(file_id)
     if not info:
         return JSONResponse({"error": "请先上传文件"}, status_code=400)
@@ -512,11 +543,33 @@ async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
         return JSONResponse(
             {"error": f"未知模型：{model}（可选：{'、'.join(T.MODELS)}）"},
             status_code=400)
+    # 【新增 v1.3】识别源校验：非法 id / 未配置 / 骨架未接 HTTP 都在这里拦成 400，
+    # 不让任务排进队列再失败（沿用 model 校验的同一思路）。
+    raw_pid = (provider or "").strip()
+    try:
+        # 【新增 v1.3】未指定时用带「自动回落本地」的选源逻辑，保证默认零回归；
+        # 显式指定则严格校验，缺配置/未接入都在这里拦成 400，不排进队列再失败。
+        prov = (P.preferred_from_env() if not raw_pid
+                else P.get_provider(raw_pid))
+    except KeyError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    if prov.kind == "cloud":
+        if not prov.configured():
+            return JSONResponse(
+                {"error": f"{prov.name} 未配置：需环境变量 "
+                          f"{'、'.join(prov.config_keys)}"}, status_code=400)
+        if not getattr(prov, "ready", False):
+            return JSONResponse(
+                {"error": f"{prov.name} 的 HTTP 调用尚未接入（本版只提供可插拔骨架，"
+                          f"字段映射已可离线验证）"}, status_code=400)
+    pid = prov.id
     tid = uuid.uuid4().hex[:12]
     TASKS[tid] = {"id": tid, "status": "queued", "logs": [], "result": None,
                   "error": None, "file_id": file_id, "name": info["name"],
                   "path": str(info["path"]), "model": model, "clean": clean,
-                  "language": language, "created": time.time()}
+                  "language": language, "created": time.time(),
+                  # 【新增 v1.3】
+                  "provider": pid, "use_script_track": bool(use_script_track)}
     _persist(tid)
     JOB_Q.put(tid)
     _prune_tasks(MAX_TASKS)
@@ -809,10 +862,55 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.2",
+    return {"ok": True, "version": "1.3",       # 【修改 v1.3】
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
-            "tasks": len(TASKS), "uploads": len(UPLOADS)}
+            "tasks": len(TASKS), "uploads": len(UPLOADS),
+            # 【新增 v1.3】默认识别源与云端配置状态，便于服务台一眼看清
+            "provider": P.preferred_from_env().id,
+            "cloud_ready": [p["id"] for p in P.list_providers()
+                            if p["kind"] == "cloud" and p["configured"]
+                            and p.get("ready")]}
+
+
+# ─────────────────────── 【新增 v1.3】识别源与双轨整理稿 ───────────────────────
+
+@app.get("/api/providers")
+def api_providers():
+    """列出识别源；只回配置状态，绝不回密钥值。
+
+    前端据此渲染下拉：本地可用、云端未配置/未接入时标灰并给出原因。
+    """
+    return {"default": P.DEFAULT_PROVIDER, "providers": P.list_providers()}
+
+
+@app.get("/api/tracks")
+def api_tracks(stem: str = ""):
+    """读取一次识别的双轨产物，并算好整理前后 diff。
+
+    字幕轨 subtitle_text 永远是 ASR 原文；讲稿轨 script_text 可为空。
+    前端一键回退直接用 subtitle_text，不需要依赖撤销栈。
+    """
+    name = _safe(stem)
+    p = OUT / f"{name}.tracks.json"
+    if not p.exists() or not _inside(p, OUT):
+        return JSONResponse({"error": "没有找到该任务的双轨产物"}, status_code=404)
+    try:
+        tracks = P.Tracks.from_dict(json.loads(p.read_text(encoding="utf-8")))
+    except Exception as exc:
+        return JSONResponse({"error": f"双轨产物损坏：{exc}"}, status_code=400)
+    return {"ok": True, "tracks": tracks.to_dict(),
+            "diff": P.diff_ops(tracks.subtitle_text, tracks.script_text)
+            if tracks.has_script else []}
+
+
+@app.post("/api/diff")
+def api_diff(payload: dict):
+    """整理前后 diff（纯计算，不落盘）。前端预览与一键回退共用。"""
+    before = str(payload.get("before") or "")
+    after = str(payload.get("after") or "")
+    return {"ok": True, "ops": P.diff_ops(before, after),
+            "restored": P.restore_from_diff(P.diff_ops(before, after))}
 
 
 # ─────────────────────── 七遍改稿 ───────────────────────

@@ -176,8 +176,11 @@ def api():
     print("\n[api] 接口回归（需服务在 7870）")
 
     code, d = request("/api/health")
-    assert code == 200 and d["ok"] and d["version"] == "1.2"
-    ok(f"/api/health 200（排队 {d['queued']} / 运行 {d['running']} / 任务 {d['tasks']}）")
+    # 【修改 v1.3】版本断言改为「不低于 1.2」，避免每次升级都要改回归脚本。
+    # 1.2 的修复项仍然逐条验证，版本号只表示服务在线且非旧版。
+    assert code == 200 and d["ok"] and tuple(
+        int(x) for x in str(d["version"]).split(".")[:2]) >= (1, 2)
+    ok(f"/api/health 200 v{d['version']}（排队 {d['queued']} / 运行 {d['running']} / 任务 {d['tasks']}）")
 
     # 畸形输入：修复前实测 500
     for payload in ({"stem": "audit_v12_probe", "cues": ["abc"]},

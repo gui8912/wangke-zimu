@@ -288,6 +288,19 @@
   #alignScript{width:100%;height:170px;resize:vertical;font-size:var(--fs-13)}
   .align-modes{display:flex;gap:14px;flex-wrap:wrap;margin-top:4px}
 
+  /* 【新增 v1.3】整理稿 diff：左删右增，沿用主题变量，暗色也可读 */
+  .diffbox{display:flex;flex-direction:column;gap:8px;max-height:56vh;overflow-y:auto}
+  .diffrow{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:var(--fs-13)}
+  .diffcell{padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-6);
+            background:var(--soft);white-space:pre-wrap;word-break:break-word;line-height:1.7}
+  .diffcell.empty{color:var(--faint);font-style:italic}
+  .diffrow.replace .diffcell:first-child,.diffrow.delete .diffcell:first-child{
+            background:var(--b-high);border-color:var(--danger)}
+  .diffrow.replace .diffcell:last-child,.diffrow.insert .diffcell:last-child{
+            background:var(--ok-bg);border-color:var(--ok-line)}
+  .diffrow.equal .diffcell{opacity:.72}
+  .diffop{grid-column:1/-1;font-size:var(--fs-11);color:var(--faint);letter-spacing:.08em}
+
   /* 弹窗 */
   .mask{position:fixed;inset:0;background:rgba(15,17,21,.45);display:none;
         align-items:center;justify-content:center;z-index:50}
@@ -343,22 +356,28 @@
 <body>
 
 <div class="topbar">
-  <div class="brand">药品监管网课 · 语音转字幕<small>本地运行 · 音频不出本机</small></div>
+  <div class="brand">药品监管网课 · 语音转字幕<small id="brandSub">本地优先 · 可选云端</small></div>
   <div class="tabs">
     <button class="tab active" id="tabTranscribe">转写</button>
     <button class="tab" id="tabRevise">改稿</button>
   </div>
   <div class="spacer"></div>
   <span class="filechip lo-tx" id="fileChip">未选择文件</span>
-  <select class="lo-tx" id="model">
-    <option value="qwen3-asr">Qwen3-ASR · 精度优先</option>
-    <option value="paraformer">Paraformer · 速度优先</option>
+  <!-- 【修改 v1.3】原来的 model 下拉改为「识别源」，本地默认、零回归；
+       云端项由 /api/providers 动态标注配置状态，未接入时禁用。 -->
+  <select class="lo-tx" id="model" title="识别源">
+    <option value="local-qwen3">本地 Qwen3-ASR · 精度优先</option>
+    <option value="local-paraformer">本地 Paraformer · 速度优先</option>
+    <option value="tencent-cloud">腾讯云 · 口语转书面语（云端）</option>
+    <option value="volcengine-doubao">火山豆包 · 语义顺滑（云端）</option>
   </select>
   <select class="lo-tx" id="lang">
     <option value="Chinese">中文</option>
     <option value="auto">自动检测</option>
   </select>
   <label class="chk lo-tx"><input type="checkbox" id="clean" checked>清理口语</label>
+  <label class="chk lo-tx" title="云端自带整理稿时跳过本地口语清理，避免双重改写">
+    <input type="checkbox" id="useScriptTrack" disabled>云端整理稿</label>
   <button class="primary lo-tx" id="btnStart" disabled>开始转写</button>
   <div class="prefs">
     <button id="btnFont" class="iconbtn" title="调整字号">A<sup id="fontTag">中</sup></button>
@@ -436,6 +455,8 @@
       <button id="btnReclean" disabled>重新清理</button>
       <button id="btnQC" disabled title="按 Netflix / EBU 标准检查阅读速度与时轴">体检</button>
       <button id="btnAlign" disabled title="用讲义 / PPT 文字稿校准术语与时间轴">文稿对齐</button>
+      <!-- 【新增 v1.3】双轨整理稿：对比预览 + 一键回退；无整理稿时禁用 -->
+      <button id="btnTracks" disabled title="查看云端整理稿与识别原文的逐段差异">整理稿对比</button>
       <div class="tb-right">
       <span id="saveState" class="save-state">未保存</span>
       <button id="btnSave" disabled title="保存校对稿">保存</button>
@@ -629,6 +650,28 @@
   </div>
 </div>
 
+<!-- 【新增 v1.3】双轨整理稿对比：左原文 / 右整理稿，逐段标差异，一键回退 -->
+<div class="mask" id="tracksMask">
+  <div class="modal" style="width:min(900px,95vw)">
+    <h3>整理稿对比<span class="sub" id="tracksSub">识别原文 vs 云端整理稿</span></h3>
+    <div class="body">
+      <div class="note" style="margin-bottom:12px">
+        字幕轨永远是识别原文（带时间戳），整理稿只用于讲稿，不会改动字幕时间轴。
+        采用或回退都只影响讲稿，音画同步不受影响。
+      </div>
+      <div id="tracksDiff" class="diffbox"></div>
+    </div>
+    <div class="foot">
+      <span id="tracksMeta" style="margin-right:auto;color:var(--muted);font-size:var(--fs-12)"></span>
+      <button id="tracksRestore">一键恢复识别原稿</button>
+      <button id="tracksCopy">复制整理稿</button>
+      <div class="spacer"></div>
+      <button id="tracksCancel">关闭</button>
+      <button class="primary" id="tracksAdopt">用整理稿起稿 →</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -641,7 +684,10 @@ const state = {
   fileName:'', fileSize:0, filePath:'',
   peaks:null, waveBase:null, waveView:{start:0, end:0}, waveDragging:false,
   align:null, alignMode:'script',
-  saveTimer:null, saving:false
+  saveTimer:null, saving:false,
+  // 【新增 v1.3】双轨整理稿状态；本地识别时全为空/false，界面与 v1.2 一致
+  provider:'local-qwen3', scriptText:'', scriptSource:'', hasScript:false,
+  subtitleText:'', docText:'', tracksDiff:[], adopted:false
 };
 
 /* ---------- 主题与字号 ---------- */
@@ -1026,6 +1072,153 @@ $('#btnShot').onclick = ()=>{
   }, 'image/png');
 };
 
+/* ---------- 【新增 v1.3】识别源与双轨整理稿 ---------- */
+const PROVIDER_MODEL = {'local-qwen3':'qwen3-asr', 'local-paraformer':'paraformer',
+                        'tencent-cloud':'qwen3-asr', 'volcengine-doubao':'qwen3-asr'};
+
+async function initProviders(){
+  const sel = $('#model');
+  try{
+    const d = await (await fetch('/api/providers')).json();
+    const map = {};
+    (d.providers || []).forEach(p => map[p.id] = p);
+    [...sel.options].forEach(o=>{
+      const p = map[o.value];
+      if(!p) return;
+      if(p.kind === 'cloud' && (!p.configured || !p.ready)){
+        o.disabled = true;
+        o.textContent = o.textContent.replace(/（.*）$/, '') +
+          (p.configured ? '（HTTP 待接入）' : '（未配置密钥）');
+        o.title = p.configured
+          ? '字段映射已就绪，HTTP 调用待接入'
+          : '需环境变量：' + (p.needs || []).join('、');
+      }else if(p.kind === 'cloud'){
+        o.title = p.note || '';
+      }
+    });
+  }catch(e){ /* 服务不可用时保留静态选项，本地仍可用 */ }
+  syncProviderUI();
+}
+
+function syncProviderUI(){
+  const pid = $('#model').value;
+  const opt = $('#model').selectedOptions[0];
+  const isCloud = opt ? !opt.value.startsWith('local-') : false;
+  state.provider = pid;
+  const sub = $('#brandSub');
+  if(sub) sub.textContent = isCloud
+    ? '云端识别 · 音视频将上传（内容不涉密）'
+    : '本地优先 · 音视频不出本机';
+  const chk = $('#useScriptTrack');
+  chk.disabled = !(isCloud && opt && !opt.disabled);
+  if(chk.disabled) chk.checked = false;
+  chk.title = isCloud
+    ? '用云端返回的顺滑/书面语整理稿作讲稿，跳过本地口语清理'
+    : '仅云端识别源可用';
+}
+$('#model').addEventListener('change', syncProviderUI);
+initProviders();
+
+$('#btnTracks').onclick = ()=>openTracks();
+
+async function openTracks(){
+  if(!state.hasScript) { toast('本次没有云端整理稿'); return; }
+  const box = $('#tracksDiff');
+  box.innerHTML = '<div class="diffrow"><div class="diffcell">载入中…</div></div>';
+  $('#tracksMask').classList.add('show');
+  try{
+    const q = new URLSearchParams({stem: state.stem});
+    const d = await (await fetch('/api/tracks?' + q)).json();
+    if(d.error){ box.innerHTML = '<div class="diffcell empty">'+d.error+'</div>'; return; }
+    state.tracksDiff = d.diff || [];
+    state.subtitleText = d.tracks.subtitle_text || '';
+    state.scriptText = d.tracks.script_text || state.scriptText;
+    const label = {equal:'未改动', replace:'改写', delete:'删除', insert:'新增'};
+    box.innerHTML = state.tracksDiff.map(x=>{
+      const b = x.before || '', a = x.after || '';
+      return `<div class="diffrow ${x.op}"><span class="diffop">${label[x.op]||x.op}</span>`
+        + `<div class="diffcell ${b?'':'empty'}">${tEsc(b || '（无）')}</div>`
+        + `<div class="diffcell ${a?'':'empty'}">${tEsc(a || '（无）')}</div></div>`;
+    }).join('') || '<div class="diffcell empty">没有差异</div>';
+    $('#tracksMeta').textContent =
+      `来源：${state.scriptSource || '云端整理稿'} · ${state.tracksDiff.length} 段差异`;
+    $('#tracksSub').textContent = '左：识别原文（字幕轨）　右：整理稿（讲稿轨）';
+  }catch(e){ box.innerHTML = '<div class="diffcell empty">读取失败：'+e+'</div>'; }
+}
+function tEsc(s){   // 【新增 v1.3】只用于 diff 渲染，避免与改稿区 rvEsc 混淆
+  return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+$('#tracksCancel').onclick = ()=>$('#tracksMask').classList.remove('show');
+$('#tracksMask').onclick = e=>{ if(e.target.id === 'tracksMask') $('#tracksMask').classList.remove('show'); };
+
+/* 一键回退：真正恢复识别原稿与回退前的改稿进度；
+   字幕轨本来就是原文，不动时间轴。
+   【修改 v1.3】原先只清标记，改稿页仍停在整理稿，名不副实。 */
+const RV_BACKUP_KEY = 'asr_rev_v1_backup';
+$('#tracksRestore').onclick = ()=>{
+  if(!state.hasScript){ toast('本次没有云端整理稿'); return; }
+  let restoredRev = false;
+  if(state.adopted){
+    try{
+      const d = JSON.parse(localStorage.getItem(RV_BACKUP_KEY) || 'null');
+      if(d && d.versions){
+        Object.assign(rv, d);
+        rvStore(); rvRender();
+        restoredRev = true;
+      }
+    }catch(e){ console.warn('restore rev', e); }
+    if(!restoredRev && state.subtitleText){
+      // 兜底：备份缺失时用转写原稿重建 v0，其余遍次清空，不假装恢复
+      rv.stem = state.stem || rv.stem;
+      rv.versions = {0: state.subtitleText};
+      rv.issues = {}; rv.notes = {}; rv.keep = {}; rv.checked = {};
+      rv.step = 0; rv.text = rv.versions[0];
+      rvStore(); rvPersist(0, rv.text); rvRender();
+      restoredRev = true;
+    }
+  }
+  state.adopted = false;
+  $('#tracksMask').classList.remove('show');
+  toast(restoredRev
+    ? '已恢复识别原稿及回退前的改稿进度（字幕与时间戳未改动）'
+    : '已放弃整理稿，讲稿沿用识别原文（字幕与时间戳未改动）');
+};
+$('#tracksCopy').onclick = async ()=>{
+  try{ await navigator.clipboard.writeText(state.scriptText || ''); toast('整理稿已复制'); }
+  catch(e){ toast('复制失败：' + e); }
+};
+/* 用整理稿另起一份改稿：v0 存整理稿，原稿仍在转写轨，不覆盖 */
+$('#tracksAdopt').onclick = async ()=>{
+  if(!state.scriptText){ toast('没有整理稿'); return; }
+  $('#tracksMask').classList.remove('show');
+  await switchWs('revise');
+  rvLoadFromScript();
+};
+function rvLoadFromScript(){
+  if(!state.scriptText){ toast('没有整理稿'); return; }
+  if(rv.versions[0] && rv.versions[0].trim() &&
+     !confirm('已经有一份改稿原稿了，用云端整理稿另起一份吗？'
+             + '\n（当前进度会先备份，可用「整理稿对比 → 一键恢复」找回）')) return;
+  // 【新增 v1.3】先备份当前改稿状态，一键回退时能真正回到原稿那份进度。
+  // 只备份「尚未采用整理稿」的状态，避免重复点击把备份覆盖成整理稿。
+  if(!state.adopted && rv.versions[0]){
+    try{
+      localStorage.setItem(RV_BACKUP_KEY, JSON.stringify({
+        stem:rv.stem, step:rv.step, versions:rv.versions, issues:rv.issues,
+        notes:rv.notes, keep:rv.keep, density:rv.density,
+        checked:rv.checked, text:rv.text
+      }));
+    }catch(e){}
+  }
+  rv.stem = (state.stem || '未命名') + '_整理稿';
+  rv.versions = {0: state.scriptText};
+  rv.issues = {}; rv.notes = {}; rv.keep = {}; rv.checked = {}; rv.step = 0;
+  rv.text = state.scriptText;
+  state.adopted = true;
+  rvPersist(0, rv.text); rvStore(); rvRender();
+  toast('已用整理稿起稿；识别原稿仍保留在转写页');
+}
+
 /* ---------- 转写 ---------- */
 $('#btnStart').onclick = async ()=>{
   if(!state.fileId) return;
@@ -1036,7 +1229,10 @@ $('#btnStart').onclick = async ()=>{
   setFileStatus('排队中…','run');
   const fd = new FormData();
   fd.append('file_id', state.fileId);
-  fd.append('model', $('#model').value);
+  // 【修改 v1.3】下拉值改为识别源；model 仍传服务端认识的模型 key
+  fd.append('model', PROVIDER_MODEL[$('#model').value] || 'qwen3-asr');
+  fd.append('provider', $('#model').value);
+  fd.append('use_script_track', $('#useScriptTrack').checked ? 'true' : 'false');
   fd.append('clean', $('#clean').checked ? 'true' : 'false');
   fd.append('language', $('#lang').value);
   const r = await fetch('/api/transcribe', {method:'POST', body:fd});
@@ -1103,6 +1299,15 @@ function renderResult(res){
   state.cues = JSON.parse(JSON.stringify(res.clean_cues || res.cues || []));
   state.reportText = res.report_text || '';
   state.align = null; state.alignMode = 'script';
+  // 【新增 v1.3】双轨整理稿；本地识别时 has_script 为 false，按钮保持禁用
+  state.provider = res.provider || 'local-qwen3';
+  state.scriptText = res.script_text || '';
+  state.scriptSource = res.script_source || '';
+  state.hasScript = !!res.has_script;
+  state.subtitleText = (res.cues || []).map(c=>c.text).join('\n');
+  state.docText = res.doc_text || state.subtitleText;
+  state.adopted = false; state.tracksDiff = [];
+  $('#btnTracks').disabled = !state.hasScript;
   $('#alignToggle').hidden = true;
   drawCues();
   renderTips([]);                         // 新结果，清掉上一轮的建议

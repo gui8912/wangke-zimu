@@ -421,8 +421,16 @@ def write_outputs(item: dict, stem: str, outdir: Path, meta: dict) -> dict:
 
 def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True,
                  outdir=None, device: str = "cpu", hotword_file=None,
-                 language: str = "Chinese", log=print) -> dict:
-    """完整流程，命令行与图形界面共用。返回结构化结果。"""
+                 language: str = "Chinese", log=print,
+                 provider_key: str = None, use_script_track: bool = False) -> dict:
+    """完整流程，命令行与图形界面共用。返回结构化结果。
+
+    【修改 v1.3】新增 provider_key / use_script_track 两个可选参数，默认 None/False
+    时行为与 v1.2 **完全一致**（仍走本地 MODELS 识别 + 原有口语清理）。
+    【新增 v1.3】provider_key 指定云端源时走 asr_providers 抽象层，识别结果拆成
+    双轨：字幕轨仍是原文+时间戳（SRT/VTT/对齐不变），整理稿另存 script.txt，
+    **不参与字幕**，避免时间轴被改写打断（align.py:159）。
+    """
     outdir = Path(outdir) if outdir else (BASE / "out")
     outdir.mkdir(parents=True, exist_ok=True)
     cfg = MODELS[model_key]
@@ -437,7 +445,29 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
     stem = unique_stem(src, outdir)          # modified: 同名文件不再互相覆盖
     wav = ensure_wav(src, outdir, stem)
     t0 = time.time()
-    item = transcribe(wav, cfg, hotword, device, language, log)
+
+    # 【新增 v1.3】provider 分支。默认（provider_key 为空或本地）保持原调用，
+    # 一行都不改；云端才引入 asr_providers，本地用户零回归。
+    import asr_providers as P               # 【新增 v1.3】
+    # 【新增 v1.3】未显式指定时按环境变量选源，但云端没配密钥则自动回落本地，
+    # 避免「开了开关却没凭据」让日常转写全线失败；显式指定云端则明确报错。
+    prov = (P.preferred_from_env() if provider_key is None
+            else P.get_provider(provider_key))
+    tracks = None
+    if prov.kind == "cloud":
+        log(f"识别源：{prov.name}（云端）")
+        tracks = prov.transcribe(wav, language=language,
+                                 hotwords=None, log=log)
+        item = {"text": tracks.subtitle_text,
+                "timestamp": tracks.timestamps,
+                "sentence_info": tracks.sentences or None}
+        # 【新增 v1.3】云端自带整理稿时，本地 101 词清理默认降级为兜底，
+        # 否则「云端顺滑 + 本地再删一遍」会双重改写。用户仍可显式勾选。
+        if tracks.has_script and use_script_track:
+            do_clean = False
+            log("云端已提供整理稿，跳过本地口语清理（避免双重改写）")
+    else:
+        item = transcribe(wav, cfg, hotword, device, language, log)
     dur = time.time() - t0
 
     meta = {
@@ -446,8 +476,33 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
         "device": device,
         "elapsed_s": item.get("_cost_s", round(dur, 1)),
         "hotwords": len(hotword.split()) // 2 if hotword else 0,
+        "provider": prov.id,                 # 【新增 v1.3】
     }
     out = write_outputs(item, stem, outdir, meta)
+
+    # 【新增 v1.3】双轨产物落盘。本地源也写一份（讲稿轨为空），前端逻辑统一。
+    if tracks is None:
+        payload = json.loads((outdir / f"{stem}.json").read_text(encoding="utf-8"))
+        tracks = P.Tracks(
+            provider=prov.id,
+            subtitle_text=payload.get("text") or "",
+            timestamps=payload.get("timestamps") or [],
+            sentences=payload.get("sentences") or [],
+            script_text="", script_source="",
+            notes=["本地识别，未启用云端整理稿"],
+        )
+    tracks_path = outdir / f"{stem}.tracks.json"
+    tmp = tracks_path.with_suffix(".json.tmp")
+    tmp.write_text(tracks.to_json(), encoding="utf-8")
+    os.replace(tmp, tracks_path)
+
+    # 【新增 v1.3】讲稿轨单独成文，供七遍改稿直接取用；没有整理稿时不生成。
+    script_txt = outdir / f"{stem}.script.txt"
+    if tracks.has_script:
+        tmp = script_txt.with_suffix(".txt.tmp")
+        tmp.write_text(tracks.script_text, encoding="utf-8")
+        os.replace(tmp, script_txt)
+        log(f"整理稿已另存：{script_txt.name}（不影响字幕时间轴）")
     log(f"✓ {out['cues']} 条字幕 / {out['chars']} 字，识别耗时 {meta['elapsed_s']}s")
 
     result = {
@@ -466,6 +521,14 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
         "clean_srt_text": "",
         "clean_doc_text": "",
         "report_text": "",
+        # 【新增 v1.3】双轨字段；本地源时 script_text 为空、has_script False，
+        # 前端按钮据此禁用，界面与 v1.2 一致。
+        "provider": prov.id,
+        "script_text": tracks.script_text,
+        "has_script": tracks.has_script,
+        "script_source": tracks.script_source,
+        "tracks_path": tracks_path,
+        "script_txt_path": script_txt if tracks.has_script else None,
     }
 
     if do_clean:
@@ -527,7 +590,10 @@ def process(src: Path, args, outdir: Path, hotword: str):
     print(f"\n▶ {src.name}")
     r = run_pipeline(src, args.model, args.clean, outdir, args.device,
                      args.hotword_file, getattr(args, "language", "Chinese"),
-                     log=lambda m: print(f"  {m}"))
+                     log=lambda m: print(f"  {m}"),
+                     # 【新增 v1.3】CLI 也能指定识别源；不传则保持原行为
+                     provider_key=getattr(args, "provider", None),
+                     use_script_track=getattr(args, "use_script_track", False))
     print(f"    → {r['srt_path'].name}")
 
 
@@ -542,6 +608,12 @@ def main():
                     help="语种提示：Chinese / auto（仅 Qwen3-ASR 生效）")
     ap.add_argument("--hotword-file", default=str(HOTWORD_FILE))
     ap.add_argument("--clean", action="store_true", help="识别后立即清理口语")
+    # 【新增 v1.3】识别源与双轨整理稿开关（默认仍是本地 Qwen3，零回归）
+    ap.add_argument("--provider", default=None,
+                    help="识别源：local-qwen3(默认)/local-paraformer/"
+                         "tencent-cloud/volcengine-doubao")
+    ap.add_argument("--use-script-track", action="store_true",
+                    help="云端自带整理稿时跳过本地口语清理，避免双重改写")
     ap.add_argument("--list-models", action="store_true")
     args = ap.parse_args()
 
