@@ -217,6 +217,11 @@ def llm_result_unit(tmp: Path):
     ok("前端会找回结果", "recoverLlmResult" in web and "/api/llm/result" in web)
     ok("请求断开先找回结果", "await recoverLlmResult()" in web)
     ok("polish 完成先落盘", "_save_llm_result(r)" in srv)
+    # 【新增 v2.4-p3】刷新后自动恢复字幕
+    ok("刷新后自动恢复任务", "function restoreLastTask" in web and "asrLastTask" in web)
+    ok("打开任务时记住", "setItem('asrLastTask', id)" in web)
+    ok("换素材清旧记录", "removeItem('asrLastTask')" in web)
+    ok("恢复失败有说明", "任务记录已清理" in web)
 
 
 def main():

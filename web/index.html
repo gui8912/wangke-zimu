@@ -1160,6 +1160,9 @@ function renderFileCard(d){
 
 /* 上传 / 本地路径导入共用同一套登记流程 */
 function onUploaded(d, note){
+  // 【新增 v2.4-p3】换了新素材就不再恢复旧任务，否则一刷新又跳回上一节课
+  try{ localStorage.removeItem('asrLastTask'); }catch(e){}
+  state.taskId = null;
   state.fileId = d.file_id; state.kind = d.kind;
   state.stem = (d.name||'transcript').replace(/\.[^.]+$/,'');
   state.peaks = null; state.waveBase = null; state.align = null;
@@ -2629,6 +2632,9 @@ async function taskAct(id, action){
       }
       mountPlayer('/api/task/'+id+'/media', d.kind || 'audio');
       if(state.peaks) drawWave();
+      // 【新增 v2.4-p3】记住这条任务：字幕只活在页面内存里，刷新就"看起来
+      // 丢了"，其实 out/ 里的 srt 好好的，只差一个自动载回的入口。
+      try{ localStorage.setItem('asrLastTask', id); }catch(e){}
       setStatus('已打开历史任务','done');
       setFileStatus('识别完成','done');
       return;
@@ -2638,6 +2644,37 @@ async function taskAct(id, action){
     toast(d.error || (action === 'retry' ? '已重新排队' : '已取消'));
     refreshTasks();
   }catch(e){ toast('操作失败'); }
+}
+
+/* 【新增 v2.4-p3】刷新 / 重开页面后自动恢复上次打开的任务。
+   刷新会清空页面内存里的 cues，但 srt 仍在 out/ 下、任务记录也在磁盘上，
+   只是没人把它重新载进来——用户看起来就像"字幕丢了"。 */
+async function restoreLastTask(){
+  if(state.demo) return;
+  let tid = '';
+  try{ tid = localStorage.getItem('asrLastTask') || ''; }catch(e){}
+  if(!tid){
+    // 兜底：旧版没有记录，就从最近一条已完成任务里挑一条自动载回，
+    // 免得升级后第一次刷新仍面对空白页。
+    try{
+      const d0 = await (await fetch('/api/tasks')).json();
+      const t = (d0.tasks || []).find(x=>x.status === 'done' && x.stem);
+      if(!t) return;
+      tid = t.id;
+    }catch(e){ return; }
+  }
+  try{
+    const r = await fetch('/api/task/' + tid);
+    const d = await r.json();
+    if(!r.ok || d.error || d.status !== 'done' || !d.result){
+      try{ localStorage.removeItem('asrLastTask'); }catch(e){}
+      toast('上次的任务记录已清理；out/ 里的字幕文件仍在，可重新导入同一课件');
+      return;
+    }
+    await taskAct(tid, 'open');
+    const n = (d.result.cues || []).length;
+    toast(`已恢复上次的任务「${(d.name || '').slice(0, 18)}」 · ${n} 条字幕`);
+  }catch(e){ /* 恢复失败静默，不打扰正常使用 */ }
 }
 
 function timeInput(i, key, val){
@@ -3951,6 +3988,9 @@ if(location.search.includes('fix=1')){
 
 /* 上次没改完的稿子：刷新后自动恢复（只存本机浏览器） */
 rvRestore();
+
+/* 【新增 v2.4-p3】刷新后自动载回上次任务的字幕，别再让人以为字幕丢了 */
+setTimeout(()=>{ restoreLastTask(); }, 250);
 
 /* 【新增 v2.4-p2】页面打开时找回「上次已跑完、但当时没能显示」的润色结果。
    延后 600ms，等主界面先渲染完，弹窗不会盖住空白页。 */
