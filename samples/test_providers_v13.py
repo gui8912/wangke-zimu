@@ -125,7 +125,9 @@ def unit():
         w.writeframes(b"\x00\x00" * 16000)
     original = T.transcribe
 
-    def fake(wav, cfg, hotword, device, language, log):
+    # 【修改 v2.4】run_pipeline 自 v2.0 起多传一个 progress 回调，
+    # 假函数签名必须跟上，否则整条本地识别链路的用例会 TypeError。
+    def fake(wav, cfg, hotword, device, language, log, progress=None):
         return {"text": "嗯，今天我们讲飞行检查。",
                 "timestamp": [[i * 300, i * 300 + 300] for i in range(12)]}
 

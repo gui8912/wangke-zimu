@@ -197,6 +197,17 @@
   .revtag.auto{background:var(--ok-bg);color:var(--ok)}
   .revtag.semi{background:var(--b-mid);color:var(--warn-fg)}
   .revtag.manual{background:var(--b-high);color:var(--danger)}
+  /* 【新增 v2.4-p2】长稿润色进度条：结果回来前正文不会变，只有这里给出
+     「确实在跑」的可见证据（百分比 / 块数 / 已用 / 预计剩余）。 */
+  .llmprog{margin:10px 12px;padding:10px 12px;border:1px solid var(--primary);
+           border-radius:var(--r-8);background:var(--primary-weak)}
+  .llmprog .lp-top{display:flex;align-items:baseline;gap:10px;font-size:var(--fs-13)}
+  .llmprog .lp-top b{color:var(--primary)}
+  .llmprog .lp-meta{margin-left:auto;color:var(--muted);font-size:var(--fs-12)}
+  .llmprog .lp-track{height:8px;margin:8px 0 6px;border-radius:6px;
+           background:var(--soft);overflow:hidden}
+  .llmprog .lp-fill{height:100%;width:0;background:var(--primary);transition:width .4s}
+  .llmprog .lp-tip{font-size:var(--fs-11);color:var(--muted);line-height:1.5}
   .revfoot{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);
            background:var(--soft);font-size:var(--fs-12);color:var(--muted)}
   .revside .sidehead{display:flex;align-items:baseline;gap:8px;padding:11px 14px;
@@ -655,6 +666,12 @@
       <button id="btnRevLlmCfg" title="设定用本地模型还是云端免费模型（智谱 GLM-4-Flash / DeepSeek）润色讲稿">润色模型设置</button>
       <button id="btnRevRerun" disabled>重跑本遍</button>
       <button class="primary" id="btnRevRun" disabled>执行第 1 遍</button>
+    </div>
+    <!-- 【新增 v2.4-p2】整篇润色期间页面正文不动，进度全靠这一条 -->
+    <div class="llmprog" id="llmProg" hidden>
+      <div class="lp-top"><b id="llmProgTitle">润色中 0%</b><span class="lp-meta" id="llmProgMeta">准备中</span></div>
+      <div class="lp-track"><div class="lp-fill" id="llmProgFill"></div></div>
+      <div class="lp-tip">正在按 700 字一块逐块润色并自动合并；全部完成后才会弹出对比预览，点「采用」才写入成稿。期间请勿关闭或刷新页面，也不要重复点击。</div>
     </div>
     <textarea id="revText" spellcheck="false" placeholder="把转写稿粘贴到这里，或点右侧「用当前转写结果」加载。&#10;&#10;约定：每句一行。第一遍只删填充词，从这一份原稿开始，后面每遍都不会覆盖原稿。"></textarea>
     <div class="revfoot">
@@ -1813,18 +1830,65 @@ refreshLlmStatus();
 /* 【新增 v2.4】长稿润色进度：同步 POST 期间每 2 秒轮询 /api/llm/progress，
    把「第几块 / 共几块」直接写在按钮上，不再让人对着「润色中…」干等十分钟。 */
 let llmProgTimer = null;
+function showLlmProgress(d){
+  const box = $('#llmProg'); if(!box) return;
+  box.hidden = false;
+  const total = Math.max(1, Number(d.total) || 1);
+  const done  = Math.min(total, Number(d.done) || 0);
+  const pct   = Math.round(done * 100 / total);
+  $('#llmProgFill').style.width = pct + '%';
+  $('#llmProgTitle').textContent = `润色中 ${pct}%（${done}/${total} 块）`;
+  const used = Number(d.elapsed) || 0;
+  const left = done >= 2 ? Math.round(used * (total - done) / done) : 0;
+  $('#llmProgMeta').textContent = `${d.stage || ''} · 已用 ${fmtTime(used)}`
+    + (left ? ` · 约剩 ${fmtTime(left)}` : '');
+}
 function startLlmProgress(btn){
   stopLlmProgress();
-  llmProgTimer = setInterval(async ()=>{
+  const box = $('#llmProg'); if(box) box.hidden = false;
+  const tick = async ()=>{
     if(!llmState.busy) return;
     try{
       const d = await (await fetch('/api/llm/progress')).json();
-      if(d.busy) btn.textContent = `润色 ${d.done}/${d.total} · ${d.stage || ''}`;
+      if(!d.busy) return;
+      btn.textContent = `润色 ${d.done}/${d.total}`;
+      showLlmProgress(d);
     }catch(e){}
-  }, 2000);
+  };
+  tick();
+  llmProgTimer = setInterval(tick, 2000);
 }
 function stopLlmProgress(){
   if(llmProgTimer){ clearInterval(llmProgTimer); llmProgTimer = null; }
+  const box = $('#llmProg'); if(box) box.hidden = true;
+}
+
+/* 【新增 v2.4-p2】刷新页面 / 断网 / 浏览器 abort / 服务重启之后，把服务端
+   已落盘的整稿结果原样找回，十几分钟不至于白跑。localStorage 记 finished_at，
+   同一份结果只提示一次，不会每次打开都弹旧预览。 */
+async function recoverLlmResult(){
+  let d;
+  try{ d = await (await fetch('/api/llm/result')).json(); }
+  catch(e){ return false; }
+  if(!d.ready || !d.result || d.busy) return false;
+  if(localStorage.getItem('llmResultSeen') === String(d.finished_at)) return false;
+  const r = d.result;
+  llmState.src = r.source || '';
+  llmState.out = r.polished || '';
+  llmState.tail = r.tail || '';
+  llmState.audit = r.audit || {};
+  llmState.diff = r.diff || [];
+  llmState.model = r.model || '';
+  llmState.elapsed = r.elapsed || 0;
+  llmState.blocked = r.blocked || [];
+  llmState.usage = r.usage || null;
+  llmState.chunks = r.chunks || 1;
+  llmState.tailRestored = r.tail_restored || 0;
+  localStorage.setItem('llmResultSeen', String(d.finished_at));
+  renderLlmPreview();
+  $('#llmMask').classList.add('show');
+  toast(`已找回上次的润色结果（${d.finished_at || ''}），确认后点「采用」写入成稿`);
+  return true;
 }
 $('#btnRevLlm').onclick = async ()=>{
   if(llmState.busy){ toast('正在润色，请稍等'); return; }
@@ -1842,7 +1906,7 @@ $('#btnRevLlm').onclick = async ()=>{
   btn.disabled = true; btn.textContent = '润色中…';
   startLlmProgress(btn);
   toast(chunks > 1
-    ? `正在润色 ${src.length} 字，自动分 ${chunks} 块，预计 ${est} 秒左右，期间别关页面`
+    ? `正在润色 ${src.length} 字，自动分 ${chunks} 块，预计 ${est} 秒左右。正文要等全部完成才变，请看上方进度条，别刷新页面`
     : `正在润色 ${src.length} 字，预计 ${est} 秒左右，期间别关页面`);
 
   try{
@@ -1873,15 +1937,18 @@ $('#btnRevLlm').onclick = async ()=>{
     llmState.usage = d.usage || null;          // 【新增 v2.2】云端 token / 费用
     llmState.chunks = d.chunks || 1;
     llmState.tailRestored = d.tail_restored || 0;
+    if(d.finished_at) localStorage.setItem('llmResultSeen', String(d.finished_at));
     renderLlmPreview();
     $('#llmMask').classList.add('show');
     if(chunks > 1)
       toast(`已完成 ${d.chunks || chunks} 块并合并为一整篇；自动补回 `
             + `${d.tail_restored || 0} 处块尾句，确认无误后点「采用」写入成稿`);
   }catch(e){
+    // 【新增 v2.4-p2】请求断了不等于结果没了：服务端完成时已落盘，先找回。
+    if(await recoverLlmResult()) return;
     if(e && e.name === 'AbortError'){
-      toast(`等了 ${Math.round(Math.max(10*60, chunks*90)/60)} 分钟仍未返回，已断开。`
-            + '推理卡住了，请重启服务后再试');
+      toast('等待超时已断开。服务端可能仍在润色，请看上方进度；'
+            + '跑完后刷新页面会自动找回结果，不必重跑');
     }else{
       toast('润色请求失败：' + (e && e.message ? e.message : e));
     }
@@ -3884,6 +3951,10 @@ if(location.search.includes('fix=1')){
 
 /* 上次没改完的稿子：刷新后自动恢复（只存本机浏览器） */
 rvRestore();
+
+/* 【新增 v2.4-p2】页面打开时找回「上次已跑完、但当时没能显示」的润色结果。
+   延后 600ms，等主界面先渲染完，弹窗不会盖住空白页。 */
+setTimeout(()=>{ recoverLlmResult(); }, 600);
 
 /* 任务列表：启动时接回历史任务，识别中 2 秒一刷、空闲 5 秒一刷 */
 if(!state.demo){

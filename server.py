@@ -1714,6 +1714,37 @@ _LLM_BUDGET = [600]            # 当前这一稿的卡死判定阈值（按它�
 LLM_MAX_SECONDS = int(os.environ.get("ASR_LLM_TIMEOUT", "600"))
 _LLM_BUDGET[0] = LLM_MAX_SECONDS
 
+# 【新增 v2.4-p2】润色结果落盘。原来结果只活在那一条 HTTP 响应里：长稿跑
+# 十几分钟，中途刷新页面、笔记本断网、浏览器超时 abort，都会让整稿白跑，
+# 而且用户完全看不出「到底回传没有」。完成时先写一份 out/_llm/last.json，
+# 下次打开页面原样找回（含 diff 与红线），不用重跑。
+LLM_RESULT = OUT / "_llm" / "last.json"
+
+
+def _load_llm_result():
+    """读回上次结果；文件缺失/损坏都返回 None，绝不拖垮接口。"""
+    try:
+        if LLM_RESULT.exists():
+            d = json.loads(LLM_RESULT.read_text(encoding="utf-8"))
+            if isinstance(d, dict) and str(d.get("polished") or "").strip():
+                return d
+    except Exception:
+        pass
+    return None
+
+
+def _save_llm_result(r: dict):
+    """原子写完整结果；落盘失败只记日志，不影响本次润色正常返回。"""
+    try:
+        payload = dict(r)
+        payload["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        payload["finished_ts"] = time.time()
+        _atomic_write(LLM_RESULT, json.dumps(payload, ensure_ascii=False))
+        return payload["finished_at"]
+    except Exception as exc:
+        print(f"[llm] 结果落盘失败（不影响本次返回）：{exc}", flush=True)
+        return ""
+
 
 @app.get("/api/llm/progress")
 def api_llm_progress():
@@ -1721,7 +1752,20 @@ def api_llm_progress():
     p = dict(_LLM_PROGRESS)
     p["elapsed"] = round(time.monotonic() - p["start"], 1) if p["busy"] else 0.0
     p["budget"] = _LLM_BUDGET[0]
+    last = _load_llm_result()
+    p["result_ready"] = last is not None
+    p["finished_at"] = last.get("finished_at") if last else None
     return p
+
+
+@app.get("/api/llm/result")
+def api_llm_result():
+    """【新增 v2.4-p2】取回上一次完成的润色结果，供刷新/断线后恢复预览。"""
+    d = _load_llm_result()
+    if not d:
+        return {"ready": False}
+    return {"ready": True, "finished_at": d.get("finished_at"),
+            "busy": bool(_LLM_PROGRESS["busy"]), "result": d}
 
 
 @app.get("/api/llm/status")
@@ -1824,6 +1868,8 @@ def api_llm_polish(payload: dict):
         r["blocked"] = LP.blocked(r["audit"])   # 硬红线未过的项，前端据此禁用「采用」
         r["logs"] = logs
         r["total_elapsed"] = round(time.time() - t0, 1)
+        # 【新增 v2.4-p2】先落盘再返回：哪怕响应在半路丢失，结果也找得回来。
+        r["finished_at"] = _save_llm_result(r)
         return r
     except Exception as exc:
         # modified(v1.8):traceback 只进服务日志，不回给前端：里面的绝对路径
@@ -1983,7 +2029,11 @@ def api_align(payload: dict):
 
 @app.get("/")
 async def index():
-    return FileResponse(WEB / "index.html")
+    # 【新增 v2.4-p2】禁缓存：页面脚本迭代频繁，浏览器拿到旧 JS 就会出现
+    # 「点了润色没反应」——旧版既没有逐块进度轮询，还有 10 分钟强制 abort，
+    # 会把正在跑的长稿结果整份丢掉。no-store 保证每次打开都是最新界面。
+    return FileResponse(WEB / "index.html",
+                        headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")

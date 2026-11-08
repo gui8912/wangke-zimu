@@ -185,12 +185,47 @@ def guards():
        (BASE / "cloud_llm.py").read_text(encoding="utf-8"))
 
 
+def llm_result_unit(tmp: Path):
+    """【新增 v2.4-p2】长稿结果落盘 / 找回 / 容错，全部写临时目录。"""
+    print("[结果保护] 润色结果落盘与找回")
+    import server as S
+    orig = S.LLM_RESULT
+    S.LLM_RESULT = tmp / "_llm" / "last.json"
+    try:
+        ok("初始无结果", S._load_llm_result() is None)
+        ok("取结果接口 ready=False", S.api_llm_result().get("ready") is False)
+        sample = {"source": "原文。", "polished": "整理稿。", "tail": "原文。",
+                  "audit": {}, "diff": [], "chunks": 3, "elapsed": 12.3,
+                  "model": "glm-4-flash", "blocked": []}
+        ok("落盘返回完成时间", bool(S._save_llm_result(sample)))
+        ok("结果文件存在", S.LLM_RESULT.exists())
+        got = S._load_llm_result()
+        ok("内容可回读", bool(got) and got["polished"] == "整理稿。")
+        ok("带完成时间", bool(got) and bool(got.get("finished_at")))
+        r = S.api_llm_result()
+        ok("接口可找回整稿", r.get("ready") and r["result"]["polished"] == "整理稿。")
+        ok("进度接口标记结果就绪", S.api_llm_progress().get("result_ready") is True)
+        S.LLM_RESULT.write_text("{坏 JSON", encoding="utf-8")
+        ok("损坏文件容错", S._load_llm_result() is None)
+        ok("容错后接口不抛", S.api_llm_result().get("ready") is False)
+    finally:
+        S.LLM_RESULT = orig
+    web = (BASE / "web/index.html").read_text(encoding="utf-8")
+    srv = (BASE / "server.py").read_text(encoding="utf-8")
+    ok("首页禁缓存", "no-store" in srv)
+    ok("前端有醒目进度条", 'id="llmProg"' in web and "showLlmProgress" in web)
+    ok("前端会找回结果", "recoverLlmResult" in web and "/api/llm/result" in web)
+    ok("请求断开先找回结果", "await recoverLlmResult()" in web)
+    ok("polish 完成先落盘", "_save_llm_result(r)" in srv)
+
+
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="v24_"))
     parallel_unit(tmp)
     keys_unit(tmp)
     long_polish_unit()
     guards()
+    llm_result_unit(tmp)
     bad = [n for n, c in PASS if not c]
     print(f"\n{len(PASS) - len(bad)}/{len(PASS)} 通过")
     if bad:
