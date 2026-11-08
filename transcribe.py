@@ -423,7 +423,8 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
                  outdir=None, device: str = "cpu", hotword_file=None,
                  language: str = "Chinese", log=print,
                  provider_key: str = None, use_script_track: bool = False,
-                 itn: bool = True) -> dict:
+                 itn: bool = True, termfix: bool = True,
+                 termfix_auto: bool = True) -> dict:
     """完整流程，命令行与图形界面共用。返回结构化结果。
 
     【修改 v1.3】新增 provider_key / use_script_track 两个可选参数，默认 None/False
@@ -536,7 +537,9 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
         import clean_transcript as ct
         cleaner = ct.Cleaner(ct.load_rules(BASE / "rules" / "filler_words.json"),
                              ct.load_corrections(BASE / "terms" / "corrections.txt"),
-                             itn=itn)   # 【新增 v1.4】受限数字规整
+                             itn=itn,            # 【新增 v1.4】受限数字规整
+                             termfix=termfix,     # 【新增 v1.5】简称膨胀 + 漏字补全
+                             termfix_auto=termfix_auto)
 
         # 文档走句子级（不按字幕断行，读起来是完整句子）
         doc, rows = [], []
@@ -597,7 +600,11 @@ def process(src: Path, args, outdir: Path, hotword: str):
                      provider_key=getattr(args, "provider", None),
                      use_script_track=getattr(args, "use_script_track", False),
                      # 【新增 v1.4】数字规整默认开，--no-itn 可关
-                     itn=not getattr(args, "no_itn", False))
+                     itn=not getattr(args, "no_itn", False),
+                     # 【新增 v1.5】术语修复默认开；--no-termfix 全关，
+                     # --termfix-suggest-only 只建议不改
+                     termfix=not getattr(args, "no_termfix", False),
+                     termfix_auto=not getattr(args, "termfix_suggest_only", False))
     print(f"    → {r['srt_path'].name}")
 
 
@@ -622,6 +629,11 @@ def main():
     # 条款号（第一百二十条）与监管术语（四不两直）永不改动
     ap.add_argument("--no-itn", action="store_true",
                     help="关闭数字规整，保留纯汉字数字写法")
+    # 【新增 v1.5】术语修复：简称膨胀（GSP→全称）+ 漏字补全
+    ap.add_argument("--no-termfix", action="store_true",
+                    help="关闭术语修复（不做简称膨胀与漏字补全）")
+    ap.add_argument("--termfix-suggest-only", action="store_true",
+                    help="术语修复只出建议不改原文（保守模式）")
     ap.add_argument("--list-models", action="store_true")
     args = ap.parse_args()
 

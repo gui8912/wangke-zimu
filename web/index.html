@@ -291,6 +291,21 @@
   #alignScript{width:100%;height:170px;resize:vertical;font-size:var(--fs-13)}
   .align-modes{display:flex;gap:14px;flex-wrap:wrap;margin-top:4px}
 
+  /* 【新增 v1.5】学习建议列表 */
+  .learn-list{display:flex;flex-direction:column;gap:8px;max-height:56vh;overflow-y:auto}
+  .learn-item{display:flex;align-items:center;gap:10px;padding:9px 11px;
+              border:1px solid var(--line);border-radius:var(--r-6);background:var(--soft);
+              font-size:var(--fs-13)}
+  .learn-item .pair{flex:1;min-width:0;word-break:break-word;line-height:1.6}
+  .learn-item .old{color:var(--danger);text-decoration:line-through}
+  .learn-item .new{color:var(--ok);font-weight:600}
+  .learn-item .cnt{color:var(--muted);font-size:var(--fs-11);white-space:nowrap}
+  .learn-item .kind{font-size:var(--fs-11);padding:1px 6px;border-radius:var(--r-6);
+                    border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .learn-empty{padding:22px 8px;text-align:center;color:var(--muted);font-size:var(--fs-13);line-height:1.9}
+  #learnBadge{display:inline-block;margin-left:5px;min-width:15px;padding:0 4px;border-radius:8px;
+              background:var(--primary);color:#fff;font-size:var(--fs-11);line-height:15px;text-align:center}
+
   /* 【新增 v1.3】整理稿 diff：左删右增，沿用主题变量，暗色也可读 */
   .diffbox{display:flex;flex-direction:column;gap:8px;max-height:56vh;overflow-y:auto}
   .diffrow{display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:var(--fs-13)}
@@ -381,6 +396,8 @@
   <label class="chk lo-tx"><input type="checkbox" id="clean" checked>清理口语</label>
   <label class="chk lo-tx" title="百分之九十八点五 → 98.5%、三百五十家 → 350家；法规条款号（第一百二十条）与监管术语（四不两直）永不改动">
     <input type="checkbox" id="itn" checked>数字规整</label>
+  <label class="chk lo-tx" title="简称展开（GSP → 药品经营质量管理规范）+ 术语漏字补全（药品经营质量规范 → 药品经营质量管理规范）。仅在「依据/根据/《/第X条」等强上下文自动改，其余只出建议">
+    <input type="checkbox" id="termfix" checked>术语补全</label>
   <label class="chk lo-tx" title="云端自带整理稿时跳过本地口语清理，避免双重改写">
     <input type="checkbox" id="useScriptTrack" disabled>云端整理稿</label>
   <button class="primary lo-tx" id="btnStart" disabled>开始转写</button>
@@ -462,6 +479,8 @@
       <button id="btnAlign" disabled title="用讲义 / PPT 文字稿校准术语与时间轴">文稿对齐</button>
       <!-- 【新增 v1.3】双轨整理稿：对比预览 + 一键回退；无整理稿时禁用 -->
       <button id="btnTracks" disabled title="查看云端整理稿与识别原文的逐段差异">整理稿对比</button>
+      <!-- 【新增 v1.5】修订学习：需要积累样本，始终可点（没有候选时弹空态说明） -->
+      <button id="btnLearn" title="把你在校对里反复做的修改沉淀成词表规则，由你逐条采纳">学习建议<span id="learnBadge" hidden></span></button>
       <div class="tb-right">
       <span id="saveState" class="save-state">未保存</span>
       <button id="btnSave" disabled title="保存校对稿">保存</button>
@@ -673,6 +692,26 @@
       <div class="spacer"></div>
       <button id="tracksCancel">关闭</button>
       <button class="primary" id="tracksAdopt">用整理稿起稿 →</button>
+    </div>
+  </div>
+</div>
+
+<!-- 【新增 v1.5】修订学习：把校对时的高频修改提炼成词表候选，人工逐条采纳 -->
+<div class="mask" id="learnMask">
+  <div class="modal" style="width:min(820px,95vw)">
+    <h3>学习建议<span class="sub">你在校对里反复做的修改，可一键沉淀成词表规则</span></h3>
+    <div class="body">
+      <div class="note" style="margin-bottom:12px">
+        工具只<strong>观察</strong>、不自动改词表：同一处修改出现过 <strong>2 次以上</strong>才会列在这里。
+        采纳后写入 <code>terms/corrections.txt</code>（错词校正）或 <code>terms/aliases.txt</code>（简称表），
+        下次识别自动生效。一次误改不会被永久记住。
+      </div>
+      <div id="learnList" class="learn-list"></div>
+    </div>
+    <div class="foot">
+      <span id="learnMeta" style="margin-right:auto;color:var(--muted);font-size:var(--fs-12)"></span>
+      <button id="learnCancel">关闭</button>
+      <button class="primary" id="learnReload">刷新</button>
     </div>
   </div>
 </div>
@@ -1153,6 +1192,94 @@ async function openTracks(){
 function tEsc(s){   // 【新增 v1.3】只用于 diff 渲染，避免与改稿区 rvEsc 混淆
   return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
+/* ---------- 修订学习（v1.5）----------
+   只展示候选，采纳动作由人触发；服务端不做任何自动写入。 */
+function updateLearnBadge(stats){
+  const b = $('#learnBadge');
+  if(!b) return;
+  const n = (stats && stats.pending) || 0;
+  if(n > 0){ b.textContent = n > 99 ? '99+' : n; b.hidden = false; }
+  else { b.hidden = true; }
+}
+
+function renderLearn(items){
+  const box = $('#learnList');
+  if(!items.length){
+    box.innerHTML = '<div class="learn-empty">还没有足够的样本。<br>'
+      + '同一处修改出现过 2 次以上才会列在这里。<br>'
+      + '先在校对区按你的习惯改几处，下次回来就能看到。</div>';
+    return;
+  }
+  box.innerHTML = '';
+  items.forEach(it=>{
+    const row = document.createElement('div');
+    row.className = 'learn-item';
+    const kindTxt = it.kind === 'correction' ? '错词校正'
+                  : it.kind === 'alias' ? '简称' : '待定';
+    const pair = document.createElement('span');
+    pair.className = 'pair';
+    pair.innerHTML = `<span class="old">${esc(it.before)}</span> → `
+                   + `<span class="new">${esc(it.after)}</span>`;
+    const cnt = document.createElement('span');
+    cnt.className = 'cnt'; cnt.textContent = `出现 ${it.n} 次`;
+    const kind = document.createElement('span');
+    kind.className = 'kind'; kind.textContent = kindTxt;
+    const yes = document.createElement('button');
+    yes.className = 'primary'; yes.textContent = '采纳';
+    yes.onclick = ()=>learnAct('accept', it, row);
+    const no = document.createElement('button');
+    no.textContent = '忽略';
+    no.onclick = ()=>learnAct('ignore', it, row);
+    row.append(pair, cnt, kind, yes, no);
+    box.appendChild(row);
+  });
+}
+
+async function learnAct(action, it, row){
+  const btns = row.querySelectorAll('button');
+  btns.forEach(b=>b.disabled = true);
+  try{
+    const r = await fetch('/api/learn/' + action, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key: it.key, kind: it.kind})
+    });
+    const d = await r.json();
+    if(d.error){ toast(d.error); btns.forEach(b=>b.disabled = false); return; }
+    toast(action === 'accept' ? (d.message || '已采纳') : '已忽略');
+    row.remove();
+    const s = d.stats || {};
+    $('#learnMeta').textContent =
+      `修改记录 ${s.total||0} 条 · 可采纳 ${s.pending||0} 条 · 已采纳 ${s.accepted||0} 条`;
+    updateLearnBadge(s);
+  }catch(e){
+    toast('操作失败：' + e.message);
+    btns.forEach(b=>b.disabled = false);
+  }
+}
+
+async function learnLoad(){
+  const box = $('#learnList');
+  box.innerHTML = '<div class="learn-empty">读取中…</div>';
+  try{
+    const r = await fetch('/api/learn/pending');
+    const d = await r.json();
+    renderLearn(d.items || []);
+    const s = d.stats || {};
+    $('#learnMeta').textContent =
+      `修改记录 ${s.total||0} 条 · 可采纳 ${s.pending||0} 条 · 已采纳 ${s.accepted||0} 条`;
+    updateLearnBadge(s);
+  }catch(e){
+    box.innerHTML = `<div class="learn-empty">读取失败：${esc(e.message)}</div>`;
+  }
+}
+
+$('#btnLearn').onclick = ()=>{ $('#learnMask').classList.add('show'); learnLoad(); };
+$('#learnCancel').onclick = ()=>$('#learnMask').classList.remove('show');
+$('#learnReload').onclick = ()=>learnLoad();
+$('#learnMask').onclick = e=>{ if(e.target.id === 'learnMask') $('#learnMask').classList.remove('show'); };
+// 进页面时静默刷新角标，不打扰
+fetch('/api/learn/pending').then(r=>r.json()).then(d=>updateLearnBadge(d.stats)).catch(()=>{});
+
 $('#tracksCancel').onclick = ()=>$('#tracksMask').classList.remove('show');
 $('#tracksMask').onclick = e=>{ if(e.target.id === 'tracksMask') $('#tracksMask').classList.remove('show'); };
 
@@ -1241,6 +1368,9 @@ $('#btnStart').onclick = async ()=>{
   fd.append('clean', $('#clean').checked ? 'true' : 'false');
   // 【新增 v1.4】数字规整；关闭时服务端保留纯汉字数字写法
   fd.append('itn', $('#itn').checked ? 'true' : 'false');
+  // 【新增 v1.5】术语修复：简称展开 + 漏字补全
+  fd.append('termfix', $('#termfix').checked ? 'true' : 'false');
+  fd.append('termfix_auto', 'true');
   fd.append('language', $('#lang').value);
   const r = await fetch('/api/transcribe', {method:'POST', body:fd});
   const d = await r.json();
@@ -1516,6 +1646,12 @@ function drawCues(){
     const row = document.createElement('div');
     row.className = 'cue';
     row.dataset.i = i;
+    // 【新增 v1.5】单击整行跳到该句起点，配合视频/音频逐句校对。
+    // 点时间输入框不跳（那是在改时间轴）；正在编辑文本时不跳（避免打断输入）。
+    row.onclick = e=>{
+      if(e.target.closest('.times') || e.target.isContentEditable) return;
+      if(typeof c.start === 'number') seek(c.start);
+    };
 
     const times = document.createElement('div');
     times.className = 'times';
@@ -1701,6 +1837,9 @@ $('#btnReclean').onclick = async ()=>{
   fd.append('cues_json', JSON.stringify(state.raw));
   // 【新增 v1.4】重新清理同样遵守数字规整开关
   fd.append('itn', $('#itn').checked ? 'true' : 'false');
+  // 【新增 v1.5】同样遵守术语修复开关
+  fd.append('termfix', $('#termfix').checked ? 'true' : 'false');
+  fd.append('termfix_auto', 'true');
   const r = await fetch('/api/reclean', {method:'POST', body:fd});
   const d = await r.json();
   if(d.error){ setStatus(d.error,'err'); return; }

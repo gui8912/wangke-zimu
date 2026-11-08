@@ -41,6 +41,7 @@ import clean_transcript as CT   # noqa: E402
 import revise as RV             # noqa: E402
 import align as AL              # noqa: E402
 import asr_providers as P       # noqa: E402  【新增 v1.3】识别源抽象层
+import learn as _LEARN          # noqa: E402  【新增 v1.5】修订学习（只记录，不自动应用）
 
 REV = OUT / "rev"
 
@@ -394,7 +395,10 @@ def _worker(task_id: str):
                            provider_key=task.get("provider"),
                            use_script_track=bool(task.get("use_script_track")),
                            # 【新增 v1.4】数字规整；历史任务无此字段时默认开
-                           itn=bool(task.get("itn", True)))
+                           itn=bool(task.get("itn", True)),
+                           # 【新增 v1.5】术语修复
+                           termfix=bool(task.get("termfix", True)),
+                           termfix_auto=bool(task.get("termfix_auto", True)))
         raw_cues = parse_cues(r["raw_srt_text"])
         clean_cues = parse_cues(r["clean_srt_text"]) if r["clean_srt_text"] else None
 
@@ -537,7 +541,8 @@ async def media(fid: str):
 async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
                      clean: bool = Form(True), language: str = Form("Chinese"),
                      provider: str = Form(""), use_script_track: bool = Form(False),
-                     itn: bool = Form(True)):
+                     itn: bool = Form(True), termfix: bool = Form(True),
+                     termfix_auto: bool = Form(True)):
     info = UPLOADS.get(file_id)
     if not info:
         return JSONResponse({"error": "请先上传文件"}, status_code=400)
@@ -574,7 +579,9 @@ async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
                   # 【新增 v1.3】
                   "provider": pid, "use_script_track": bool(use_script_track),
                   # 【新增 v1.4】数字规整开关
-                  "itn": bool(itn)}
+                  "itn": bool(itn),
+                  # 【新增 v1.5】术语修复开关与力度
+                  "termfix": bool(termfix), "termfix_auto": bool(termfix_auto)}
     _persist(tid)
     JOB_Q.put(tid)
     _prune_tasks(MAX_TASKS)
@@ -729,7 +736,8 @@ def save_terms(payload: dict):
 
 @app.post("/api/reclean")
 async def reclean(file_id: str = Form(...), cues_json: str = Form(...),
-                  itn: bool = Form(True)):
+                  itn: bool = Form(True), termfix: bool = Form(True),
+                  termfix_auto: bool = Form(True)):
     """用当前口语词表重新清理一份字幕（输入是前端当前的原始 cues）"""
     # modified: 原来直接 json.loads，非法 JSON 会 500；这里统一兜成 400
     try:
@@ -741,7 +749,9 @@ async def reclean(file_id: str = Form(...), cues_json: str = Form(...),
 
     cleaner = CT.Cleaner(CT.load_rules(RULES),
                          CT.load_corrections(BASE / "terms" / "corrections.txt"),
-                         itn=itn)   # 【新增 v1.4】受限数字规整
+                         itn=itn,                # 【新增 v1.4】受限数字规整
+                         termfix=termfix,        # 【新增 v1.5】简称膨胀 + 漏字补全
+                         termfix_auto=termfix_auto)
     out, hit, tips, seen = [], 0, [], set()      # modified: 去重从 O(n²) 列表查改成 set
     for c in cues:
         if not isinstance(c, dict):
@@ -782,7 +792,55 @@ def save(payload: dict):
         _atomic_write(txt_path, "\n".join(c["text"] for c in cues))
     except OSError as exc:
         return JSONResponse({"error": f"保存失败：{exc}"}, status_code=500)
-    return {"ok": True, "srt": str(srt_path), "txt": str(txt_path)}
+
+    # 【新增 v1.5】修订学习：拿系统清理稿与用户提交稿对比，把差异累计成候选。
+    # 只记录、不应用，采纳与否由人在界面上逐条决定。
+    # 整段包在 try 里：学习出任何问题都不能影响保存本身。
+    learned = 0
+    try:
+        csrt = OUT / f"{stem}.clean.srt"
+        if csrt.exists():
+            learned = _LEARN.record(stem, parse_cues(csrt.read_text(encoding="utf-8")), cues)
+    except Exception:
+        learned = 0
+
+    return {"ok": True, "srt": str(srt_path), "txt": str(txt_path),
+            "learned": learned}
+
+
+@app.get("/api/learn/pending")
+def api_learn_pending():
+    """【新增 v1.5】修订学习候选：同一处修改出现 ≥2 次才列出。
+
+    只读，不会自动改任何词表 —— 采纳必须由人点。
+    """
+    return {"ok": True, "items": _LEARN.pending(), "stats": _LEARN.stats()}
+
+
+@app.post("/api/learn/accept")
+def api_learn_accept(payload: dict):
+    """【新增 v1.5】采纳一条候选，写入 corrections.txt 或 aliases.txt。"""
+    key = str(payload.get("key") or "").strip()
+    if not key or "=>" not in key:
+        return JSONResponse({"error": "候选参数不合法"}, status_code=400)
+    kind = payload.get("kind")
+    if kind not in (None, "", "correction", "alias", "unknown"):
+        return JSONResponse({"error": "kind 只能是 correction / alias"}, status_code=400)
+    try:
+        wrote, msg = _LEARN.accept(key, kind or None)
+    except OSError as exc:
+        return JSONResponse({"error": f"写入词表失败：{exc}"}, status_code=500)
+    return {"ok": True, "wrote": wrote, "message": msg,
+            "stats": _LEARN.stats()}
+
+
+@app.post("/api/learn/ignore")
+def api_learn_ignore(payload: dict):
+    """【新增 v1.5】忽略一条候选（不再列出）。"""
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"error": "缺少 key"}, status_code=400)
+    return {"ok": _LEARN.ignore(key), "stats": _LEARN.stats()}
 
 
 @app.get("/api/draft")
@@ -869,7 +927,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.4",       # 【修改 v1.4】
+    return {"ok": True, "version": "1.5",       # 【修改 v1.5】
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

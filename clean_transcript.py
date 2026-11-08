@@ -34,6 +34,16 @@ try:
 except Exception:            # 缺模块时不影响原有清洗
     ITN = None
 
+# 【新增 v1.5】术语修复：简称膨胀 + 漏字补全
+# 术语表与简称表在模块级加载一次，避免每句都读盘
+try:
+    import termfix as TF
+    _TERMS = TF.load_terms(BASE / "terms" / "hotwords.txt")
+    _ALIASES = TF.load_aliases(BASE / "terms" / "aliases.txt")
+except Exception:            # 缺模块或缺文件时不影响原有清洗
+    TF = None
+    _TERMS, _ALIASES = [], []
+
 # 句首 / 句尾判定用的标点集合
 _PUNCT = "，。！？；：、,.;:?!…"
 _HEAD_RE = r"(^|[%s\s])" % re.escape(_PUNCT)
@@ -96,13 +106,19 @@ def _first_pos(snippet: str) -> str:
 
 class Cleaner:
     def __init__(self, cfg: dict, corrections: list, strict: bool = False,
-                 itn: bool = True):
+                 itn: bool = True, termfix: bool = True,
+                 termfix_auto: bool = True):
         self.cfg = cfg
         self.corrections = corrections
         self.strict = strict
         # 【新增 v1.4】数字规整开关；只影响「百分之九十八点五→98.5%」这类
         # 明确计量表述，条款号（第一百二十条）与监管术语（四不两直）永不改动
         self.itn = itn
+        # 【新增 v1.5】术语修复：简称膨胀 + 漏字补全
+        # termfix_auto=True 时，强上下文（依据/根据/《/第X条）自动改，
+        # 弱上下文只进建议；False 则全部只建议，一个字都不动
+        self.termfix = termfix
+        self.termfix_auto = termfix_auto
         self.protect = [re.compile(p) for p in cfg.get("protect_patterns", [])]
         self.warn_ratio = cfg.get("warn_shrink_ratio", 0.5)
 
@@ -236,6 +252,17 @@ class Cleaner:
             if n:
                 text = merged
                 changes.append(("重复合并", f"{n} 处", n))
+
+        # 【新增 v1.5】4.4) 术语修复：简称膨胀 + 漏字补全
+        # 放在填充词与重复合并之后：此时句子已定型，补字的上下文判断才准。
+        # 强上下文自动改，弱上下文只进建议（last_suggestions）。
+        if self.termfix and TF is not None:
+            text, tch, tsg = TF.fix(text, _TERMS, _ALIASES,
+                                    auto=self.termfix_auto)
+            if tch:
+                changes.extend(tch)
+            if tsg:
+                self.last_suggestions.extend(tsg)
 
         # 【新增 v1.4】4.5) 数字规整（受限 ITN）
         # 放在标点收尾之前：先让「百分之九十八点五」变成「98.5%」，

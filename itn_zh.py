@@ -55,6 +55,15 @@ RE_QTY = re.compile(r"(?<!第)([" + CN + r"]+)(?=[\s]?(?:" + UNITS + r"))")
 # ── 白名单模式 5：文号 第739号（阿拉伯数字是正式写法，转） ──
 RE_NUM_ORDER = re.compile(r"第([" + CN + r"]+)号")
 
+# ── 保护：法规条款号整体遮蔽 ──
+# 只用 (?<!第) 前缀断言是不够的：「第二十条」里「十」前面是「二」不是「第」，
+# 会被当成数量词转成「第二10条」（实测复现）。所以先把整个条款号挖出来占位，
+# 做完其余规整再原样放回。
+RE_CLAUSE = re.compile(
+    r"第[" + CN + r"]+(?:条|款|项|章|节|编|部分|目)")
+
+_PH = "\x00{}\x00"          # 占位符：正文不会出现 \x00
+
 YEAR_MIN, YEAR_MAX = 1900, 2100
 
 
@@ -88,7 +97,27 @@ def normalize(text: str, min_qty: int = 10) -> tuple:
 
     log: list[str] = []
 
-    # 1) 百分比
+    # 0) 文号「第X号」先转阿拉伯 —— 正式文号本来就写作「第739号」
+    def _order(m):
+        v = _num(m.group(1))
+        if v is None:
+            return m.group(0)
+        log.append(f"第{m.group(1)}号→第{v}号")
+        return f"第{v}号"
+
+    text = RE_NUM_ORDER.sub(_order, text)
+
+    # 1) 遮蔽条款号（条/款/项/章/节/编/部分/目），做完其余规整再原样放回。
+    #    这是「第二十条」不被拆成「第二10条」的唯一可靠办法。
+    protected: list[str] = []
+
+    def _hide(m):
+        protected.append(m.group(0))
+        return _PH.format(len(protected) - 1)
+
+    text = RE_CLAUSE.sub(_hide, text)
+
+    # 2) 百分比
     def _pct(m):
         n = _num(m.group(1))
         if n is None:
@@ -146,15 +175,9 @@ def normalize(text: str, min_qty: int = 10) -> tuple:
 
     text = RE_QTY.sub(_qty, text)
 
-    # 5) 文号（放在数量词之后：第X号里的数字若已转则此步自然不命中）
-    def _order(m):
-        v = _num(m.group(1))
-        if v is None:
-            return m.group(0)
-        log.append(f"第{m.group(1)}号→第{v}号")
-        return f"第{v}号"
-
-    text = RE_NUM_ORDER.sub(_order, text)
+    # 6) 还原条款号：原样放回，一个字都不改
+    for i, s in enumerate(protected):
+        text = text.replace(_PH.format(i), s)
 
     return text, log
 
