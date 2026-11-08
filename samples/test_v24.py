@@ -171,6 +171,18 @@ def guards():
     ok("管代列入热词", "管代|20" in hot and "管理者代表" in hot)
     ok("用户新增三条规则保留", (BASE / "rules" / "filler_words.json")
        .read_text(encoding="utf-8").count('"我们"') >= 1)
+    # 【新增 v2.4 补丁】播放器 / 润色进度 / 零拷贝导入
+    ok("上传地址可按 fid 找回", "MEDIA.glob(f\"{fid}_*\")" in srv)
+    ok("播放器有错误回退", "el.onerror" in web and "/api/task/" in web)
+    ok("润色进度接口已注册", '@app.get("/api/llm/progress")' in srv)
+    ok("润色按块回调", "progress(done, total, stage)" in
+       (BASE / "llm_polish.py").read_text(encoding="utf-8"))
+    ok("前端轮询进度", "startLlmProgress" in web and "/api/llm/progress" in web)
+    ok("卡死判定用当前稿预算", "stuck > _LLM_BUDGET[0]" in srv)
+    ok("本地路径零拷贝接口", '@app.post("/api/link")' in srv and "os.link(src, dst)" in srv)
+    ok("前端有路径导入入口", 'id="linkPath"' in web and "linkLocal" in web)
+    ok("云端连续失败快速止损", "fail_streak" in
+       (BASE / "cloud_llm.py").read_text(encoding="utf-8"))
 
 
 def main():

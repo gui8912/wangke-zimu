@@ -181,8 +181,15 @@ def cloud_unit(tmp: Path):
         CL._opener = getattr(CL, "_opener_orig", CL._opener)
 
     # llm_polish 的后端选择也必须跟着配置走
+    # 【修复 v2.4】上面 finally 已把 CL.CONFIG 还原成真实路径；用户把后端
+    # 切到 DeepSeek 后，这条「默认走本地」会假失败。测默认值就要屏蔽真实配置。
     import llm_polish as LP
-    orig = LP.available()
+    real_cfg = CL.CONFIG
+    CL.CONFIG = tmp / "no_cloud_for_available.json"
+    try:
+        orig = LP.available()
+    finally:
+        CL.CONFIG = real_cfg
     ok("默认走本地", "云端" not in orig[1] or not orig[0], orig)
 
 

@@ -130,13 +130,19 @@ def unit():
     ok(f"术语清单来自 terms/（本稿命中 {len(terms)} 条）")
 
     # 14. 模型缺失时 available() 明确报错而不是抛异常
+    # 【修复 v2.4】available() 会先读真实云端配置；用户切到云端后这里
+    # 直接返回「云端 xx」而走不到本地模型检查。测本地分支要屏蔽真实配置。
+    import cloud_llm as CL
     old = LP.MODEL_DIR
+    real_cfg = CL.CONFIG
     LP.MODEL_DIR = Path("Z:/definitely/not/here")
+    CL.CONFIG = Path("Z:/definitely/no_cloud.json")
     try:
         okk, msg = LP.available()
         assert okk is False and "未找到" in msg, (okk, msg)
     finally:
         LP.MODEL_DIR = old
+        CL.CONFIG = real_cfg
     ok("模型缺失时 available() 返回原因，不抛异常")
 
 

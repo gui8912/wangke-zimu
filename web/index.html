@@ -479,6 +479,13 @@
           <div style="font-size:var(--fs-15)"><b>把音视频拖到这里</b>，或点击选择</div>
           <div style="font-size:var(--fs-12);margin-top:6px">支持 mp4 / mkv / mov / mp3 / wav / m4a 等；<b>可一次拖入多个</b>直接排进夜间队列</div>
         </div>
+        <!-- 【新增 v2.4】网页上传必然落一份副本；这条通道用 NTFS 硬链接零拷贝 -->
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:9px">
+          <span class="qhint" style="white-space:nowrap">或填本机路径（同盘零拷贝，不额外占空间）：</span>
+          <input id="linkPath" class="lo-tx" placeholder="D:\课程\第一课.mp4"
+                 style="flex:1;min-width:180px" title="原始课件的完整路径，服务端用硬链接登记，不复制字节">
+          <button id="btnLink" title="同盘用 NTFS 硬链接，两个名字指向同一份数据">零拷贝导入</button>
+        </div>
         <div id="fileCard" class="filecard" hidden>
           <div class="fc-top">
             <div class="fc-icon" id="fcIcon">♪</div>
@@ -1134,6 +1141,22 @@ function renderFileCard(d){
   $('#fcStart').disabled = false;
 }
 
+/* 上传 / 本地路径导入共用同一套登记流程 */
+function onUploaded(d, note){
+  state.fileId = d.file_id; state.kind = d.kind;
+  state.stem = (d.name||'transcript').replace(/\.[^.]+$/,'');
+  state.peaks = null; state.waveBase = null; state.align = null;
+  $('#waveWrap').hidden = true;
+  $('#alignToggle').hidden = true;
+  $('#fileChip').textContent = d.name + ' · ' + (d.size/1048576).toFixed(1) + ' MB';
+  $('#btnStart').disabled = false;
+  renderFileCard(d);
+  setStatus('已登记，可以开始转写','done');
+  setFileStatus('就绪','done');
+  mountPlayer(d.media_url, d.kind);
+  loadPeaks();
+  if(note) toast(note);
+}
 async function upload(file){
   setStatus('上传中…','run');
   setFileStatus('上传中…','run');
@@ -1142,19 +1165,25 @@ async function upload(file){
     const r = await fetch('/api/upload', {method:'POST', body:fd});
     const d = await r.json();
     if(d.error) throw new Error(d.error);
-    state.fileId = d.file_id; state.kind = d.kind;
-    state.stem = (d.name||'transcript').replace(/\.[^.]+$/,'');
-    state.peaks = null; state.waveBase = null; state.align = null;
-    $('#waveWrap').hidden = true;
-    $('#alignToggle').hidden = true;
-    $('#fileChip').textContent = d.name + ' · ' + (d.size/1048576).toFixed(1) + ' MB';
-    $('#btnStart').disabled = false;
-    renderFileCard(d);
-    setStatus('已上传，可以开始转写','done');
-    mountPlayer(d.media_url, d.kind);
-    loadPeaks();
+    onUploaded(d, '');
   }catch(e){ setStatus('上传失败：'+e.message,'err'); setFileStatus('上传失败','err'); }
 }
+/* 【新增 v2.4】本机路径零拷贝导入 */
+async function linkLocal(){
+  const p = ($('#linkPath').value || '').trim();
+  if(!p){ toast('请填本机课件的完整路径，例如 D:\\课程\\第一课.mp4'); return; }
+  setStatus('登记中…','run');
+  try{
+    const r = await fetch('/api/link', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:p})});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    onUploaded(d, d.linked ? '已用硬链接登记，未额外占用磁盘'
+                           : '跨盘已复制一份（只有同盘才能零拷贝）');
+  }catch(e){ setStatus('导入失败：'+e.message,'err'); setFileStatus('导入失败','err'); }
+}
+if($('#btnLink')) $('#btnLink').onclick = linkLocal;
+if($('#linkPath')) $('#linkPath').onkeydown = e=>{ if(e.key === 'Enter') linkLocal(); };
 
 /* ---------- 【新增 v2.3】批量入队 + 夜间无人值守 ---------- */
 function taskOptions(){
@@ -1310,6 +1339,19 @@ function mountPlayer(url, kind){
   el.onpause = ()=>{ state.playing = false; $('#btnPlay').textContent='播放'; };
   el.onloadedmetadata = ()=>{ $('#tcode').textContent =
       '00:00 / ' + fmtTime(el.duration); };
+  // 【新增 v2.4】服务重启后上传态地址会 404，别只留一个黑屏：
+  // 自动按任务记录重新挂载视频，并在确实找不到时说明原因。
+  el.onerror = ()=>{
+    const done = (state.taskList || []).find(x=>x && x.status === 'done');
+    const fb = (state.taskId && '/api/task/'+state.taskId+'/media')
+             || (done && '/api/task/'+done.id+'/media') || '';
+    if(fb && !el.src.includes('/api/task/')){
+      el.src = fb; el.load();
+      toast('上传地址已过期，已按任务记录重新载入视频');
+    }else{
+      toast('视频无法播放：源文件可能已清理，请重新上传');
+    }
+  };
   $('#btnShot').disabled = (kind !== 'video');
   if(state.peaks) drawWave();
 }
@@ -1768,6 +1810,22 @@ async function refreshLlmStatus(){
 // 模型不可用时进页面就置灰，别让人点了等半天才看到报错
 refreshLlmStatus();
 
+/* 【新增 v2.4】长稿润色进度：同步 POST 期间每 2 秒轮询 /api/llm/progress，
+   把「第几块 / 共几块」直接写在按钮上，不再让人对着「润色中…」干等十分钟。 */
+let llmProgTimer = null;
+function startLlmProgress(btn){
+  stopLlmProgress();
+  llmProgTimer = setInterval(async ()=>{
+    if(!llmState.busy) return;
+    try{
+      const d = await (await fetch('/api/llm/progress')).json();
+      if(d.busy) btn.textContent = `润色 ${d.done}/${d.total} · ${d.stage || ''}`;
+    }catch(e){}
+  }, 2000);
+}
+function stopLlmProgress(){
+  if(llmProgTimer){ clearInterval(llmProgTimer); llmProgTimer = null; }
+}
 $('#btnRevLlm').onclick = async ()=>{
   if(llmState.busy){ toast('正在润色，请稍等'); return; }
   const src = (rv.versions[0] || '').trim();
@@ -1782,6 +1840,7 @@ $('#btnRevLlm').onclick = async ()=>{
   llmState.busy = true;
   const btn = $('#btnRevLlm'), old = btn.textContent;
   btn.disabled = true; btn.textContent = '润色中…';
+  startLlmProgress(btn);
   toast(chunks > 1
     ? `正在润色 ${src.length} 字，自动分 ${chunks} 块，预计 ${est} 秒左右，期间别关页面`
     : `正在润色 ${src.length} 字，预计 ${est} 秒左右，期间别关页面`);
@@ -1827,6 +1886,7 @@ $('#btnRevLlm').onclick = async ()=>{
       toast('润色请求失败：' + (e && e.message ? e.message : e));
     }
   }finally{
+    stopLlmProgress();
     llmState.busy = false;
     btn.disabled = false; btn.textContent = old;
   }

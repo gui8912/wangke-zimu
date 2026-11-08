@@ -53,12 +53,22 @@ a{color:var(--accent)}
 <ol><li>把一节课拖进左侧虚线框 → 点「开始转写」。</li><li>跑完在右侧逐句校对 → 点「保存」→「下载字幕」选 SRT / VTT / TXT / Markdown。</li></ol>
 <p>顶栏最右侧的 <strong>「使用说明」</strong> 随时打开本手册（带目录、可新窗口打印 / 搜索），</p>
 <p>不用翻文件。</p>
+<p><strong>别重复占磁盘（v2.4）</strong>：浏览器拖文件是 HTTP 字节流，浏览器不会告诉服务端</p>
+<p>你的原始路径，所以只能把流落成 <code>media/&lt;编号&gt;_&lt;原名&gt;</code>（89MB 课件就占 89MB）。</p>
+<p>想零拷贝就用上传框下面那行 <strong>「填本机路径 → 零拷贝导入」</strong>：直接写</p>
+<p><code>D:\课程\第一课.mp4</code>，服务端用 NTFS 硬链接登记（同一块盘两个名字指向同一份</p>
+<p>数据，实测链接数 2、inode 相同、不额外占空间），转写、播放、导出一切照旧。</p>
+<p>跨盘或权限不允许时才复制，界面会明确提示「跨盘已复制」。命令行批量</p>
+<p><code>batch_add.py</code> 一直就是这个机制。</p>
+<p>另外 <code>out/&lt;课程名&gt;.16k.wav</code> 是 ffmpeg 抽的 16k 单声道音频（识别引擎只吃这个</p>
+<p>格式，79 分钟约 152MB）；留着它下次重跑同一课件可以跳过抽取，不是无用副本。</p>
+<p><code>out/_peaks/</code> 是波形缓存。这些中间产物都保留，<strong>只有 <code>media/</code> 的源音视频禁止删除</strong>。</p>
 <p><strong>第一次用建议</strong>：先拿一段 2–5 分钟的课试跑，确认速度、术语、断句都合口味，</p>
 <p>再排一整晚的批量任务。</p>
 <hr>
 <h2 id="s2">二、单节课的完整流程</h2>
 <table><thead><tr><th>步骤</th><th>操作</th><th>说明</th></tr></thead><tbody>
-<tr><td>1 上传</td><td>拖文件 / 点击选择</td><td>mp4 / mkv / mov / mp3 / wav / m4a 等；多个文件直接拖进去会批量排队</td></tr>
+<tr><td>1 上传</td><td>拖文件 / 点击选择 / <strong>填本机路径</strong></td><td>mp4 / mkv / mov / mp3 / wav / m4a 等；多个文件直接拖进去会批量排队。<strong>拖文件会落一份副本，填本机路径用硬链接零拷贝</strong></td></tr>
 <tr><td>2 选参数</td><td>顶部下拉</td><td>识别源默认「本地 Qwen3-ASR · 精度优先」；语种默认中文</td></tr>
 <tr><td>3 开关</td><td>顶部复选框</td><td>清理口语、数字规整、术语补全默认开；「云端整理稿」只在用云端识别源时可用</td></tr>
 <tr><td>4 开始</td><td>「开始转写」</td><td>左中状态区显示进度，任务栏出现进度条 + 阶段 + 预计剩余</td></tr>
@@ -196,6 +206,8 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <tr><td>长课跑到一半进程消失</td><td>2.3 已修（长音频整批前向段错误）；若仍发生，查 <code>out/_crash.log</code></td></tr>
 <tr><td>内存暴涨 / 机器卡</td><td>把 <code>ASR_QWEN3_WORKERS</code> 设 1，或 <code>ASR_QWEN3_WINDOW</code> 调小到 120</td></tr>
 <tr><td>CPU 只占 14%，想把 20 核用满</td><td>单路 Paraformer 只用约 4 核；2.4 起默认 2 路分片并行（见第五节）。给单路塞 20 线程实测只快 6%</td></tr>
+<tr><td>视频点开不能播</td><td>服务重启后上传态地址会失效；点任务栏「打开」重新挂载，v2.4 起旧地址也会自动按编号找回</td></tr>
+<tr><td>润色一直没结果</td><td>长稿 3 万字要分 43 块，云端约 10 分钟、本地约 20 分钟；按钮现在实时显示「润色 12/43」。连续 3 块网络失败会立刻报错，不再干等</td></tr>
 <tr><td>3 万字 / 8000 字上限</td><td>v2.4 已取消硬拦：自动按 700 字整句分块、逐块润色、合并回传，预览后写入成稿</td></tr>
 <tr><td>导出成稿点了没反应</td><td>已改为「复制文本」单按钮，直接粘贴到 Word</td></tr>
 <tr><td>「管带 / 管道」被识别成别的词</td><td>在 <code>terms/corrections.txt</code> 加 <code>管带=&gt;管代</code>、<code>terms/hotwords.txt</code> 加 `管代</td><td>20<code>、</code>管理者代表`；改完下次转写即生效，不用重启</td></tr>

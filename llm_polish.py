@@ -272,8 +272,19 @@ def last_sentence(text):
     return parts[-1] if parts else ""
 
 
-def polish(text, log=print):
-    """润色整段讲稿。返回 {source, polished, tail, audit, diff, chunks, elapsed, model}。"""
+def polish(text, log=print, progress=None):
+    """润色整段讲稿。返回 {source, polished, tail, audit, diff, chunks, elapsed, model}。
+
+    【新增 v2.4】progress(done, total, stage) 每块回调，服务端据此提供
+    /api/llm/progress 给前端轮询；长稿不再是一个没有任何反馈的黑盒 POST。
+    """
+    def emit(done, total, stage):
+        if callable(progress):
+            try:
+                progress(done, total, stage)
+            except Exception:
+                pass                  # 进度上报失败绝不影响润色本身
+
     text = (text or "").strip()
     if not text:
         raise ValueError("没有可润色的文本")
@@ -287,8 +298,11 @@ def polish(text, log=print):
     if len(text) > AUTO_CHUNK_AT:
         log(f"长稿 {len(text)} 字，自动分 {len(chunks)} 块逐块润色后合并")
     parts, t0, restored = [], time.time(), 0
+    total = len(chunks)
+    emit(0, total, "开始分块润色")
     with _RUN_LOCK:
         for i, ck in enumerate(chunks, 1):
+            emit(i - 1, total, f"润色第 {i}/{total} 块")
             log(f"润色第 {i}/{len(chunks)} 块（{len(ck)} 字）")
             part = _polish_with_split(llm, ck)   # modified(v1.8):截断自愈
             # 【新增 v2.4】块是人为切的，模型常把块尾客套句删掉。
@@ -300,6 +314,8 @@ def polish(text, log=print):
                 part = (part.rstrip() + "\n" + tail).strip()
                 restored += 1
             parts.append(part)
+            emit(i, total, f"第 {i}/{total} 块完成")
+    emit(total, total, "合并与红线检查")
     out = "\n".join(p for p in parts if p)
     if not out.strip():
         raise RuntimeError("模型没有返回内容")

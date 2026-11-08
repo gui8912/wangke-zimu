@@ -768,9 +768,65 @@ def upload(file: UploadFile = File(...)):
             "size": size, "path": str(dst), "media_url": f"/api/media/{fid}"}
 
 
+@app.post("/api/link")
+async def api_link(payload: dict):
+    """【新增 v2.4】登记本机已有的课件，**不复制字节**。
+
+    浏览器上传拿不到本机原路径，只能把 HTTP 流落成 media/ 副本；
+    这里让用户直接填原始路径，同一块盘用 NTFS 硬链接（零额外空间），
+    跨盘或权限不允许时才退回复制，并在返回里明确标出 copied。
+    """
+    raw = str(payload.get("path") or "").strip().strip('"').strip("'")
+    if not raw:
+        return JSONResponse({"error": "请填本机课件的完整路径"}, status_code=400)
+    try:
+        src = Path(raw).resolve()
+    except (OSError, ValueError):
+        return JSONResponse({"error": "路径不合法"}, status_code=400)
+    if not src.is_file():
+        return JSONResponse({"error": "文件不存在或不是普通文件"}, status_code=400)
+    if src.suffix.lower() not in ALLOWED_MEDIA_EXT:
+        return JSONResponse({"error": f"不支持的文件类型：{src.suffix}"}, status_code=400)
+    if _inside(src, BASE):
+        return JSONResponse(
+            {"error": "请直接指向工程目录外的原始课件（media/ 里的副本不用再导入）"},
+            status_code=400)
+    safe = _safe(src.name)[:120] or "lesson"
+    fid = uuid.uuid4().hex[:12]
+    dst = MEDIA / f"{fid}_{safe}"
+    copied = False
+    try:
+        os.link(src, dst)               # 同卷零拷贝：两个名字、一份数据
+    except OSError:
+        try:
+            shutil.copy2(src, dst)      # 跨卷 / 权限不足才真复制
+        except OSError as exc:
+            dst.unlink(missing_ok=True)
+            return JSONResponse({"error": f"导入失败：{exc}"}, status_code=400)
+        copied = True
+    info = {"name": safe, "path": str(dst), "kind": media_type_of(safe)}
+    UPLOADS[fid] = info
+    _prune(UPLOADS, MAX_UPLOADS)
+    return {"file_id": fid, "name": safe, "kind": info["kind"],
+            "size": src.stat().st_size, "path": str(dst),
+            "media_url": f"/api/media/{fid}",
+            "linked": not copied, "copied": copied}
+
+
 @app.get("/api/media/{fid}")
 async def media(fid: str):
     info = UPLOADS.get(fid)
+    if not info and fid.isalnum() and 6 <= len(fid) <= 32:
+        # 【修复 v2.4】UPLOADS 是纯内存表，服务一重启就清空，旧页面里
+        # 的 /api/media/<fid> 立刻 404，视频看起来「不能播了」。
+        # 按上传时的命名规则 <fid>_<原名> 在 media/ 里找回并重新登记，
+        # 不用重新上传、也不用改前端持有的 URL。
+        for cand in MEDIA.glob(f"{fid}_*"):
+            if cand.is_file():
+                info = {"name": cand.name.split("_", 1)[-1],
+                        "path": str(cand), "kind": media_type_of(cand.name)}
+                UPLOADS[fid] = info
+                break
     if not info:
         return JSONResponse({"error": "文件不存在"}, status_code=404)
     if not Path(info["path"]).exists():          # modified: 记录还在但文件已被删
@@ -1646,11 +1702,26 @@ async def api_revise_tts(payload: dict):
 
 _LLM_BUSY = threading.Lock()   # 同时只跑一份；并发只会让两份都慢到超时
 _LLM_START = [0.0]             # 单调时钟，记录当前这一次开始时间
+# 【新增 v2.4】长稿润色只读进度。同步 POST 期间前端看不到中间状态，
+# 3 万字 / 43 块要等十分钟，用户会以为卡死；这里每块更新，前端轮询显示。
+_LLM_PROGRESS = {"busy": False, "done": 0, "total": 0,
+                 "stage": "", "start": 0.0, "chars": 0}
+_LLM_BUDGET = [600]            # 当前这一稿的卡死判定阈值（按它的块数算）
 # modified(v1.8) 新增:单次润色的硬上限。llama.cpp 的推理循环在 C++ 里跑，
 # Python 侧无法中断（threading 也没有安全的 kill），所以超时只能做到
 # 「不再接受新请求 + 明确告诉你卡住了」，做不到自动回收。
 # 8000 字上限本身约 3 分钟，600 秒留了充足余量，正常不会误判。
 LLM_MAX_SECONDS = int(os.environ.get("ASR_LLM_TIMEOUT", "600"))
+_LLM_BUDGET[0] = LLM_MAX_SECONDS
+
+
+@app.get("/api/llm/progress")
+def api_llm_progress():
+    """【新增 v2.4】只读：当前润色跑到第几块。长稿不再是一个黑盒 POST。"""
+    p = dict(_LLM_PROGRESS)
+    p["elapsed"] = round(time.monotonic() - p["start"], 1) if p["busy"] else 0.0
+    p["budget"] = _LLM_BUDGET[0]
+    return p
 
 
 @app.get("/api/llm/status")
@@ -1727,18 +1798,29 @@ def api_llm_polish(payload: dict):
     max_wait = max(LLM_MAX_SECONDS, est_chunks * 90)
     if not _LLM_BUSY.acquire(blocking=False):
         stuck = time.monotonic() - (_LLM_START[0] or time.monotonic())
-        if stuck > max_wait:
+        # 【修复 v2.4】阈值必须按「正在跑的那一稿」的块数算，不能用这次
+        # 探测请求的短文本算：实测长稿跑 637 秒时，一个 2 字探测请求
+        # 用 600 秒阈值把它误判成「卡死，请重启服务」。
+        if stuck > _LLM_BUDGET[0]:
             return JSONResponse(
                 {"error": f"上一次润色已持续 {int(stuck)} 秒仍未返回，疑似卡死。"
                           f"推理在 C++ 层执行、无法从 Python 中断，请重启服务后再试"},
                 status_code=503)
+        pg = _LLM_PROGRESS
         return JSONResponse(
-            {"error": f"已有一份稿子正在润色（已 {int(stuck)} 秒），请等它完成"},
-            status_code=409)
+            {"error": f"已有一份稿子正在润色：第 {pg['done']}/{pg['total']} 块，"
+                      f"已 {int(stuck)} 秒，请等它完成"}, status_code=409)
     _LLM_START[0] = time.monotonic()
+    _LLM_BUDGET[0] = max_wait
+    _LLM_PROGRESS.update(busy=True, done=0, total=est_chunks,
+                         stage="准备中", start=_LLM_START[0], chars=len(text))
     try:
         logs, t0 = [], time.time()
-        r = LP.polish(text, log=lambda m: logs.append(m))
+
+        def on_progress(done, total, stage):
+            _LLM_PROGRESS.update(done=done, total=total, stage=stage)
+
+        r = LP.polish(text, log=lambda m: logs.append(m), progress=on_progress)
         r["blocked"] = LP.blocked(r["audit"])   # 硬红线未过的项，前端据此禁用「采用」
         r["logs"] = logs
         r["total_elapsed"] = round(time.time() - t0, 1)
@@ -1749,6 +1831,8 @@ def api_llm_polish(payload: dict):
         print(f"[llm] 润色失败：{exc}\n{traceback.format_exc()[-1200:]}", flush=True)
         return JSONResponse({"error": f"润色失败：{exc}"}, status_code=500)
     finally:
+        _LLM_PROGRESS["busy"] = False
+        _LLM_PROGRESS["stage"] = "已结束"
         _LLM_BUSY.release()
         _LLM_START[0] = 0.0
 

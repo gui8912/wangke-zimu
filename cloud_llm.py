@@ -227,6 +227,7 @@ class CloudChat:
         self.log = log
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.calls = 0
+        self.fail_streak = 0          # 【新增 v2.4】连续失败块数，用于快速止损
         self.model_name = self.cfg.get("model") or ""
         self.timeout = int(self.cfg.get("timeout") or 120)
 
@@ -258,16 +259,17 @@ class CloudChat:
             try:
                 with _opener().open(req, timeout=self.timeout) as resp:
                     body = json.loads(resp.read().decode("utf-8", "replace"))
+                self.fail_streak = 0
                 break
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", "replace")[:300]
                 last = RuntimeError(f"HTTP {exc.code}：{detail}")
                 if exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
-                    raise last
+                    self._fail(last)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last = RuntimeError(f"网络请求失败：{exc}")
                 if attempt == 2:
-                    raise last
+                    self._fail(last)
             time.sleep(1.0 * (attempt + 1))
         else:
             raise last or RuntimeError("云端请求失败")
@@ -281,6 +283,19 @@ class CloudChat:
         self.calls += 1
         # 返回结构与 llama-cpp-python 对齐，_polish_chunk 不需要任何改动
         return body
+
+    def _fail(self, exc):
+        """【新增 v2.4】连续 3 块失败就整稿快速止损。
+
+        长稿 43 块，如果每块都各自超时重试，用户会干等十几分钟才看到
+        一句失败；不如尽早明确告诉他是网络 / 代理 / Key 的问题。
+        """
+        self.fail_streak += 1
+        if self.fail_streak >= 3:
+            raise RuntimeError(
+                f"云端连续 3 块请求失败（{exc}）；请检查网络或 "
+                f"ASR_LLM_PROXY，或把「后端」切回本地模型") from exc
+        raise exc
 
     def estimate(self):
         return {"usage": dict(self.usage), "calls": self.calls,
