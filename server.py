@@ -22,7 +22,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 BASE = Path(__file__).resolve().parent
@@ -56,6 +56,7 @@ import llm_polish as LP        # noqa: E402  【新增 v1.7】讲稿层 LLM 顺�
 import cloud_llm as CL         # noqa: E402  【新增 v2.2】免费 / 低价云端润色模型
 import queue_state as QS       # noqa: E402  【新增 v2.3】夜间批量队列
 import glossary as GLOSS        # noqa: E402  【新增 v2.5】术语表可视化编辑
+import backup as BK            # noqa: E402  【新增 v2.5】配置与词库备份 / 迁移
 
 REV = OUT / "rev"
 
@@ -1253,6 +1254,49 @@ def api_glossary_save(payload: dict):
     r["note"] = ("热词只影响新任务；错词与简称立即生效，"
                  "老任务点一次「重新清理」即可应用")
     return r
+
+
+# ─────────── 【新增 v2.5】配置与词库备份 / 迁移 ───────────
+#
+# 重装电脑 / 换机时，用户要带走的是「自己养出来的词表与设置」，
+# 不是几 GB 的音视频。导出成一个 zip，导入时先快照现有文件。
+
+@app.get("/api/backup/info")
+def api_backup_info():
+    try:
+        return BK.info()
+    except Exception as exc:
+        return JSONResponse({"error": f"读取备份信息失败：{exc}"}, status_code=500)
+
+
+@app.get("/api/backup/export")
+def api_backup_export(include_key: int = 0, include_queue: int = 1):
+    try:
+        data, name, manifest = BK.export_zip(bool(include_key), bool(include_queue))
+    except Exception as exc:
+        return JSONResponse({"error": f"打包失败：{exc}"}, status_code=500)
+    from urllib.parse import quote
+    return Response(
+        content=data, media_type="application/zip",
+        headers={
+            # 中文文件名按 RFC 5987 编码，Chrome / Edge / Firefox 都认
+            "Content-Disposition":
+                f"attachment; filename=asr-backup.zip; "
+                f"filename*=UTF-8''{quote(name)}",
+            "X-Backup-Items": str(len(manifest.get("items") or [])),
+            "X-Backup-Contains-Key": "1" if manifest.get("contains_key") else "0",
+        })
+
+
+@app.post("/api/backup/import")
+async def api_backup_import(file: UploadFile = File(...)):
+    data = await file.read()
+    try:
+        return BK.import_zip(data)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except OSError as exc:
+        return JSONResponse({"error": f"写入失败：{exc}"}, status_code=500)
 
 
 @app.get("/api/terms")

@@ -219,6 +219,18 @@
   .llm-block b{display:block;margin-bottom:4px;font-size:var(--fs-13)}
   .llm-block .row{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap}
   .llm-block .row button{background:var(--soft2);border:1px solid var(--line);color:var(--text)}
+  /* 【新增 v2.5】备份与迁移 */
+  .bksum{display:grid;grid-template-columns:1fr auto;gap:5px 14px;font-size:var(--fs-12);
+         padding:10px 12px;margin-top:10px;border:1px solid var(--line);
+         border-radius:var(--r-8);background:var(--soft2)}
+  .bksum .k{color:var(--muted)}
+  .bksum .v{color:var(--text);text-align:right}
+  .bksum .v.miss{color:var(--faint)}
+  .bksec{margin-top:12px;padding:12px;border:1px solid var(--line);
+         border-radius:var(--r-8);background:var(--soft)}
+  .bksec b{display:block;margin-bottom:5px;font-size:var(--fs-13)}
+  .bksec .hint{margin-bottom:8px;line-height:1.65}
+  .bksec .chk{margin:2px 14px 2px 0;display:inline-flex}
   .revfoot{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);
            background:var(--soft);font-size:var(--fs-12);color:var(--muted)}
   .revside .sidehead{display:flex;align-items:baseline;gap:8px;padding:11px 14px;
@@ -512,6 +524,8 @@
   <!-- 【新增 v2.4】首页即可查阅说明书：静态页由 samples/gen_manual.py 生成 -->
   <!-- 【新增 v2.5】术语表可视化编辑：错词校正 / 简称表 / 识别热词 -->
   <button class="lo-tx" id="btnGloss" title="维护错词校正、简称膨胀与识别热词；改完立即生效（热词只影响新任务）">术语表</button>
+  <!-- 【新增 v2.5】配置与词库备份：重装 / 迁移时带走自己养的词表和设置 -->
+  <button class="lo-tx" id="btnBackup" title="导出 / 导入词表与设置（不含音视频与字幕稿）">备份</button>
   <button class="lo-tx" id="btnManual" title="打开使用说明书（8 章：批量夜间 / 模型设置 / 成本 / 排障）">使用说明</button>
   <div class="prefs">
     <button id="btnFont" class="iconbtn" title="调整字号">A<sup id="fontTag">中</sup></button>
@@ -741,6 +755,44 @@
         只调时间，不改文字</span>
       <div class="spacer"></div>
       <button id="qcClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 【新增 v2.5】备份与迁移：只收配置与词库，不搬音视频 -->
+<div class="mask" id="backupMask">
+  <div class="modal" style="width:min(780px,95vw)">
+    <h3>备份与迁移<span class="sub">重装电脑 / 换机时带走词表与设置</span>
+      <button id="backupClose" style="margin-left:auto">关闭</button>
+    </h3>
+    <div class="body">
+      <div class="note">
+        备份内容：三张术语表、口语词规则、云端模型设置、队列偏好。
+        <b>不含</b>音视频与字幕产物（它们在 <code>media/</code> 与 <code>out/</code>，
+        需要时另行复制）。
+      </div>
+      <div class="bksum" id="backupItems"></div>
+
+      <div class="bksec">
+        <b>导出</b>
+        <div class="hint">下载一个 zip，存到网盘或移动硬盘；换机后再导入即可。</div>
+        <label class="chk"><input type="checkbox" id="backupKey">包含 API Key（明文，别外发）</label>
+        <label class="chk"><input type="checkbox" id="backupQueue" checked>包含队列偏好</label>
+        <div><button class="primary" id="backupExport">下载备份包</button></div>
+      </div>
+
+      <div class="bksec">
+        <b>导入</b>
+        <div class="hint">导入前会自动把现有文件快照到 <code>backups/</code>，导错可退回；
+          队列会自动解除暂停，避免导入后“一动不动”。</div>
+        <input type="file" id="backupFile" accept=".zip">
+        <div><button class="primary" id="backupImport">导入备份包</button></div>
+      </div>
+      <div id="backupMsg" class="hint" style="margin-top:6px"></div>
+    </div>
+    <div class="foot">
+      <span class="ghint" id="backupHint"></span>
+      <button id="backupDone">关闭</button>
     </div>
   </div>
 </div>
@@ -3199,6 +3251,83 @@ $('#glossSave').onclick = async ()=>{
     await glossLoad(true);
     glossRender();
   }catch(e){ toast('保存失败：' + e.message); }
+  finally{ btn.disabled = false; btn.textContent = old; }
+};
+
+/* ---------- 【新增 v2.5】备份与迁移 ----------
+   只导出「自己养出来的配置」：三张词表、口语词规则、云端设置、队列偏好。
+   音视频与字幕稿不搬——那是几个 GB，且重装后能从原课件再生成。 */
+async function backupInfo(){
+  const box = $('#backupItems');
+  box.innerHTML = '';
+  try{
+    const d = await (await fetch('/api/backup/info')).json();
+    if(d.error){ box.textContent = d.error; return; }
+    for(const it of d.items || []){
+      const k = document.createElement('span'); k.className = 'k';
+      k.textContent = it.path;
+      const v = document.createElement('span');
+      v.className = 'v' + (it.exists ? '' : ' miss');
+      v.textContent = it.exists ? `${(it.size / 1024).toFixed(1)} KB` : '不存在';
+      box.append(k, v);
+    }
+    $('#backupHint').textContent = [
+      d.last_snapshot ? `上次导入快照：backups/${d.last_snapshot}` : '还没有导入过快照',
+      (d.key_presets && d.key_presets.length)
+        ? `已存 Key：${d.key_presets.join('、')}` : '未配置云端 Key',
+    ].join(' · ');
+  }catch(e){ box.textContent = '读取失败：' + e.message; }
+}
+$('#btnBackup').onclick = ()=>{
+  $('#backupMsg').textContent = '';
+  $('#backupMask').classList.add('show');
+  backupInfo();
+};
+$('#backupClose').onclick = ()=>$('#backupMask').classList.remove('show');
+$('#backupDone').onclick = ()=>$('#backupMask').classList.remove('show');
+$('#backupMask').onclick = e=>{
+  if(e.target.id === 'backupMask') $('#backupMask').classList.remove('show');
+};
+$('#backupExport').onclick = async ()=>{
+  const key = $('#backupKey').checked ? 1 : 0;
+  const q = $('#backupQueue').checked ? 1 : 0;
+  const btn = $('#backupExport'); const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '打包中…';
+  $('#backupMsg').textContent = '正在打包…';
+  try{
+    const r = await fetch(`/api/backup/export?include_key=${key}&include_queue=${q}`);
+    if(!r.ok){ const d = await r.json(); throw new Error(d.error || '导出失败'); }
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
+    const name = m ? decodeURIComponent(m[1]) : '网课转字幕-配置备份.zip';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+    $('#backupMsg').textContent = `已导出 ${name}（${(blob.size / 1024).toFixed(1)} KB）`
+      + (key ? '；包内含 API Key 明文，注意别外发' : '');
+  }catch(e){ $('#backupMsg').textContent = '导出失败：' + e.message; }
+  finally{ btn.disabled = false; btn.textContent = old; }
+};
+$('#backupImport').onclick = async ()=>{
+  const f = $('#backupFile').files[0];
+  if(!f){ $('#backupMsg').textContent = '先选择一个 .zip 备份包'; return; }
+  if(!confirm('导入会覆盖现有词表与设置（导入前会自动快照到 backups/）。继续？')) return;
+  const btn = $('#backupImport'); const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '导入中…';
+  $('#backupMsg').textContent = '正在导入…';
+  try{
+    const fd = new FormData(); fd.append('file', f);
+    const r = await fetch('/api/backup/import', {method:'POST', body: fd});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || '导入失败');
+    $('#backupMsg').textContent = `已导入 ${d.imported.length} 个文件；`
+      + `导入前快照：${d.snapshot}。词表已生效，刷新页面即可。`
+      + (d.contains_key ? '（含云端 Key）' : '');
+    gloss.loaded = false;         // 词表变了，下次打开重新拉
+    backupInfo();
+  }catch(e){ $('#backupMsg').textContent = '导入失败：' + e.message; }
   finally{ btn.disabled = false; btn.textContent = old; }
 };
 

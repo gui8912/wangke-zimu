@@ -46,7 +46,7 @@ a{color:var(--accent)}
 <h1>网课转字幕 · 使用说明书</h1>
 <blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.4 ｜ 2026-11-09 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
 <hr>
-<nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a></nav>
+<nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a><a href="#s9">九、备份与迁移（重装电脑 / 换机）</a></nav>
 <h2 id="s1">一、三分钟上手</h2>
 <ol><li>双击 <code>启动界面.bat</code>（或在「服务台」里启动「网课转字幕」），浏览器自动打开</li></ol>
 <p><code>http://127.0.0.1:7870/</code>。</p>
@@ -235,6 +235,7 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <tr><td>导出成稿点了没反应</td><td>已改为「复制文本」单按钮，直接粘贴到 Word</td></tr>
 <tr><td>「管带 / 管道」被识别成别的词</td><td>顶栏「<strong>术语表</strong>」→ 错词校正加 <code>管带 =&gt; 管代</code>、识别热词加 <code>管代</code>（权重 20）；保存即生效，热词只影响新任务。也可直接改 <code>terms/*.txt</code></td></tr>
 <tr><td>术语表 / 错词表在哪里设置</td><td>顶栏「术语表」按钮：错词校正（错→对）、简称表（简称→全称）、识别热词（词+权重）三页签，可增删改；文件本体在 <code>terms/corrections.txt</code>、<code>aliases.txt</code>、<code>hotwords.txt</code></td></tr>
+<tr><td>重装电脑后词表和设置要重配一遍？</td><td>顶栏「备份」→ 导出 zip（可含 API Key，注意别外发）；新机装好工具后同一入口导入。导入前会自动快照，导错可退回。详见第九节</td></tr>
 <tr><td>填了 GLM 的 Key，再填 DeepSeek 存不上</td><td>2.4 起每个预设分开存 Key；切换下拉会自动带出本模型的 Key，留空即沿用</td></tr>
 <tr><td>填了 Key 但润色还是本地模型</td><td>要把「后端」选成「云端 OpenAI 兼容模型」，只存 Key 不会自动切换</td></tr>
 <tr><td>云端润色报 401 / 403</td><td>Key 填错或模型名用了已停用的 <code>deepseek-chat</code>；先点「测试连接」</td></tr>
@@ -256,6 +257,18 @@ rules/            口语词规则
 samples/          回归测试与真机验证脚本</code></pre>
 <p><strong>备份</strong>：定期把 <code>out/</code> 同步到 NAS；<code>media/</code> 源文件可从原课程重新导入。</p>
 <p><code>config/</code> 含密钥，外发前先删。</p>
+<hr>
+<h2 id="s9">九、备份与迁移（重装电脑 / 换机）</h2>
+<p>顶栏「<strong>备份</strong>」按钮，专门解决「重装后词表和设置要重配一遍」。</p>
+<table><thead><tr><th>操作</th><th>说明</th></tr></thead><tbody>
+<tr><td>导出</td><td>下载一个 zip：三张术语表、口语词规则、云端模型设置、队列偏好。勾「包含 API Key」会把 Key <strong>明文</strong>打包，别外发；不勾则只备份设置</td></tr>
+<tr><td>导入</td><td>选 zip → 覆盖现有配置；<strong>导入前自动快照</strong>到 <code>backups/import_&lt;时间&gt;/</code>，导错可退回</td></tr>
+<tr><td>不含</td><td><code>media/</code>、<code>out/</code>（音视频与字幕产物，按需另行复制，别塞进备份包）</td></tr>
+</tbody></table>
+<p><strong>换机步骤</strong>：旧机「备份」→ 导出（按需勾 Key）→ 拷到新机 → 装好本工具并启动 →</p>
+<p>「备份」→ 导入 → 刷新页面。词表保存即生效，不用重启。</p>
+<p>两个细节：队列导入后会自动<strong>解除暂停、清掉定时</strong>，避免「刚装好却一动不动」；</p>
+<p>导入包里的路径严格按白名单匹配，<code>../</code> 之类越权路径一律忽略。</p>
 <p class="foot">本页由 samples/gen_manual.py 从 使用说明书.md 生成；修改说明书后重跑脚本即可。</p>
 </div>
 </body>
