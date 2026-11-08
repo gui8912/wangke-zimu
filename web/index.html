@@ -1461,6 +1461,14 @@ async function llmEnsureStatus(){
   return llmStatus;
 }
 
+// 模型不可用时进页面就置灰，别让人点了等半天才看到报错
+llmEnsureStatus().then(st=>{
+  if(st.available) return;
+  const b = $('#btnRevLlm');
+  b.disabled = true;
+  b.title = `本地润色不可用：${st.detail}`;
+});
+
 $('#btnRevLlm').onclick = async ()=>{
   if(llmState.busy){ toast('正在润色，请稍等'); return; }
   const src = (rv.versions[0] || '').trim();
