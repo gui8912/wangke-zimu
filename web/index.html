@@ -258,6 +258,40 @@
   .taskrow .act button{padding:2px 7px;font-size:var(--fs-11);min-height:24px}
   .taskrow .dot{width:6px;height:6px}
   .dot.warn{background:var(--warn)}
+  /* 【新增 v2.0】任务栏：批量操作条 + 每行进度条 */
+  .taskbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 12px;
+           border-bottom:1px solid var(--line);background:var(--soft)}
+  .taskbar button{padding:2px 8px;font-size:var(--fs-11);min-height:24px}
+  .taskbar .cnt{font-size:var(--fs-11);color:var(--muted);margin-right:auto}
+  .taskrow{gap:7px}
+  .taskrow input[type=checkbox]{flex:0 0 auto;width:13px;height:13px;cursor:pointer}
+  .taskrow .main{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+  .taskrow .line1{display:flex;align-items:center;gap:6px;min-width:0}
+  .taskrow .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .taskrow .pg{font-size:10px;color:var(--muted);white-space:nowrap}
+  .pbar{height:3px;border-radius:2px;background:var(--line);overflow:hidden}
+  .pbar i{display:block;height:100%;background:var(--primary);transition:width .4s ease}
+  .pbar.done i{background:var(--ok)}
+  .pbar.err i{background:var(--danger)}
+  .taskrow.sel{background:var(--primary-weak)}
+  /* 【新增 v2.3】批量 / 夜间队列面板 */
+  .queuebox{border-top:1px solid var(--line);font-size:var(--fs-12)}
+  .queuebox summary{cursor:pointer;padding:7px 12px;color:var(--muted)}
+  .queuebox summary span{color:var(--primary);margin-left:8px}
+  .qwrap{padding:2px 12px 10px;display:flex;flex-direction:column;gap:6px}
+  .qrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .qrow button{padding:2px 8px;font-size:var(--fs-11);min-height:24px}
+  .qhint{color:var(--muted);font-size:var(--fs-11)}
+  .qf{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-11);color:var(--muted)}
+  .qf input[type=datetime-local],.qf select{padding:2px 4px;font-size:var(--fs-11)}
+  .qorder{display:flex;align-items:center;gap:6px;padding:2px 0;font-size:var(--fs-11)}
+  .qorder .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 【新增 v2.2】润色模型设置 */
+  .cfgrow{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .cfgrow>label:first-child{width:72px;flex:0 0 72px;color:var(--muted);font-size:var(--fs-12)}
+  .cfgrow input,.cfgrow select{flex:1;min-width:0;padding:4px 6px;font-size:var(--fs-12);
+    border:1px solid var(--line);border-radius:var(--r-6);background:var(--field);color:var(--text)}
+  .cfgrow .qhint input,.cfgrow .qhint select{flex:0 0 auto}
   .empty.small{padding:16px 12px;font-size:var(--fs-12)}
 
   .wavewrap{padding:6px 10px 3px;border-top:1px solid var(--line);background:var(--card)}
@@ -441,7 +475,7 @@
       <div class="pad">
         <div id="drop">
           <div style="font-size:var(--fs-15)"><b>把音视频拖到这里</b>，或点击选择</div>
-          <div style="font-size:var(--fs-12);margin-top:6px">支持 mp4 / mkv / mov / mp3 / wav / m4a 等</div>
+          <div style="font-size:var(--fs-12);margin-top:6px">支持 mp4 / mkv / mov / mp3 / wav / m4a 等；<b>可一次拖入多个</b>直接排进夜间队列</div>
         </div>
         <div id="fileCard" class="filecard" hidden>
           <div class="fc-top">
@@ -459,7 +493,7 @@
             <button class="primary btn-lg" id="fcStart" disabled>开始识别</button>
           </div>
         </div>
-        <input type="file" id="fileInput" accept="audio/*,video/*" hidden>
+        <input type="file" id="fileInput" accept="audio/*,video/*" multiple hidden>
       </div>
       <div id="mediaWrap" hidden></div>
       <div class="player" id="playerBar" hidden>
@@ -488,7 +522,45 @@
     </div>
     <div class="card" style="margin-top:14px" id="taskCard">
       <div class="cardhead"><b>任务</b><span id="taskCount" style="color:var(--muted);font-size:var(--fs-11)"></span></div>
+      <!-- 【新增 v2.0】批量操作条：全选/反选 + 重试/取消/删除/清空 -->
+      <div class="taskbar" id="taskBar">
+        <label class="chk" title="全选 / 取消全选"><input type="checkbox" id="selAll">全选</label>
+        <button id="btnSelInv" title="把当前选择反过来">反选</button>
+        <span class="cnt" id="selCount"></span>
+        <button id="btnBatchRetry" title="把选中的失败 / 中断 / 已取消任务重新排队">批量重试</button>
+        <button id="btnBatchCancel" title="取消选中的排队任务">批量取消</button>
+        <button id="btnBatchDelete" title="删除选中的已结束任务；out/ 里的字幕稿保留">删除选中</button>
+        <button id="btnBatchClear" title="清空全部已结束任务">清空已结束</button>
+        <label class="chk" title="删除任务时一并删掉上传的音视频；out/ 里的字幕稿永不删除"><input type="checkbox" id="purgeMedia">连源文件一起删</label>
+      </div>
       <div id="taskList" class="tasklist"><div class="empty small">暂无任务</div></div>
+      <!-- 【新增 v2.3】批量 / 夜间无人值守 -->
+      <details class="queuebox" id="queueBox">
+        <summary>批量 · 夜间无人值守 <span id="queueSummary"></span></summary>
+        <div class="qwrap">
+          <div class="qrow">
+            <button id="btnBatchAdd" class="primary">批量添加课件…</button>
+            <span class="qhint">一次可多选；也可直接把多个文件拖到上方虚线框</span>
+          </div>
+          <div class="qrow">
+            <button id="btnQueuePause">暂停队列</button>
+            <label class="qf">定时开始 <input type="datetime-local" id="queueAt"></label>
+            <button id="btnQueueAt">设定</button>
+            <button id="btnQueueAtClear">取消定时</button>
+            <label class="qf">失败自动重试
+              <select id="queueRetry"><option value="0">0 次</option><option value="1">1 次</option>
+                <option value="2">2 次</option><option value="3">3 次</option></select>
+            </label>
+          </div>
+          <div class="qrow">
+            <label class="qf"><input type="checkbox" id="queueWatch"> 文件夹监控</label>
+            <button id="btnQueueScan">立即扫描</button>
+            <label class="qf"><input type="checkbox" id="queueSkipDone" checked> 跳过已转录</label>
+            <span class="qhint" id="inboxPath"></span>
+          </div>
+          <div class="qrow" id="queueOrder"></div>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -568,7 +640,8 @@
       <span class="revtag" id="revTag">不动</span>
       <div class="spacer"></div>
       <button id="btnRevPrev" disabled>上一步</button>
-      <button id="btnRevLlm" title="用本地 Qwen3-4B 把口语稿整理成可读底稿。只作用于讲稿，字幕与时间轴完全不受影响；跑之前先看 diff 和红线检查，通过了才采用">LLM 润色</button>
+      <button id="btnRevLlm" title="用本地 Qwen3-4B 或云端免费/低价模型把口语稿整理成可读底稿。只作用于讲稿，字幕与时间轴完全不受影响；跑之前先看 diff 和红线检查，通过了才采用">LLM 润色</button>
+      <button id="btnRevLlmCfg" title="设定用本地模型还是云端免费模型（智谱 GLM-4-Flash / DeepSeek）润色讲稿">润色模型设置</button>
       <button id="btnRevRerun" disabled>重跑本遍</button>
       <button class="primary" id="btnRevRun" disabled>执行第 1 遍</button>
     </div>
@@ -831,6 +904,59 @@
   </div>
 </div>
 
+<!-- 云端润色模型设置（v2.2） -->
+<div class="mask" id="cloudMask">
+  <div class="modal" style="width:min(680px,95vw)">
+    <h3>润色模型设置<span class="sub">只处理讲稿文字，音频始终在本机</span></h3>
+    <div class="body">
+      <div class="note" style="margin-bottom:12px">
+        默认用<b>本地 Qwen3-4B</b>（零成本、零外传，但 1 小时课件的润色要跑几分钟）。
+        要更快或想省本机 CPU，可切到<b>智谱 GLM-4-Flash（永久免费）</b>或
+        <b>DeepSeek V4-Flash（低价）</b>。切换只影响「LLM 润色」这一遍，字幕与时间轴不受影响。
+      </div>
+      <div class="cfgrow"><label>后端</label>
+        <select id="cloudEnabled">
+          <option value="0">本地模型（默认）</option>
+          <option value="1">云端 OpenAI 兼容模型</option>
+        </select>
+      </div>
+      <div class="cfgrow"><label>预设</label>
+        <select id="cloudPreset"></select>
+      </div>
+      <div class="cfgrow"><label>接口地址</label><input id="cloudBase" placeholder="https://open.bigmodel.cn/api/paas/v4"></div>
+      <div class="cfgrow"><label>模型名</label><input id="cloudModel" placeholder="glm-4-flash"></div>
+      <div class="cfgrow"><label>API Key</label><input id="cloudKey" type="password" placeholder="留空表示沿用已保存的密钥" autocomplete="off"></div>
+      <div class="cfgrow"><label>单价</label>
+        <span class="qhint">输入 <input id="cloudPriceIn" type="number" step="0.01" style="width:80px">
+        / 输出 <input id="cloudPriceOut" type="number" step="0.01" style="width:80px">
+        每百万 token（<select id="cloudCurrency"><option value="CNY">¥</option><option value="USD">$</option></select>）</span>
+      </div>
+      <div class="cfgrow"><label>当前</label><span id="cloudNow" class="qhint"></span></div>
+      <div class="cfgrow"><label></label><span id="cloudNote" class="qhint"></span></div>
+      <div class="note" id="cloudResult" hidden></div>
+      <details style="margin-top:10px">
+        <summary class="qhint">成本怎么算的？安全吗？</summary>
+        <div class="qhint" style="padding:8px 4px;line-height:1.8">
+          · 1 小时中文课约 1.2 万字，润色输入+输出合计约 2–3 万 token。<br>
+          · GLM-4-Flash：<b>0 元</b>（官方长期免费，限 30 并发 / 约 3 次每秒）。<br>
+          · DeepSeek V4-Flash：按 $0.14/M 输入 + $0.28/M 输出，一小时课约 <b>¥0.05</b>；
+            北京时段 18:00–次日 09:00 是低谷价，约再减半。<br>
+          · 云端 ASR（腾讯云 / 火山）按音频时长计费，约每小时 1–2 元，我们不走那条路：
+            <b>识别永远在本地</b>，只有讲稿文字上云。<br>
+          · API Key 只存本机 config/cloud_llm.json，已排除出 git；界面只显示脱敏串。<br>
+          · 不填 Key 或关掉开关，随时回到纯本地模式。
+        </div>
+      </details>
+    </div>
+    <div class="foot">
+      <span class="qhint" style="margin-right:auto" id="cloudFoot"></span>
+      <button id="cloudTest">测试连接</button>
+      <button id="cloudSave" class="primary">保存</button>
+      <button id="cloudClose">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -856,7 +982,9 @@ const state = {
   subtitleText:'', docText:'', tracksDiff:[], adopted:false,
   // 【新增 v1.6】本地清理的逐条变更（原文/清理后/变更类型），供 diff 预览。
   // 历史任务没有这份数据（result 不落盘），点一次「重新清理」即可生成。
-  cueChanges:[]
+  cueChanges:[],
+  // 【新增 v2.0】任务栏勾选集合；用 Set 避免逐行重绘时丢选择
+  selected:new Set(), taskList:[]
 };
 
 /* ---------- 主题与字号 ---------- */
@@ -946,9 +1074,16 @@ drop.ondragover = e=>{e.preventDefault();drop.classList.add('over');};
 drop.ondragleave = ()=>drop.classList.remove('over');
 drop.ondrop = e=>{
   e.preventDefault(); drop.classList.remove('over');
-  if(e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+  const files = Array.from(e.dataTransfer.files || []);
+  if(files.length > 1) batchAdd(files);
+  else if(files[0]) upload(files[0]);
 };
-fileInput.onchange = ()=>{ if(fileInput.files[0]) upload(fileInput.files[0]); };
+fileInput.onchange = ()=>{
+  const files = Array.from(fileInput.files || []);
+  if(files.length > 1) batchAdd(files);
+  else if(files[0]) upload(files[0]);
+  fileInput.value = '';             // 允许再次选同一批文件
+};
 $('#fcReselect').onclick = ()=>fileInput.click();
 $('#fcStart').onclick = ()=>$('#btnStart').click();
 $('#fcPath').onclick = async ()=>{
@@ -1000,6 +1135,142 @@ async function upload(file){
     mountPlayer(d.media_url, d.kind);
     loadPeaks();
   }catch(e){ setStatus('上传失败：'+e.message,'err'); setFileStatus('上传失败','err'); }
+}
+
+/* ---------- 【新增 v2.3】批量入队 + 夜间无人值守 ---------- */
+function taskOptions(){
+  return {
+    model: $('#model') ? $('#model').value : 'qwen3-asr',
+    language: $('#lang') ? $('#lang').value : 'Chinese',
+    clean: $('#clean') ? $('#clean').checked : true,
+    itn: $('#itn') ? $('#itn').checked : true,
+    termfix: $('#termfix') ? $('#termfix').checked : true,
+    termfix_auto: true, provider: '', use_script_track: false
+  };
+}
+async function batchAdd(files){
+  if(state.demo){ toast('演示模式不能批量入队'); return; }
+  const ids = [], fails = [];
+  setStatus(`批量上传 0/${files.length}`, 'run');
+  for(let i = 0; i < files.length; i++){
+    const fd = new FormData(); fd.append('file', files[i]);
+    try{
+      const r = await fetch('/api/upload', {method:'POST', body:fd});
+      const d = await r.json();
+      if(d.error) throw new Error(d.error);
+      ids.push(d.file_id);
+    }catch(e){ fails.push(files[i].name + '：' + e.message); }
+    setStatus(`批量上传 ${i + 1}/${files.length}`, 'run');
+  }
+  if(!ids.length){
+    setStatus('批量上传全部失败', 'err'); toast(fails[0] || '上传失败'); return;
+  }
+  try{
+    const r = await fetch('/api/tasks/enqueue', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({file_ids:ids, options:taskOptions(),
+                            skip_done: $('#queueSkipDone') ? $('#queueSkipDone').checked : true})
+    });
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    const skip = (d.skipped || []).length;
+    let msg = `已入队 ${(d.created || []).length} 节课`;
+    if(skip) msg += `，跳过 ${skip} 个（重复 / 已完成）`;
+    if(fails.length) msg += `，上传失败 ${fails.length} 个`;
+    toast(msg); setStatus(msg, 'done');
+    refreshTasks(); refreshQueue();
+  }catch(e){
+    setStatus('批量入队失败：' + e.message, 'err'); toast('批量入队失败');
+  }
+}
+async function refreshQueue(){
+  if(state.demo) return;
+  try{
+    const d = await (await fetch('/api/queue')).json();
+    const s = $('#queueSummary');
+    let tag;
+    if(d.paused) tag = '已暂停';
+    else if(d.start_at) tag = '定时 ' + new Date(d.start_at * 1000)
+        .toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
+    else tag = `运行中 · 排队 ${(d.counts && d.counts.queued) || 0}`;
+    if(s) s.textContent = tag;
+    const p = $('#btnQueuePause');
+    if(p) p.textContent = d.paused ? '继续队列' : '暂停队列';
+    const rt = $('#queueRetry');
+    if(rt && document.activeElement !== rt) rt.value = String(d.auto_retry ?? 0);
+    const w = $('#queueWatch');
+    if(w && document.activeElement !== w) w.checked = !!d.watch;
+    const sd = $('#queueSkipDone');
+    if(sd && document.activeElement !== sd) sd.checked = !!d.skip_done;
+    const ip = $('#inboxPath');
+    if(ip) ip.textContent = '监控目录：' + (d.inbox || '');
+    const box = $('#queueOrder');
+    if(box){
+      box.innerHTML = '';
+      for(const q of (d.queue || [])){
+        const row = document.createElement('div'); row.className = 'qorder';
+        const no = document.createElement('span'); no.textContent = q.position + '.';
+        const nm = document.createElement('span'); nm.className = 'nm';
+        nm.textContent = q.name; nm.title = q.name;
+        const up = document.createElement('button'); up.textContent = '↑'; up.title = '提前';
+        up.onclick = ()=>queueMove(q.id, -1);
+        const dn = document.createElement('button'); dn.textContent = '↓'; dn.title = '延后';
+        dn.onclick = ()=>queueMove(q.id, 1);
+        row.append(no, nm, up, dn); box.appendChild(row);
+      }
+      if(!(d.queue || []).length){
+        const e = document.createElement('span'); e.className = 'qhint';
+        e.textContent = '队列为空'; box.appendChild(e);
+      }
+    }
+  }catch(e){}
+}
+async function queueSet(patch){
+  try{
+    const r = await fetch('/api/queue', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    refreshQueue(); refreshTasks();
+  }catch(e){ toast('设置失败：' + e); }
+}
+async function queueMove(id, delta){
+  try{
+    await fetch('/api/queue/move', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id, delta})});
+    refreshQueue(); refreshTasks();
+  }catch(e){ toast('调整顺序失败'); }
+}
+function initQueuePanel(){
+  const b = $('#btnBatchAdd'); if(b) b.onclick = ()=>$('#fileInput').click();
+  const p = $('#btnQueuePause');
+  if(p) p.onclick = async ()=>{
+    const cur = await (await fetch('/api/queue')).json();
+    queueSet({paused: !cur.paused});
+  };
+  const at = $('#btnQueueAt');
+  if(at) at.onclick = ()=>{
+    const v = $('#queueAt').value;
+    if(!v){ toast('请先选时间'); return; }
+    queueSet({start_at: new Date(v).getTime() / 1000, paused: false});
+  };
+  const cl = $('#btnQueueAtClear');
+  if(cl) cl.onclick = ()=>queueSet({start_at: null});
+  const rt = $('#queueRetry');
+  if(rt) rt.onchange = ()=>queueSet({auto_retry: Number(rt.value)});
+  const w = $('#queueWatch');
+  if(w) w.onchange = ()=>queueSet({watch: w.checked});
+  const sd = $('#queueSkipDone');
+  if(sd) sd.onchange = ()=>queueSet({skip_done: sd.checked});
+  const sc = $('#btnQueueScan');
+  if(sc) sc.onclick = async ()=>{
+    const d = await (await fetch('/api/queue/scan', {method:'POST'})).json();
+    toast(`扫描完成，新入队 ${d.count || 0} 个`);
+    refreshTasks(); refreshQueue();
+  };
+  const qb = $('#queueBox');
+  if(qb) qb.ontoggle = ()=>{ if(qb.open) refreshQueue(); };
 }
 
 function mountPlayer(url, kind){
@@ -1461,13 +1732,19 @@ async function llmEnsureStatus(){
   return llmStatus;
 }
 
-// 模型不可用时进页面就置灰，别让人点了等半天才看到报错
-llmEnsureStatus().then(st=>{
-  if(st.available) return;
+async function refreshLlmStatus(){
+  // 【新增 v2.2】切换本地 / 云端后端后重新拉一次，按钮的置灰与标题要跟着变
+  llmStatus = null;
+  const st = await llmEnsureStatus();
   const b = $('#btnRevLlm');
-  b.disabled = true;
-  b.title = `本地润色不可用：${st.detail}`;
-});
+  b.disabled = !st.available;
+  b.title = st.available ? `当前润色模型：${st.detail}`
+                         : `润色不可用：${st.detail}`;
+  return st;
+}
+
+// 模型不可用时进页面就置灰，别让人点了等半天才看到报错
+refreshLlmStatus();
 
 $('#btnRevLlm').onclick = async ()=>{
   if(llmState.busy){ toast('正在润色，请稍等'); return; }
@@ -1508,6 +1785,7 @@ $('#btnRevLlm').onclick = async ()=>{
     llmState.model = d.model || '';
     llmState.elapsed = d.elapsed || 0;
     llmState.blocked = d.blocked || [];
+    llmState.usage = d.usage || null;          // 【新增 v2.2】云端 token / 费用
     renderLlmPreview();
     $('#llmMask').classList.add('show');
   }catch(e){
@@ -1561,8 +1839,11 @@ function renderLlmPreview(){
     `共 ${ops.length} 处改动 · ${llmState.out.length} 字`;
 
   $('#llmFull').textContent = llmState.out;
+  const u = llmState.usage && llmState.usage.usage;
+  const cost = llmState.usage ? ` · ${u.prompt_tokens + u.completion_tokens} token`
+      + ` · 约 ¥${Number(llmState.usage.cost_cny || 0).toFixed(4)}` : '';
   $('#llmSub').textContent =
-    `${llmState.model} · ${llmState.elapsed}s · ${llmState.src.length} → ${llmState.out.length} 字`;
+    `${llmState.model} · ${llmState.elapsed}s · ${llmState.src.length} → ${llmState.out.length} 字${cost}`;
 
   // 从 audit 实时重算，而不是用后端给的 blocked：
   // 「补回末句」会在前端改 audit，后端那份就过期了
@@ -1604,6 +1885,88 @@ $('#llmRetail').onclick = ()=>{
 $('#llmClose').onclick = ()=>$('#llmMask').classList.remove('show');
 $('#llmMask').onclick = e=>{
   if(e.target.id === 'llmMask') $('#llmMask').classList.remove('show');
+};
+
+/* ---------- 【新增 v2.2】云端润色模型设置 ---------- */
+function cloudForm(){
+  return {
+    enabled: $('#cloudEnabled').value === '1',
+    preset: $('#cloudPreset').value,
+    base_url: $('#cloudBase').value.trim(),
+    model: $('#cloudModel').value.trim(),
+    api_key: $('#cloudKey').value.trim(),
+    price_in: Number($('#cloudPriceIn').value || 0),
+    price_out: Number($('#cloudPriceOut').value || 0),
+    currency: $('#cloudCurrency').value,
+  };
+}
+function cloudFill(st, keepKey){
+  $('#cloudEnabled').value = st.enabled ? '1' : '0';
+  const sel = $('#cloudPreset'); sel.innerHTML = '';
+  for(const p of (st.presets || [])){
+    const o = document.createElement('option');
+    o.value = p.id; o.textContent = p.label; sel.appendChild(o);
+  }
+  sel.value = st.preset || 'glm-4-flash';
+  $('#cloudBase').value = st.base_url || '';
+  $('#cloudModel').value = st.model || '';
+  $('#cloudPriceIn').value = st.price_in ?? 0;
+  $('#cloudPriceOut').value = st.price_out ?? 0;
+  $('#cloudCurrency').value = st.currency || 'CNY';
+  if(!keepKey) $('#cloudKey').value = '';
+  $('#cloudNow').textContent = st.masked_key ? '已保存密钥：' + st.masked_key : '尚未保存密钥';
+  $('#cloudNote').textContent = st.note || '';
+}
+async function openCloudCfg(){
+  $('#cloudMask').classList.add('show');
+  try{
+    const st = await (await fetch('/api/cloud/status')).json();
+    cloudFill(st);
+    $('#cloudFoot').textContent = st.enabled ? '当前：云端模型' : '当前：本地模型';
+    $('#cloudResult').hidden = true;
+  }catch(e){ toast('读取模型设置失败'); }
+}
+function cloudResult(msg, ok){
+  const b = $('#cloudResult'); b.hidden = false;
+  b.textContent = msg; b.style.color = ok ? 'var(--ok)' : 'var(--danger)';
+}
+$('#btnRevLlmCfg').onclick = openCloudCfg;
+$('#cloudClose').onclick = ()=>$('#cloudMask').classList.remove('show');
+$('#cloudMask').onclick = e=>{ if(e.target.id === 'cloudMask') $('#cloudMask').classList.remove('show'); };
+$('#cloudPreset').onchange = async ()=>{
+  try{
+    const d = await (await fetch('/api/cloud/preset', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({preset:$('#cloudPreset').value})})).json();
+    $('#cloudBase').value = d.base_url || '';
+    $('#cloudModel').value = d.model || '';
+    $('#cloudPriceIn').value = d.price_in ?? 0;
+    $('#cloudPriceOut').value = d.price_out ?? 0;
+    $('#cloudCurrency').value = d.currency || 'CNY';
+    $('#cloudNote').textContent = (d.preset === 'glm-4-flash')
+      ? '智谱 GLM-4-Flash 永久免费；到 open.bigmodel.cn 注册后在「API 密钥」里创建 Key。'
+      : '以服务商最新公告为准；DeepSeek 夜间（北京时间 18:00–次日 09:00）为低谷价。';
+  }catch(e){}
+};
+$('#cloudTest').onclick = async ()=>{
+  cloudResult('正在测试…', true);
+  try{
+    const d = await (await fetch('/api/cloud/test', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(cloudForm())})).json();
+    cloudResult(`${d.ok ? '✓' : '✗'} ${d.message}（${d.elapsed}s）`, d.ok);
+  }catch(e){ cloudResult('测试失败：' + e, false); }
+};
+$('#cloudSave').onclick = async ()=>{
+  try{
+    const r = await fetch('/api/cloud/config', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(cloudForm())});
+    const d = await r.json();
+    if(d.error){ cloudResult('✗ ' + d.error, false); return; }
+    cloudFill(d);
+    $('#cloudFoot').textContent = d.enabled ? '当前：云端模型' : '当前：本地模型';
+    cloudResult(d.enabled ? `✓ 已切换到 ${d.model}` : '✓ 已回到纯本地模型', true);
+    refreshLlmStatus();            // 刷新「LLM 润色」按钮的可用状态
+  }catch(e){ cloudResult('保存失败：' + e, false); }
 };
 
 $('#llmCopy').onclick = async ()=>{
@@ -1793,8 +2156,12 @@ async function poll(){
     refreshTasks();
     return;
   }
-  setStatus('转写中…（Qwen3 较慢，请耐心等待）','run');
+  // 【新增 v2.0】顶部状态也带上分片进度，长课不用盯着任务栏
+  const p = d.progress;
+  const pg = (p && p.pct) ? ` · ${Math.round(p.pct)}% ${p.stage || ''}` : '';
+  setStatus('转写中…（Qwen3 较慢，请耐心等待）' + pg,'run');
   setFileStatus('识别中…','run');
+  refreshTasks();
   state.timer = setTimeout(poll, 2000);
 }
 
@@ -1858,10 +2225,33 @@ function taskStatus(t){
   if(t.status === 'cancelled') return '已取消';
   return t.status || '';
 }
+/* 【新增 v2.0】按已用时间线性估剩余时间；前 20 秒样本太少不显示，免得乱跳 */
+function taskEta(t, p){
+  if(t.status !== 'running' || !p || !p.pct || p.pct >= 100) return '';
+  const st = t.started || p.at;
+  if(!st) return '';
+  const used = Date.now()/1000 - st;
+  if(used < 20 || p.pct <= 2) return '';
+  const left = used * (100 - p.pct) / p.pct;
+  if(!isFinite(left) || left < 0) return '';
+  return left >= 3600 ? `约剩 ${(left/3600).toFixed(1)} 小时`
+                      : `约剩 ${Math.max(1, Math.round(left/60))} 分钟`;
+}
+function updateSelUI(){
+  const n = state.selected.size, total = state.taskList.length;
+  const c = $('#selCount'); if(c) c.textContent = n ? `已选 ${n} 条` : '';
+  const all = $('#selAll');
+  if(all){ all.checked = total > 0 && n === total; all.indeterminate = n > 0 && n < total; }
+}
 function renderTasks(list){
   const box = $('#taskList'); if(!box) return;
+  list = list || [];
+  state.taskList = list;
+  const alive = new Set(list.map(t=>t.id));
+  for(const id of Array.from(state.selected)) if(!alive.has(id)) state.selected.delete(id);
   const cnt = $('#taskCount');
   if(cnt) cnt.textContent = list.length ? `${list.length} 条` : '';
+  updateSelUI();
   if(!list.length){
     box.innerHTML = '<div class="empty small">暂无任务</div>';
     return;
@@ -1869,21 +2259,38 @@ function renderTasks(list){
   const frag = document.createDocumentFragment();
   for(const t of list){
     const row = document.createElement('div');
-    row.className = 'taskrow ' + (t.status || '');
+    row.className = 'taskrow ' + (t.status || '') + (state.selected.has(t.id) ? ' sel' : '');
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.selected.has(t.id);
+    cb.title = '选中以便批量操作';
+    cb.onchange = ()=>{
+      if(cb.checked) state.selected.add(t.id); else state.selected.delete(t.id);
+      row.classList.toggle('sel', cb.checked);
+      updateSelUI();
+    };
+    row.appendChild(cb);
+
+    const main = document.createElement('div');
+    main.className = 'main';
+    const line1 = document.createElement('div');
+    line1.className = 'line1';
+
     const dot = document.createElement('span');
     dot.className = 'dot ' + taskDot(t.status);
-    row.appendChild(dot);
+    line1.appendChild(dot);
 
     const nm = document.createElement('span');
     nm.className = 'nm';
     nm.textContent = t.name || t.stem || t.id;
     nm.title = nm.textContent;
-    row.appendChild(nm);
+    line1.appendChild(nm);
 
     const st = document.createElement('span');
     st.className = 'st';
     st.textContent = taskStatus(t);
-    row.appendChild(st);
+    line1.appendChild(st);
 
     const act = document.createElement('span');
     act.className = 'act';
@@ -1903,11 +2310,81 @@ function renderTasks(list){
       b.onclick = ()=>taskAct(t.id, 'open');
       act.appendChild(b);
     }
-    row.appendChild(act);
+    line1.appendChild(act);
+    main.appendChild(line1);
+
+    // 进度条：识别中显示实时百分比 + 阶段 + ETA，完成/失败保留最后一帧
+    const p = t.progress;
+    if(p && ['running','done','error'].includes(t.status)){
+      const bar = document.createElement('div');
+      bar.className = 'pbar' + (t.status === 'done' ? ' done' : t.status === 'error' ? ' err' : '');
+      const fill = document.createElement('i');
+      fill.style.width = Math.max(0, Math.min(100, Number(p.pct) || 0)) + '%';
+      bar.appendChild(fill);
+      main.appendChild(bar);
+      const info = document.createElement('div');
+      info.className = 'pg';
+      const eta = taskEta(t, p);
+      info.textContent = `${Math.round(Number(p.pct) || 0)}% · ${p.stage || ''}${eta ? ' · ' + eta : ''}`;
+      main.appendChild(info);
+    }else if(t.status === 'queued'){
+      const info = document.createElement('div');
+      info.className = 'pg';
+      info.textContent = t.position ? `排队第 ${t.position} 位` : '排队中';
+      main.appendChild(info);
+    }
+    row.appendChild(main);
     frag.appendChild(row);
   }
   box.innerHTML = '';
   box.appendChild(frag);
+}
+/* 【新增 v2.0】批量操作：统一走 /api/tasks/batch */
+async function batchAction(action, opts){
+  opts = opts || {};
+  const ids = opts.clear ? [] : Array.from(state.selected);
+  if(!opts.clear && !ids.length){ toast('请先勾选任务'); return; }
+  const label = {retry:'批量重试', cancel:'批量取消', delete:'删除选中', clear:'清空已结束'}[action];
+  if(opts.confirm && !window.confirm(opts.confirm)) return;
+  try{
+    const r = await fetch('/api/tasks/batch', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action, ids, purge_media: !!($('#purgeMedia') && $('#purgeMedia').checked)})
+    });
+    const d = await r.json();
+    if(d.error){ toast(d.error); return; }
+    let msg = `${label}：完成 ${d.done} 条`;
+    if(d.skipped && d.skipped.length) msg += `，跳过 ${d.skipped.length} 条`;
+    toast(msg);
+    if(d.skipped && d.skipped.length) console.log('[batch] 跳过明细', d.skipped);
+    state.selected.clear();
+    refreshTasks();
+  }catch(e){ toast('操作失败：' + e); }
+}
+function initTaskBar(){
+  const all = $('#selAll');
+  if(all) all.onchange = ()=>{
+    if(all.checked) state.taskList.forEach(t=>state.selected.add(t.id));
+    else state.selected.clear();
+    refreshTasks();
+  };
+  const inv = $('#btnSelInv');
+  if(inv) inv.onclick = ()=>{
+    const next = new Set();
+    state.taskList.forEach(t=>{ if(!state.selected.has(t.id)) next.add(t.id); });
+    state.selected = next;
+    refreshTasks();
+  };
+  const bind = (id, action, opts)=>{
+    const b = $(id); if(b) b.onclick = ()=>batchAction(action, opts);
+  };
+  bind('#btnBatchRetry', 'retry');
+  bind('#btnBatchCancel', 'cancel');
+  bind('#btnBatchDelete', 'delete', {
+    confirm:'确定删除选中的任务记录吗？\n只删列表与任务文件，out/ 里的字幕稿会保留。'});
+  bind('#btnBatchClear', 'clear', {
+    clear:true,
+    confirm:'确定清空全部「已完成 / 失败 / 中断 / 已取消」的任务吗？\n正在识别与排队中的任务不会动；out/ 里的字幕稿会保留。'});
 }
 async function refreshTasks(){
   if(state.demo) return;
@@ -1915,6 +2392,7 @@ async function refreshTasks(){
     const r = await fetch('/api/tasks');
     const d = await r.json();
     renderTasks(d.tasks || []);
+    if($('#queueBox') && $('#queueBox').open) refreshQueue();
   }catch(e){}
 }
 async function taskAct(id, action){
@@ -3259,10 +3737,22 @@ if(location.search.includes('fix=1')){
 /* 上次没改完的稿子：刷新后自动恢复（只存本机浏览器） */
 rvRestore();
 
-/* 任务列表：启动时接回历史任务，之后每 4 秒刷新一次 */
+/* 任务列表：启动时接回历史任务，识别中 2 秒一刷、空闲 5 秒一刷 */
 if(!state.demo){
+  initTaskBar();
+  initQueuePanel();
   refreshTasks();
-  setInterval(()=>{ if(!document.hidden) refreshTasks(); }, 4000);
+  refreshQueue();
+  // 【新增 v2.2】先把预设列表填好，别等点开弹窗才拉（避免下拉框空一瞬）
+  fetch('/api/cloud/status').then(r=>r.json()).then(st=>cloudFill(st)).catch(()=>{});
+  let tick = 0;
+  setInterval(()=>{
+    if(document.hidden) return;
+    tick++;
+    const busy = state.taskList.some(t=>t.status === 'running' || t.status === 'queued');
+    if(!busy && tick % 3 !== 0) return;      // 空闲时降到 6 秒一刷
+    refreshTasks();
+  }, 2000);
 }
 
 /* 有未保存的校对稿时离开，提醒一下 */

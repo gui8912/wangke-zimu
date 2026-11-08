@@ -281,12 +281,27 @@ def cues_with_time(sentences: list) -> list:
 
 # ────────────────────────── 识别 ──────────────────────────
 
+def _emit(progress, pct: float, stage: str = ""):
+    """【新增 v2.0】进度回调的唯一出口。
+
+    前端靠它画进度条。回调是「锦上添花」，一旦它抛异常绝不能把识别带崩，
+    所以这里一律吞掉——进度条不动比任务失败好得多。
+    """
+    if progress is None:
+        return
+    try:
+        progress(max(0.0, min(100.0, float(pct))), str(stage))
+    except Exception:
+        pass
+
+
 def transcribe(wav: Path, cfg: dict, hotword: str, device: str,
-               language: str = "Chinese", log=print) -> dict:
+               language: str = "Chinese", log=print, progress=None) -> dict:
     t1 = time.time()
     if cfg.get("backend") == "qwen3":
-        item = _run_qwen3(wav, cfg, device, language, log)
+        item = _run_qwen3(wav, cfg, device, language, log, progress)
     else:
+        _emit(progress, 12, "识别中")
         item = _run_funasr(wav, cfg, hotword, device)
     item["_cost_s"] = round(time.time() - t1, 1)
     return item
@@ -321,6 +336,15 @@ QWEN3_WINDOW_SEC = min(175.0, max(30.0, float(os.environ.get("ASR_QWEN3_WINDOW")
 QWEN3_EXPAND_SEC = min(5.0, QWEN3_WINDOW_SEC / 6.0)
 QWEN3_MAX_NEW_TOKENS = int(os.environ.get("ASR_QWEN3_MAXTOK") or 2048)
 
+# 【新增 v2.1】分片并行度。基准实测（20 核 / 240 秒真实课程，两片 120s）：
+#   顺序、torch 20 线程  125s，整机 CPU 100%；
+#   顺序、torch 10 线程  134s（更慢，说明减线程没用）；
+#   两片并行、各 8 线程  99s（1.26×），内存 7.8GB → 9.5GB（模型权重共享）。
+# 所以「CPU 还有余量」的真相是：单步自回归解码喂不满核心，多片并行才能榨出吞吐。
+# 并发每 +1 约多 2~6GB 内存，默认 2 是 63GB 机器上的稳妥值；内存紧张设 1。
+QWEN3_WORKERS = min(4, max(1, int(os.environ.get("ASR_QWEN3_WORKERS") or 2)))
+QWEN3_THREADS = max(4, min(8, (os.cpu_count() or 8) // 2))
+
 
 def _resolve_ms_dir(model_id: str) -> str:
     """把 ModelScope 模型 ID 解析成本地目录；已缓存则秒回，不重复下载"""
@@ -331,7 +355,7 @@ def _resolve_ms_dir(model_id: str) -> str:
         return model_id
 
 
-def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log) -> dict:
+def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=None) -> dict:
     """Qwen3-ASR：LLM 架构精度高，字级时间戳由强制对齐模型给出"""
     import torch
     from qwen_asr import Qwen3ASRModel
@@ -366,11 +390,18 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log) -> dict:
     pcm = normalize_audio_input(str(wav))
     parts = split_audio_into_chunks(wav=pcm, sr=16000, max_chunk_sec=QWEN3_WINDOW_SEC,
                                     search_expand_sec=QWEN3_EXPAND_SEC)
-    log(f"音频 {len(pcm) / 16000 / 60:.1f} 分钟，切 {len(parts)} 片逐片识别")
+    total = len(parts)
+    workers = QWEN3_WORKERS if total > 1 else 1
+    if workers > 1:
+        # 并行时把每个算子的线程数压到 8：实测 2 路×8 线程比 2 路×20 线程快，
+        # 否则 40 个线程抢 20 个核，光上下文切换就把收益吃回去。
+        import torch
+        torch.set_num_threads(QWEN3_THREADS)
+    log(f"音频 {len(pcm) / 16000 / 60:.1f} 分钟，切 {total} 片"
+        + (f"，{workers} 路并行识别" if workers > 1 else "逐片识别"))
 
-    texts, ts, silent = [], [], 0
-    for i, (chunk, offset) in enumerate(parts, 1):
-        off_ms = int(round(offset * 1000))
+    def one(i, chunk, offset):
+        """识别一片，返回（片号、文本、字级时间戳）。失败重试一次。"""
         r = None
         for attempt in (1, 2):
             try:
@@ -383,18 +414,47 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log) -> dict:
                 # 免得 70 分钟的活干到第 20 片白跑一场还看不出卡在哪。
                 if attempt == 2:
                     raise RuntimeError(
-                        f"第 {i}/{len(parts)} 片（{offset / 60:.1f} 分钟处）识别失败：{exc}"
+                        f"第 {i + 1}/{total} 片（{offset / 60:.1f} 分钟处）识别失败：{exc}"
                     ) from exc
                 log(f"第 {i} 片出错，重试一次：{exc}")
-
         text = ((getattr(r, "text", "") or "") if r else "").strip()
+        stamps = (getattr(r, "time_stamps", None) or []) if r else []
+        return i, text, stamps
+
+    results = [None] * total
+    _emit(progress, 12, f"识别 0/{total}")
+    if workers > 1:
+        import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        lock, done = threading.Lock(), [0]
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qwen3") as ex:
+            futs = [ex.submit(one, i, ch, off)
+                    for i, (ch, off) in enumerate(parts)]
+            for f in as_completed(futs):
+                i, text, stamps = f.result()      # 有异常就在这里抛，带片号
+                results[i] = (text, stamps)
+                with lock:
+                    done[0] += 1
+                    _emit(progress, 12 + 78 * done[0] / total, f"识别 {done[0]}/{total}")
+                log(f"识别 {i + 1}/{total}：{len(text)} 字")
+    else:
+        for i, (chunk, offset) in enumerate(parts):
+            _emit(progress, 12 + 78 * i / total, f"识别 {i + 1}/{total}")
+            _, text, stamps = one(i, chunk, offset)
+            results[i] = (text, stamps)
+            log(f"识别 {i + 1}/{total}（{offset / 60:.1f} 分钟）：{len(text)} 字")
+            _emit(progress, 12 + 78 * (i + 1) / total, f"识别 {i + 1}/{total}")
+
+    # 按片号顺序拼回，绝不按完成顺序——否则字幕时间轴会整段错乱
+    texts, ts, silent = [], [], 0
+    for i, (text, stamps) in enumerate(results):
+        off_ms = int(round(parts[i][1] * 1000))
         if not text:
             silent += 1
         texts.append(text)
-        stamps = (getattr(r, "time_stamps", None) or []) if r else []
         ts.extend([int(t.start_time * 1000) + off_ms, int(t.end_time * 1000) + off_ms]
                   for t in stamps)
-        log(f"识别 {i}/{len(parts)}（{offset / 60:.1f} 分钟）：{len(text)} 字")
+    _emit(progress, 90, "识别完成")
 
     full = "".join(texts).strip()
     if not full:
@@ -477,7 +537,7 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
                  language: str = "Chinese", log=print,
                  provider_key: str = None, use_script_track: bool = False,
                  itn: bool = True, termfix: bool = True,
-                 termfix_auto: bool = True) -> dict:
+                 termfix_auto: bool = True, progress=None) -> dict:
     """完整流程，命令行与图形界面共用。返回结构化结果。
 
     【修改 v1.3】新增 provider_key / use_script_track 两个可选参数，默认 None/False
@@ -498,7 +558,9 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
 
     log(f"处理：{src.name}")
     stem = unique_stem(src, outdir)          # modified: 同名文件不再互相覆盖
+    _emit(progress, 4, "抽取音频")
     wav = ensure_wav(src, outdir, stem)
+    _emit(progress, 10, "音频就绪")
     t0 = time.time()
 
     # 【新增 v1.3】provider 分支。默认（provider_key 为空或本地）保持原调用，
@@ -511,6 +573,7 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
     tracks = None
     if prov.kind == "cloud":
         log(f"识别源：{prov.name}（云端）")
+        _emit(progress, 15, f"云端识别（{prov.name}）")
         tracks = prov.transcribe(wav, language=language,
                                  hotwords=None, log=log)
         item = {"text": tracks.subtitle_text,
@@ -521,8 +584,9 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
         if tracks.has_script and use_script_track:
             do_clean = False
             log("云端已提供整理稿，跳过本地口语清理（避免双重改写）")
+        _emit(progress, 88, "云端识别完成")
     else:
-        item = transcribe(wav, cfg, hotword, device, language, log)
+        item = transcribe(wav, cfg, hotword, device, language, log, progress)
     dur = time.time() - t0
 
     meta = {
@@ -533,6 +597,7 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
         "hotwords": len(hotword.split()) // 2 if hotword else 0,
         "provider": prov.id,                 # 【新增 v1.3】
     }
+    _emit(progress, 92, "写入字幕")
     out = write_outputs(item, stem, outdir, meta)
 
     # 【新增 v1.3】双轨产物落盘。本地源也写一份（讲稿轨为空），前端逻辑统一。
@@ -587,6 +652,7 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
     }
 
     if do_clean:
+        _emit(progress, 95, "口语清理")
         import clean_transcript as ct
         cleaner = ct.Cleaner(ct.load_rules(BASE / "rules" / "filler_words.json"),
                              ct.load_corrections(BASE / "terms" / "corrections.txt"),
@@ -649,6 +715,7 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
         log(f"口语清理完成：{len(cues_in)}→{len(kept)} 条")
 
     result["outdir"] = outdir
+    _emit(progress, 100, "完成")
     return result
 
 

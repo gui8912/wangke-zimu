@@ -138,7 +138,10 @@ def unit(tmp: Path):
         run_with(FakeModel(fail_times=99), wav, window=40.0)
         ok("持续失败带片号", False)
     except RuntimeError as exc:
-        ok("持续失败带片号", f"第 1/{n} 片" in str(exc) and "识别失败" in str(exc), exc)
+        # v2.1 起分片可并行，最先抛错的不一定是第 1 片，只校验「带片号 + 带原因」
+        import re as _re
+        ok("持续失败带片号", bool(_re.search(rf"第 \d+/{n} 片", str(exc)))
+           and "识别失败" in str(exc), exc)
 
     # ⑥ 短音频（不足一个窗口）走单片，偏移为 0
     item4, _ = run_with(FakeModel(), wav, window=170.0)

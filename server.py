@@ -53,11 +53,16 @@ import align as AL              # noqa: E402
 import asr_providers as P       # noqa: E402  【新增 v1.3】识别源抽象层
 import learn as _LEARN          # noqa: E402  【新增 v1.5】修订学习（只记录，不自动应用）
 import llm_polish as LP        # noqa: E402  【新增 v1.7】讲稿层 LLM 顺滑
+import cloud_llm as CL         # noqa: E402  【新增 v2.2】免费 / 低价云端润色模型
+import queue_state as QS       # noqa: E402  【新增 v2.3】夜间批量队列
 
 REV = OUT / "rev"
 
-# 串行队列：本机只有一颗 CPU，多任务并行只会互相拖慢。
-JOB_Q = queue.Queue()
+# 串行队列：本机 CPU 跑一份识别已经吃满，多任务并行只会互相拖慢。
+# 【修改 v2.3】换成可排序的 JobQueue；队列状态落盘，重启后 queued 任务自动续跑。
+JOB_Q = QS.JobQueue()
+QSTATE = QS.load()
+QGATE = QS.Gate(QSTATE)
 PERSIST_LOCK = threading.Lock()
 
 app = FastAPI(title="药品监管网课转字幕")
@@ -382,6 +387,7 @@ def _load_jobs():
         print(f"[jobs] 无法枚举任务目录：{exc}", flush=True)
         return
     files = sorted(candidates, key=_mtime, reverse=True)[:MAX_TASKS]
+    resume = []
 
     for p in files:
         try:
@@ -395,15 +401,24 @@ def _load_jobs():
             print(f"[jobs] 跳过损坏的任务文件 {p.name}: {exc}", flush=True)
             continue
         d["result"] = None
-        stale = d.get("status") in ("queued", "running")
-        if stale:
+        st = d.get("status")
+        if st == "queued":
+            # 【新增 v2.3】夜间无人值守的关键：排队中的任务必须自动续跑。
+            # 原实现把 queued 和 running 一起标成「中断」，等于重启一次
+            # 就把夜里排好的几十节课全部作废，还得人早上起来逐条点重试。
+            d["error"] = None
+            resume.append(tid)
+        elif st == "running":
             d["status"] = "interrupted"
             d["error"] = "服务重启，任务中断；可点「重试」重新排队"
-        TASKS[tid] = d
-        # modified(v1.9): 状态改了要立刻落盘。原来只在内存里改，磁盘上还写着
-        # running——进程崩过之后打开任务文件看到的是假的「正在运行」，排查时误导人。
-        if stale:
+            # 状态改了要立刻落盘，磁盘上不再留假的 running
             _persist(tid)
+        TASKS[tid] = d
+
+    for tid in resume:
+        JOB_Q.put(tid)
+    if resume:
+        print(f"[queue] 续跑上次排队中的 {len(resume)} 个任务", flush=True)
 
 
 def _locate(p, *dirs):
@@ -497,7 +512,7 @@ def _prune_tasks(limit: int):
 def _queue_pos(tid: str) -> int:
     # modified(v1.2): 已取消 / 已中断的 tid 仍留在队列里（worker 会跳过），
     # 原来把它们算进位次，前端显示「第 3 位」其实前面根本没人。
-    waiting = [x for x in list(JOB_Q.queue)
+    waiting = [x for x in JOB_Q.snapshot()
                if (TASKS.get(x) or {}).get("status") == "queued"]
     try:
         return waiting.index(tid) + 1
@@ -521,7 +536,14 @@ def _worker(task_id: str):
         task["path"] = str(src)
     task["status"] = "running"
     task["started"] = time.time()
+    # 【新增 v2.0】进度是纯瞬态数据：只放内存给 /api/tasks 轮询，不写 job.json。
+    # 长课每片都会更新一次，落盘没有意义，还会把 v1.8 的 1 秒节流打回原形。
+    task["progress"] = {"pct": 2, "stage": "启动", "at": task["started"]}
     _persist(task_id)
+
+    def progress(pct, stage=""):
+        task["progress"] = {"pct": round(float(pct), 1),
+                            "stage": str(stage), "at": time.time()}
 
     log_last = [0.0]        # 上一次日志落盘的时间（单调时钟）
     def log(msg):
@@ -547,7 +569,9 @@ def _worker(task_id: str):
                            itn=bool(task.get("itn", True)),
                            # 【新增 v1.5】术语修复
                            termfix=bool(task.get("termfix", True)),
-                           termfix_auto=bool(task.get("termfix_auto", True)))
+                           termfix_auto=bool(task.get("termfix_auto", True)),
+                           # 【新增 v2.0】逐片进度 → 任务栏进度条
+                           progress=progress)
         raw_cues = parse_cues(r["raw_srt_text"])
         clean_cues = parse_cues(r["clean_srt_text"]) if r["clean_srt_text"] else None
 
@@ -585,12 +609,15 @@ def _worker(task_id: str):
         }
         task["status"] = "done"
         task["finished"] = time.time()
+        task["progress"] = {"pct": 100, "stage": "完成", "at": task["finished"]}
         _persist(task_id)
     except Exception as exc:
         task["status"] = "error"
         task["error"] = str(exc)
         task["logs"].append(traceback.format_exc())
         task["finished"] = time.time()
+        p = task.get("progress") or {}
+        task["progress"] = {"pct": p.get("pct", 0), "stage": "失败", "at": task["finished"]}
         _persist(task_id)
 
 
@@ -600,6 +627,20 @@ def _run_queued(tid: str):
         task = TASKS.get(tid)
         if task and task.get("status") == "queued":
             _worker(tid)
+            # 【新增 v2.3】夜间无人值守：失败自动重排到队尾，别的课先跑。
+            # 上限由 QSTATE['auto_retry'] 控制，attempt 写在任务上，重启也记得住。
+            task = TASKS.get(tid)
+            limit = int(QSTATE.get("auto_retry") or 0)
+            if task and task.get("status") == "error" and limit > 0:
+                n = int(task.get("attempt") or 0)
+                if n < limit:
+                    task["attempt"] = n + 1
+                    task["status"] = "queued"
+                    task["error"] = None
+                    task["logs"].append(f"失败，自动重试 {n + 1}/{limit}（排到队尾）")
+                    task["progress"] = None
+                    _persist(tid)
+                    JOB_Q.put(tid)
     except BaseException as exc:
         # modified(v1.2): 必须是 BaseException。transcribe.ensure_wav 原来
         # 用 sys.exit() 报错，抛的是 SystemExit（不是 Exception 子类），
@@ -615,13 +656,53 @@ def _run_queued(tid: str):
             _persist(tid)
 
 
+def _write_batch_report():
+    """【新增 v2.3】队列清空时写一份汇总，早上起来一眼看清夜里跑得怎么样。"""
+    import datetime
+    try:
+        done = [t for t in TASKS.values() if t.get("finished")]
+        if not done:
+            return
+        done.sort(key=lambda t: t.get("created") or 0)
+        lines = ["# 批量转写汇总", "",
+                 f"- 生成时间：{datetime.datetime.now():%Y-%m-%d %H:%M}",
+                 f"- 任务总数：{len(done)}",
+                 f"- 完成：{sum(1 for t in done if t.get('status') == 'done')}"
+                 f"，失败：{sum(1 for t in done if t.get('status') == 'error')}"
+                 f"，中断：{sum(1 for t in done if t.get('status') == 'interrupted')}", ""]
+        lines += ["| 课程 | 状态 | 耗时 | 字数 | 说明 |", "|---|---|---|---|---|"]
+        for t in done:
+            nm = str(t.get("name") or t.get("stem") or t.get("id") or "?").replace("|", "\\|")
+            err = str(t.get("error") or "")
+            if len(err) > 60:
+                err = err[:60] + "…"
+            lines.append(f"| {nm} | {t.get('status')} | "
+                         f"{t.get('elapsed') or 0}s | {t.get('chars') or 0} | "
+                         f"{err.replace('|', '\\|')} |")
+        lines += ["", "> 字幕、讲稿、变更报告都在 out/ 目录，文件名与本表课程名对应。"]
+        _atomic_write(OUT / "队列报告.md", "\n".join(lines))
+    except Exception as exc:
+        print(f"[report] 汇总写入失败：{exc}", flush=True)
+
+
 def _queue_loop():
     while True:
-        tid = JOB_Q.get()
+        QGATE.wait()                  # 暂停 / 定时开始都在这里拦
+        try:
+            tid = JOB_Q.get(timeout=0.2)
+        except queue.Empty:
+            continue                  # 回闸门重新判断，不抱着队列睡
+        # 【修复 v2.3】闸门通过到 get() 之间仍可能被暂停：二次确认，
+        # 被拦下就放回队首。这样队列快照里永远看得见每一条排队任务。
+        if not QGATE.allowed():
+            JOB_Q.push_front(tid)
+            continue
         try:
             _run_queued(tid)
         finally:
             JOB_Q.task_done()
+            if not JOB_Q.snapshot():
+                _write_batch_report()
 
 
 _load_jobs()
@@ -689,55 +770,218 @@ async def media(fid: str):
     return FileResponse(info["path"], filename=info["name"])
 
 
+DEFAULT_TASK_OPTS = {
+    "model": "qwen3-asr", "clean": True, "language": "Chinese",
+    "provider": "", "use_script_track": False,
+    "itn": True, "termfix": True, "termfix_auto": True,
+}
+
+
+def _already_done(name: str, size: int) -> bool:
+    """【新增 v2.3】「跳过已转录」：同名同大小且已完成 / 正在跑 / 已排队，不重复入队。
+
+    重复拖入同一批课件是批量操作里最常见的手误，光跳过 done 不够——
+    夜里排好的 queued 任务再被拖一次就会变成两份，白跑一整晚。
+    """
+    if not QSTATE.get("skip_done"):
+        return False
+    for t in TASKS.values():
+        if t.get("status") not in ("done", "queued", "running") or t.get("name") != name:
+            continue
+        s = t.get("size")
+        if s is None:
+            p = _locate(t.get("path"), MEDIA)
+            s = p.stat().st_size if p and p.exists() else None
+        if s == size:
+            return True
+    return False
+
+
+def _enqueue_upload(file_id: str, opt: dict):
+    """建任务的唯一入口：单次转写、批量入队、文件夹监控都走这里。"""
+    info = UPLOADS.get(file_id)
+    if not info:
+        return None, "请先上传文件"
+    model = opt.get("model") or "qwen3-asr"
+    if model not in T.MODELS:
+        return None, f"未知模型：{model}（可选：{'、'.join(T.MODELS)}）"
+    raw_pid = str(opt.get("provider") or "").strip()
+    try:
+        prov = (P.preferred_from_env() if not raw_pid else P.get_provider(raw_pid))
+    except KeyError as exc:
+        return None, str(exc)
+    if prov.kind == "cloud":
+        if not prov.configured():
+            return None, (f"{prov.name} 未配置：需环境变量 "
+                          f"{'、'.join(prov.config_keys)}")
+        if not getattr(prov, "ready", False):
+            return None, f"{prov.name} 的 HTTP 调用尚未接入"
+    src = Path(info["path"])
+    size = src.stat().st_size if src.exists() else 0
+    if _already_done(info["name"], size):
+        return None, "同名同大小的课已完成，已跳过"
+    tid = uuid.uuid4().hex[:12]
+    TASKS[tid] = {
+        "id": tid, "status": "queued", "logs": [], "result": None,
+        "error": None, "file_id": file_id, "name": info["name"],
+        "path": str(src), "size": size, "model": model,
+        "clean": bool(opt.get("clean", True)),
+        "language": opt.get("language") or "Chinese",
+        "created": time.time(),
+        "provider": prov.id,
+        "use_script_track": bool(opt.get("use_script_track")),
+        "itn": bool(opt.get("itn", True)),
+        "termfix": bool(opt.get("termfix", True)),
+        "termfix_auto": bool(opt.get("termfix_auto", True)),
+    }
+    _persist(tid)
+    JOB_Q.put(tid)
+    _prune_tasks(MAX_TASKS)
+    return tid, ""
+
+
 @app.post("/api/transcribe")
 async def transcribe(file_id: str = Form(...), model: str = Form("qwen3-asr"),
                      clean: bool = Form(True), language: str = Form("Chinese"),
                      provider: str = Form(""), use_script_track: bool = Form(False),
                      itn: bool = Form(True), termfix: bool = Form(True),
                      termfix_auto: bool = Form(True)):
-    info = UPLOADS.get(file_id)
-    if not info:
-        return JSONResponse({"error": "请先上传文件"}, status_code=400)
-    # modified: 原来不校验 model，非法值只会在子线程里抛 KeyError，用户只看到一屏 traceback
-    if model not in T.MODELS:
-        return JSONResponse(
-            {"error": f"未知模型：{model}（可选：{'、'.join(T.MODELS)}）"},
-            status_code=400)
-    # 【新增 v1.3】识别源校验：非法 id / 未配置 / 骨架未接 HTTP 都在这里拦成 400，
-    # 不让任务排进队列再失败（沿用 model 校验的同一思路）。
-    raw_pid = (provider or "").strip()
-    try:
-        # 【新增 v1.3】未指定时用带「自动回落本地」的选源逻辑，保证默认零回归；
-        # 显式指定则严格校验，缺配置/未接入都在这里拦成 400，不排进队列再失败。
-        prov = (P.preferred_from_env() if not raw_pid
-                else P.get_provider(raw_pid))
-    except KeyError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    if prov.kind == "cloud":
-        if not prov.configured():
-            return JSONResponse(
-                {"error": f"{prov.name} 未配置：需环境变量 "
-                          f"{'、'.join(prov.config_keys)}"}, status_code=400)
-        if not getattr(prov, "ready", False):
-            return JSONResponse(
-                {"error": f"{prov.name} 的 HTTP 调用尚未接入（本版只提供可插拔骨架，"
-                          f"字段映射已可离线验证）"}, status_code=400)
-    pid = prov.id
-    tid = uuid.uuid4().hex[:12]
-    TASKS[tid] = {"id": tid, "status": "queued", "logs": [], "result": None,
-                  "error": None, "file_id": file_id, "name": info["name"],
-                  "path": str(info["path"]), "model": model, "clean": clean,
-                  "language": language, "created": time.time(),
-                  # 【新增 v1.3】
-                  "provider": pid, "use_script_track": bool(use_script_track),
-                  # 【新增 v1.4】数字规整开关
-                  "itn": bool(itn),
-                  # 【新增 v1.5】术语修复开关与力度
-                  "termfix": bool(termfix), "termfix_auto": bool(termfix_auto)}
-    _persist(tid)
-    JOB_Q.put(tid)
-    _prune_tasks(MAX_TASKS)
+    tid, err = _enqueue_upload(file_id, dict(
+        model=model, clean=clean, language=language, provider=provider,
+        use_script_track=use_script_track, itn=itn,
+        termfix=termfix, termfix_auto=termfix_auto))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
     return {"task_id": tid, "position": _queue_pos(tid)}
+
+
+@app.post("/api/tasks/enqueue")
+def tasks_enqueue(payload: dict):
+    """【新增 v2.3】批量入队：一次把多节课排好，晚上 / 出差时无人值守跑。"""
+    ids = payload.get("file_ids") or []
+    if not isinstance(ids, list) or not ids:
+        return JSONResponse({"error": "file_ids 必须是非空数组"}, status_code=400)
+    opt = dict(DEFAULT_TASK_OPTS)
+    given = payload.get("options") or {}
+    if isinstance(given, dict):
+        opt.update({k: v for k, v in given.items() if k in DEFAULT_TASK_OPTS})
+    # 单次调用内临时覆盖「跳过已转录」，不写全局状态
+    old = QSTATE.get("skip_done")
+    if "skip_done" in payload:
+        QSTATE["skip_done"] = bool(payload["skip_done"])
+    created, skipped = [], []
+    try:
+        for fid in ids:
+            fid = str(fid)
+            tid, err = _enqueue_upload(fid, opt)
+            if tid:
+                created.append({"task_id": tid, "file_id": fid,
+                                "position": _queue_pos(tid)})
+            else:
+                skipped.append({"file_id": fid,
+                                "name": (UPLOADS.get(fid) or {}).get("name", fid),
+                                "reason": err})
+    finally:
+        QSTATE["skip_done"] = old
+    return {"ok": True, "created": created, "skipped": skipped,
+            "waiting": len(JOB_Q.snapshot())}
+
+
+INBOX = MEDIA / "inbox"
+
+
+def _register_local(p: Path) -> str:
+    """把本机已有的文件登记成上传项（不复制、不搬动）。"""
+    fid = uuid.uuid4().hex[:12]
+    UPLOADS[fid] = {"name": p.name, "path": p, "kind": media_type_of(p.name)}
+    _prune(UPLOADS, MAX_UPLOADS)
+    return fid
+
+
+def scan_inbox():
+    """扫描 media/inbox：新文件自动入队，重复文件靠「跳过已转录」挡住。"""
+    INBOX.mkdir(parents=True, exist_ok=True)
+    created = []
+    for p in sorted(INBOX.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in ALLOWED_MEDIA_EXT:
+            continue
+        size = p.stat().st_size
+        pending = any((t.get("name") == p.name and
+                       (t.get("size") == size or t.get("size") is None))
+                      for t in TASKS.values()
+                      if t.get("status") in ("queued", "running", "done"))
+        if pending:
+            continue
+        fid = _register_local(p)
+        tid, err = _enqueue_upload(fid, DEFAULT_TASK_OPTS)
+        if tid:
+            created.append({"name": p.name, "task_id": tid})
+    return created
+
+
+def _watch_loop():
+    while True:
+        try:
+            if QSTATE.get("watch"):
+                got = scan_inbox()
+                if got:
+                    print(f"[watch] 自动入队 {len(got)} 个文件", flush=True)
+        except Exception as exc:
+            print(f"[watch] 扫描失败：{exc}", flush=True)
+        time.sleep(max(10, int(QSTATE.get("watch_interval") or 60)))
+
+
+@app.get("/api/queue")
+def api_queue():
+    ids = JOB_Q.snapshot()
+    return {
+        "paused": bool(QSTATE.get("paused")),
+        "start_at": QSTATE.get("start_at"),
+        "auto_retry": int(QSTATE.get("auto_retry") or 0),
+        "watch": bool(QSTATE.get("watch")),
+        "skip_done": bool(QSTATE.get("skip_done")),
+        "watch_interval": int(QSTATE.get("watch_interval") or 60),
+        "inbox": str(INBOX),
+        "queue": [{"id": tid, "position": i + 1,
+                   "name": (TASKS.get(tid) or {}).get("name") or tid,
+                   "status": (TASKS.get(tid) or {}).get("status")}
+                  for i, tid in enumerate(ids)],
+        "counts": {s: sum(1 for t in TASKS.values() if t.get("status") == s)
+                   for s in ("queued", "running", "done", "error",
+                             "interrupted", "cancelled")},
+    }
+
+
+@app.post("/api/queue")
+def api_queue_set(payload: dict):
+    """暂停 / 继续 / 定时开始 / 自动重试 / 文件夹监控。"""
+    for k in ("paused", "watch", "skip_done"):
+        if k in payload:
+            QSTATE[k] = bool(payload[k])
+    if "auto_retry" in payload:
+        QSTATE["auto_retry"] = max(0, min(5, int(payload["auto_retry"])))
+    if "watch_interval" in payload:
+        QSTATE["watch_interval"] = max(10, min(3600, int(payload["watch_interval"])))
+    if "start_at" in payload:
+        v = payload["start_at"]
+        QSTATE["start_at"] = float(v) if v else None
+    QS.save(QSTATE)
+    QGATE.notify()
+    return api_queue()
+
+
+@app.post("/api/queue/move")
+def api_queue_move(payload: dict):
+    tid, delta = str(payload.get("id") or ""), int(payload.get("delta") or 0)
+    ok = JOB_Q.move(tid, delta)
+    return {"ok": ok, "queue": [x["id"] for x in api_queue()["queue"]]}
+
+
+@app.post("/api/queue/scan")
+def api_queue_scan():
+    created = scan_inbox()
+    return {"ok": True, "created": created, "count": len(created),
+            "inbox": str(INBOX)}
 
 
 @app.get("/api/task/{tid}")
@@ -754,7 +998,9 @@ async def task_status(tid: str):
             "path": str(src) if src else t.get("path"),
             "kind": media_type_of(t.get("name") or ""),
             "size": src.stat().st_size if src else 0,
-            "created": t.get("created"), "position": _queue_pos(tid)}
+            "created": t.get("created"), "position": _queue_pos(tid),
+            "progress": t.get("progress"),
+            "started": t.get("started"), "finished": t.get("finished")}
 
 
 @app.get("/api/task/{tid}/media")
@@ -779,6 +1025,9 @@ async def task_list():
             "created": t.get("created"), "started": t.get("started"),
             "finished": t.get("finished"), "elapsed": t.get("elapsed"),
             "chars": t.get("chars"), "model": t.get("model"),
+            # 【新增 v2.0】进度条与剩余时间（前端据 started + pct 估 ETA）
+            "progress": t.get("progress"),
+            "position": _queue_pos(tid),
         })
     items.sort(key=lambda x: x.get("created") or 0, reverse=True)
     return {"tasks": items[:60]}
@@ -786,22 +1035,121 @@ async def task_list():
 
 @app.post("/api/task/{tid}/retry")
 async def task_retry(tid: str):
+    ok, err, pos = _retry_task(tid)
+    if not ok:
+        return JSONResponse({"error": err}, status_code=400)
+    return {"ok": True, "position": pos}
+
+
+def _retry_task(tid: str):
+    """【新增 v2.0】把重试逻辑抽出来，单条接口和批量接口共用一套判断。"""
     t = TASKS.get(tid)
     if not t:
-        return JSONResponse({"error": "任务不存在"}, status_code=404)
+        return False, "任务不存在", 0
     if t.get("status") not in ("error", "interrupted", "cancelled"):
-        return JSONResponse({"error": "当前状态不能重试"}, status_code=400)
+        return False, "当前状态不能重试", 0
     # modified(v1.2): 原来用裸 Path.exists()，与 _worker 的 _locate 不一致；
     # 工程搬迁后旧 job.json 明明能在 media/ 里找到文件，却被误判「已清理」。
     src = _locate(t.get("path"), MEDIA)
     if src is None:
-        return JSONResponse({"error": "源文件已清理，请重新上传"}, status_code=400)
+        return False, "源文件已清理，请重新上传", 0
     t["path"] = str(src)                     # 顺手自愈成当前工程路径
     t.update(status="queued", logs=[], error=None, result=None,
-             started=None, finished=None)
+             started=None, finished=None, progress=None)
     _persist(tid)
     JOB_Q.put(tid)
-    return {"ok": True, "position": _queue_pos(tid)}
+    return True, "", _queue_pos(tid)
+
+
+def _remove_task(tid: str, purge_media: bool = False):
+    """删任务记录 + job 文件；产物（out/ 下的 SRT/TXT）一律保留。
+
+    用户的字幕稿是劳动成果，清列表绝不能顺手删掉。源文件默认也保留，
+    只有显式勾了「同时删上传的音视频」才删，且必须确认没有别的任务引用它。
+    """
+    t = TASKS.get(tid)
+    if not t:
+        return False
+    if purge_media:
+        p = _locate(t.get("path"), MEDIA)
+        if p is not None and _inside(p, MEDIA):
+            shared = any(
+                other is not t and
+                (q := _locate(other.get("path"), MEDIA)) is not None and
+                q.resolve() == p.resolve()
+                for other in TASKS.values())
+            if not shared:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+    TASKS.pop(tid, None)
+    try:
+        _job_path(tid).unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
+@app.post("/api/tasks/batch")
+def tasks_batch(payload: dict):
+    """【新增 v2.0】任务栏批量操作。
+
+    action: cancel / retry / delete / clear
+      cancel  批量取消排队任务
+      retry   批量重试失败 / 中断 / 已取消
+      delete  删除选中的终态任务（可附带 purge_media）
+      clear   清空全部终态任务（ids 为空即可）
+
+    正在识别的任务一律不动：worker 正在写产物，删记录会让结果无处安放。
+    """
+    action = str(payload.get("action") or "")
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list):
+        return JSONResponse({"error": "ids 必须是数组"}, status_code=400)
+    if action not in ("cancel", "retry", "delete", "clear"):
+        return JSONResponse({"error": f"未知操作：{action}"}, status_code=400)
+
+    terminal = {"done", "error", "cancelled", "interrupted"}
+    if action == "clear":
+        targets = [tid for tid, t in TASKS.items() if t.get("status") in terminal]
+    else:
+        targets = [str(x) for x in ids if str(x) in TASKS]
+
+    done, skipped = 0, []
+    purge = bool(payload.get("purge_media"))
+    for tid in targets:
+        t = TASKS.get(tid)
+        if t is None:
+            skipped.append({"id": tid, "reason": "任务不存在"})
+            continue
+        st = t.get("status")
+        if st in ("running",) or (action in ("delete", "clear") and st == "queued"):
+            skipped.append({"id": tid, "reason": "正在处理，未改动"})
+            continue
+        if action == "cancel":
+            if st != "queued":
+                skipped.append({"id": tid, "reason": "只有排队中的任务能取消"})
+                continue
+            t.update(status="cancelled", error="已取消")
+            _persist(tid)
+            done += 1
+        elif action == "retry":
+            ok, err, _ = _retry_task(tid)
+            if ok:
+                done += 1
+            else:
+                skipped.append({"id": tid, "reason": err})
+        elif action in ("delete", "clear"):
+            if st not in terminal:
+                skipped.append({"id": tid, "reason": "非终态任务不能删除"})
+                continue
+            if _remove_task(tid, purge):
+                done += 1
+            else:
+                skipped.append({"id": tid, "reason": "任务不存在"})
+    return {"ok": True, "action": action, "done": done,
+            "skipped": skipped, "remaining": len(TASKS)}
 
 
 @app.post("/api/task/{tid}/cancel")
@@ -1108,7 +1456,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.9",       # modified(v1.9): 长音频段错误修复
+    return {"ok": True, "version": "2.3",       # modified(v2.3): 进度条/批量队列/云端润色
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1304,9 +1652,42 @@ LLM_MAX_SECONDS = int(os.environ.get("ASR_LLM_TIMEOUT", "600"))
 def api_llm_status():
     """模型是否就绪。前端据此置灰按钮并写明原因，而不是点了等半天才失败。"""
     ok, detail = LP.available()
+    cfg = CL.load_config()
     return {"available": ok, "detail": detail,
+            "backend": "cloud" if cfg.get("enabled") else "local",
             "model_dir": str(LP.MODEL_DIR),
             "max_input": LP.MAX_INPUT, "chunk_chars": LP.CHUNK_CHARS}
+
+
+# ─────────── 【新增 v2.2】云端润色模型设置 ───────────
+# 密钥只落本机 config/cloud_llm.json（已排除出 git），状态接口只回脱敏串。
+
+@app.get("/api/cloud/status")
+def api_cloud_status():
+    st = CL.status()
+    st["local_available"] = not st["enabled"] and LP.available()[0]
+    return st
+
+
+@app.post("/api/cloud/config")
+def api_cloud_config(payload: dict):
+    try:
+        cfg = CL.save_config(payload)
+    except (ValueError, OSError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    LP.release() if not cfg.get("enabled") else None
+    return CL.status()
+
+
+@app.post("/api/cloud/test")
+def api_cloud_test(payload: dict):
+    ok, msg, sec = CL.test_connection(payload)
+    return {"ok": ok, "message": msg, "elapsed": sec}
+
+
+@app.post("/api/cloud/preset")
+def api_cloud_preset(payload: dict):
+    return CL.apply_preset(str(payload.get("preset") or "glm-4-flash"))
 
 
 @app.post("/api/llm/polish")
@@ -1512,6 +1893,37 @@ async def index():
 
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
 
+def _keep_awake_loop():
+    """【新增 v2.3】识别中阻止 Windows 休眠，跑完立刻释放。
+
+    夜里 / 出差挂机最怕合盖或空闲睡眠：任务停在 running，第二天才发现。
+    SetThreadExecutionState 只对当前进程生效、不改电源计划，比 powercfg 温和；
+    空闲时主动撤销，不会让机器整晚不睡。
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        held = [False]
+        while True:
+            busy = any(t.get("status") == "running" for t in TASKS.values())
+            if busy and not held[0]:
+                ctypes.windll.kernel32.SetThreadExecutionState(
+                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+                held[0] = True
+            elif not busy and held[0]:
+                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+                held[0] = False
+            time.sleep(20)
+    except Exception as exc:
+        print(f"[awake] 防休眠不可用（不影响识别）：{exc}", flush=True)
+
+
+# 【新增 v2.3】文件夹监控线程放在所有函数定义之后启动，避免引用尚未定义的名字。
+# 队列线程本身仍由上方 _load_jobs() 之后启动（它依赖的函数都在前面）。
+threading.Thread(target=_watch_loop, daemon=True, name="asr-watch").start()
+threading.Thread(target=_keep_awake_loop, daemon=True, name="asr-awake").start()
 
 if __name__ == "__main__":
     import webbrowser

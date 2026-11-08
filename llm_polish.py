@@ -115,7 +115,17 @@ def available():
     """返回 (是否可用, 说明)。只查文件与依赖，**不加载模型**（加载要吃 2.4GB）。
 
     前端据此置灰按钮并写明原因，而不是让用户点了等半天才失败。
+    【修改 v2.2】云端模型启用时优先走云端；没配好就明确说缺什么，
+    不静默回退本地（用户以为在用免费额度，其实 CPU 在慢慢跑）。
     """
+    import cloud_llm as CL
+    cfg = CL.load_config()
+    if cfg.get("enabled"):
+        if not cfg.get("api_key") and not str(cfg.get("base_url") or "").startswith("http://127.0.0.1"):
+            return False, "云端模型已启用但没填 API Key，请到「润色模型设置」里补上"
+        if not cfg.get("base_url") or not cfg.get("model"):
+            return False, "云端模型的接口地址 / 模型名没填全"
+        return True, f"云端 {cfg['model']}（{CL.preset_info(cfg.get('preset'))['label']}）"
     try:
         import llama_cpp  # noqa: F401
     except Exception as exc:
@@ -129,6 +139,12 @@ def available():
 def _ensure(log=print):
     """懒加载：第一次真正润色时才占内存，避免服务一启动就吃掉 2.4GB。"""
     global _LLM
+    import cloud_llm as CL
+    cfg = CL.load_config()
+    if cfg.get("enabled"):
+        # 云端客户端不占内存、可随时换配置，不缓存
+        log(f"使用云端润色模型 {cfg['model']}（{cfg['base_url']}）")
+        return CL.CloudChat(cfg, log=log)
     if _LLM is not None:
         return _LLM
     ok, msg = available()
@@ -272,6 +288,8 @@ def polish(text, log=print):
     if not out.strip():
         raise RuntimeError("模型没有返回内容")
     m = find_model()
+    # 【新增 v2.2】云端模型把这一稿的 token 用量与折算费用带回界面
+    usage = llm.estimate() if hasattr(llm, "estimate") else None
     return {
         "source": text,
         "polished": out,
@@ -280,7 +298,9 @@ def polish(text, log=print):
         "diff": diff_ops(text, out),
         "chunks": len(chunks),
         "elapsed": round(time.time() - t0, 1),
-        "model": m.name if m else "",
+        "model": getattr(llm, "model_name", None) or (m.name if m else ""),
+        "backend": "cloud" if usage else "local",
+        "usage": usage,
     }
 
 
