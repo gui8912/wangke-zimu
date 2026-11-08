@@ -208,6 +208,10 @@
            background:var(--soft);overflow:hidden}
   .llmprog .lp-fill{height:100%;width:0;background:var(--primary);transition:width .4s}
   .llmprog .lp-tip{font-size:var(--fs-11);color:var(--muted);line-height:1.5}
+  /* 有可找回的润色结果时，把入口描边点亮，避免用户以为结果丢了 */
+  #btnLlmAgain.has{border-color:var(--primary);color:var(--primary)}
+  #btnLlmAgain.has::after{content:"●";color:var(--ok);font-size:8px;
+                          vertical-align:super;margin-left:3px}
   .revfoot{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);
            background:var(--soft);font-size:var(--fs-12);color:var(--muted)}
   .revside .sidehead{display:flex;align-items:baseline;gap:8px;padding:11px 14px;
@@ -417,6 +421,31 @@
                   background:var(--soft2);border:1px solid var(--line);
                   border-radius:var(--r-6);padding:1px 5px;margin-left:6px}
   .field textarea.mini{height:84px}
+
+  /* 【新增 v2.5】术语表编辑器 */
+  .gtabs{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+  .gtabs button{background:var(--soft2);border:1px solid var(--line);color:var(--muted)}
+  .gtabs button.on{background:var(--primary-weak);border-color:var(--primary);
+                   color:var(--primary);font-weight:600}
+  .gtabs em{font-style:normal;font-size:var(--fs-11);opacity:.75;margin-left:5px}
+  .gadd{display:flex;gap:6px;align-items:center;margin:10px 0 8px}
+  .gadd input{flex:1;min-width:0}
+  .gadd input#glossW{flex:0 0 82px}
+  .gadd .arrow{color:var(--muted);font-size:var(--fs-12)}
+  .gbar{display:flex;gap:10px;align-items:center;margin-bottom:6px}
+  .gbar input{flex:1}
+  .gbar span{font-size:var(--fs-12);color:var(--muted);white-space:nowrap}
+  .glist{max-height:44vh;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-8)}
+  .grow{display:flex;align-items:center;gap:8px;padding:6px 10px;
+        border-bottom:1px solid var(--line);font-size:var(--fs-13)}
+  .grow:last-child{border-bottom:none}
+  .grow input{flex:1;min-width:0}
+  .grow input.wt{flex:0 0 66px}
+  .grow .arrow{color:var(--faint);font-size:var(--fs-12)}
+  .grow .del{border:none;background:none;color:var(--danger);cursor:pointer;padding:2px 6px}
+  .grow .tag{font-size:var(--fs-11);color:var(--ok);white-space:nowrap}
+  .grow.added{background:var(--ok-bg)}
+  .ghint{color:var(--muted);font-size:var(--fs-12);margin-right:auto}
   .tgrid .field.wide textarea{height:74px}
   .guards{margin-top:2px;border-top:1px dashed var(--line);padding-top:10px}
   .guards summary{cursor:pointer;font-size:var(--fs-12);color:var(--muted);outline:none}
@@ -474,6 +503,8 @@
     <input type="checkbox" id="useScriptTrack" disabled>云端整理稿</label>
   <button class="primary lo-tx" id="btnStart" disabled>开始转写</button>
   <!-- 【新增 v2.4】首页即可查阅说明书：静态页由 samples/gen_manual.py 生成 -->
+  <!-- 【新增 v2.5】术语表可视化编辑：错词校正 / 简称表 / 识别热词 -->
+  <button class="lo-tx" id="btnGloss" title="维护错词校正、简称膨胀与识别热词；改完立即生效（热词只影响新任务）">术语表</button>
   <button class="lo-tx" id="btnManual" title="打开使用说明书（8 章：批量夜间 / 模型设置 / 成本 / 排障）">使用说明</button>
   <div class="prefs">
     <button id="btnFont" class="iconbtn" title="调整字号">A<sup id="fontTag">中</sup></button>
@@ -663,6 +694,8 @@
       <div class="spacer"></div>
       <button id="btnRevPrev" disabled>上一步</button>
       <button id="btnRevLlm" title="用本地 Qwen3-4B 或云端免费/低价模型把口语稿整理成可读底稿。只作用于讲稿，字幕与时间轴完全不受影响；跑之前先看 diff 和红线检查，通过了才采用">LLM 润色</button>
+      <!-- 【新增 v2.5】误关预览不用重跑：结果存在服务端 out/_llm/last.json -->
+      <button id="btnLlmAgain" title="重新打开上一次润色结果的对比预览（结果已保存在服务端，关掉弹窗也不会丢）">上次润色</button>
       <button id="btnRevLlmCfg" title="设定用本地模型还是云端免费模型（智谱 GLM-4-Flash / DeepSeek）润色讲稿">润色模型设置</button>
       <button id="btnRevRerun" disabled>重跑本遍</button>
       <button class="primary" id="btnRevRun" disabled>执行第 1 遍</button>
@@ -701,6 +734,40 @@
         只调时间，不改文字</span>
       <div class="spacer"></div>
       <button id="qcClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 【新增 v2.5】术语表：错词校正 / 简称表 / 识别热词 -->
+<div class="mask" id="glossMask">
+  <div class="modal wide" style="width:min(940px,96vw)">
+    <h3>术语表<span class="sub" id="glossSub">错词校正 / 简称表 / 识别热词</span>
+      <button id="glossClose" style="margin-left:auto">关闭</button>
+    </h3>
+    <div class="body">
+      <div class="gtabs" id="glossTabs">
+        <button data-k="corrections" class="on">错词校正<em id="gcCorrections">0</em></button>
+        <button data-k="aliases">简称表<em id="gcAliases">0</em></button>
+        <button data-k="hotwords">识别热词<em id="gcHotwords">0</em></button>
+      </div>
+      <div class="note" id="glossNote"></div>
+      <div class="gadd">
+        <input id="glossA" maxlength="40" placeholder="错词 / 简称 / 热词" autocomplete="off">
+        <span class="arrow" id="glossArrow">→</span>
+        <input id="glossB" maxlength="120" placeholder="正确词 / 全称" autocomplete="off">
+        <input id="glossW" type="number" min="1" max="100" placeholder="权重" autocomplete="off">
+        <button class="primary" id="glossAdd">新增</button>
+      </div>
+      <div class="gbar">
+        <input id="glossFind" placeholder="筛选现有条目…" autocomplete="off">
+        <span id="glossMeta"></span>
+      </div>
+      <div class="glist" id="glossList"></div>
+    </div>
+    <div class="foot">
+      <span class="ghint" id="glossHint"></span>
+      <button id="glossReload">放弃修改</button>
+      <button class="primary" id="glossSave">保存</button>
     </div>
   </div>
 </div>
@@ -1869,13 +1936,7 @@ function stopLlmProgress(){
 /* 【新增 v2.4-p2】刷新页面 / 断网 / 浏览器 abort / 服务重启之后，把服务端
    已落盘的整稿结果原样找回，十几分钟不至于白跑。localStorage 记 finished_at，
    同一份结果只提示一次，不会每次打开都弹旧预览。 */
-async function recoverLlmResult(){
-  let d;
-  try{ d = await (await fetch('/api/llm/result')).json(); }
-  catch(e){ return false; }
-  if(!d.ready || !d.result || d.busy) return false;
-  if(localStorage.getItem('llmResultSeen') === String(d.finished_at)) return false;
-  const r = d.result;
+function fillLlmState(r){
   llmState.src = r.source || '';
   llmState.out = r.polished || '';
   llmState.tail = r.tail || '';
@@ -1887,6 +1948,47 @@ async function recoverLlmResult(){
   llmState.usage = r.usage || null;
   llmState.chunks = r.chunks || 1;
   llmState.tailRestored = r.tail_restored || 0;
+}
+
+function markLlmAgain(on){
+  const b = $('#btnLlmAgain');
+  if(b) b.classList.toggle('has', !!on);
+}
+
+/* 【新增 v2.5】显式打开「上一次润色结果」。误点遮罩、关掉页面、甚至重启
+   服务，结果都还在 out/_llm/last.json 里，不必重跑十几分钟。 */
+async function openLlmResult(){
+  let d;
+  try{ d = await (await fetch('/api/llm/result')).json(); }
+  catch(e){ toast('无法连接服务'); return false; }
+  if(!d.ready || !d.result){
+    toast('服务端还没有可用的润色结果；先点「LLM 润色」跑一稿');
+    return false;
+  }
+  if(d.busy){ toast('正在润色新的一稿，等它完成后再看'); return false; }
+  fillLlmState(d.result);
+  renderLlmPreview();
+  $('#llmMask').classList.add('show');
+  markLlmAgain(true);
+  return true;
+}
+
+async function recoverLlmResult(){
+  let d;
+  try{ d = await (await fetch('/api/llm/result')).json(); }
+  catch(e){ return false; }
+  if(!d.ready || !d.result || d.busy) return false;
+  markLlmAgain(true);
+  const seen = localStorage.getItem('llmResultSeen') === String(d.finished_at);
+  const age = Date.now() / 1000 - (Number(d.result.finished_ts) || 0);
+  if(seen && age > 1800){
+    // 半小时前看过、又主动刷新：不再自动盖住界面，但必须明说结果还在、
+    // 从哪打开——否则关掉弹窗就会被当成彻底丢了。
+    toast('上次润色结果仍保存着，点改稿页「上次润色」可再次打开');
+    return false;
+  }
+  // 没看过，或刚跑完半小时内（多半是误关）→ 直接弹回来，不用手动找
+  fillLlmState(d.result);
   localStorage.setItem('llmResultSeen', String(d.finished_at));
   renderLlmPreview();
   $('#llmMask').classList.add('show');
@@ -1941,6 +2043,7 @@ $('#btnRevLlm').onclick = async ()=>{
     llmState.chunks = d.chunks || 1;
     llmState.tailRestored = d.tail_restored || 0;
     if(d.finished_at) localStorage.setItem('llmResultSeen', String(d.finished_at));
+    markLlmAgain(true);          // 结果已在服务端落盘，入口点亮
     renderLlmPreview();
     $('#llmMask').classList.add('show');
     if(chunks > 1)
@@ -2044,10 +2147,18 @@ $('#llmRetail').onclick = ()=>{
   toast('已补回原末句，顺手看一眼它和上一句接不接得上');
 };
 
-$('#llmClose').onclick = ()=>$('#llmMask').classList.remove('show');
+/* 【新增 v2.5】点「关闭」或误点遮罩都只隐藏窗口，不清结果。
+   结果已经在服务端落盘，改稿页「上次润色」随时能再打开。 */
+function closeLlmPreview(){
+  $('#llmMask').classList.remove('show');
+  markLlmAgain(true);
+  toast('预览已关闭，结果仍保存在服务端；点「上次润色」可再打开');
+}
+$('#llmClose').onclick = closeLlmPreview;
 $('#llmMask').onclick = e=>{
-  if(e.target.id === 'llmMask') $('#llmMask').classList.remove('show');
+  if(e.target.id === 'llmMask') closeLlmPreview();
 };
+$('#btnLlmAgain').onclick = openLlmResult;
 
 /* ---------- 【新增 v2.2】云端润色模型设置 ---------- */
 function cloudForm(){
@@ -2873,6 +2984,183 @@ TERM_GROUPS.forEach(g => $(g.id).addEventListener('input', refreshTermCount));
 // 语气词里「嘛/哈/嘞/咧」属于「只在句尾删」，保存时要分流回去，
 // 否则会被当成无条件删，误伤「干嘛」「哈哈」
 let tailOnlyWords = [];
+
+/* ---------- 【新增 v2.5】术语表编辑器：错词 / 简称 / 热词 ----------
+   三张表都是带分区注释的纯文本，用户手工维护多年。界面只提交「新增 /
+   修改 / 删除」的条目差异，服务端按行号精确落笔，注释、空行、分区顺序
+   与换行风格全部原样保留，不会把整份文件变成「全部重写」。 */
+const gloss = {kind:'corrections', files:{}, edits:{}, loaded:false};
+
+const GLOSS_NOTE = {
+  corrections: '格式：错误词 => 正确词。只放「几乎不可能正确」的同音误写（如 管带 => 管代）；保存后立即生效，老任务点一次「重新清理」即可应用。',
+  aliases: '格式：简称 => 全称。英文缩写按整词匹配（GSP认证 会展开，GSPX 不会）；中文简称直接替换。只放无争议的简称，拿不准的先别启用。',
+  hotwords: '每行一个热词，可带权重（如 管代|20，缺省 20）。热词只在识别阶段起作用，因此只影响新任务；建议 100–300 条，超过 500 条会拖慢解码。'
+};
+
+async function glossLoad(force){
+  if(gloss.loaded && !force) return true;
+  try{
+    const r = await fetch('/api/glossary');
+    const d = await r.json();
+    if(d.error){ toast(d.error); return false; }
+    gloss.files = d.files || {};
+    gloss.edits = {};
+    for(const k of Object.keys(gloss.files)){
+      gloss.edits[k] = {upd:{}, del:new Set(), add:[]};
+    }
+    gloss.loaded = true;
+    return true;
+  }catch(e){ toast('术语表读取失败：' + e.message); return false; }
+}
+
+function glossCounts(){
+  for(const [k, f] of Object.entries(gloss.files)){
+    const ed = gloss.edits[k];
+    const n = f.items.filter(it=>!ed.del.has(it.line)).length + ed.add.length;
+    const el = $('#gc' + k.charAt(0).toUpperCase() + k.slice(1));
+    if(el) el.textContent = n;
+  }
+}
+
+function glossRow(it, ed, mode, isNew, idx){
+  const row = document.createElement('div');
+  row.className = 'grow' + (isNew ? ' added' : '');
+  const slot = ()=>{ if(isNew) return ed.add[idx]; ed.upd[it.line] = ed.upd[it.line] || {}; return ed.upd[it.line]; };
+  if(mode === 'map'){
+    const a = document.createElement('input');
+    a.value = it.from || ''; a.maxLength = 40; a.placeholder = '错词 / 简称';
+    a.oninput = ()=>{ slot().from = a.value; };
+    const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.textContent = '→';
+    const b = document.createElement('input');
+    b.value = it.to || ''; b.maxLength = 120; b.placeholder = '正确词 / 全称';
+    b.oninput = ()=>{ slot().to = b.value; };
+    row.append(a, arrow, b);
+  }else{
+    const a = document.createElement('input');
+    a.value = it.word || ''; a.maxLength = 40; a.placeholder = '热词';
+    a.oninput = ()=>{ slot().word = a.value; };
+    const w = document.createElement('input');
+    w.type = 'number'; w.min = '1'; w.max = '100'; w.className = 'wt'; w.placeholder = '权重';
+    w.value = it.weight || '';
+    w.oninput = ()=>{ slot().weight = w.value ? Number(w.value) : null; };
+    row.append(a, w);
+  }
+  if(isNew){
+    const tag = document.createElement('span'); tag.className = 'tag'; tag.textContent = '待新增';
+    row.appendChild(tag);
+  }
+  const del = document.createElement('button');
+  del.className = 'del'; del.textContent = '删除';
+  del.title = isNew ? '撤销这条新增' : '保存后从表中删除';
+  del.onclick = ()=>{
+    if(isNew) ed.add.splice(idx, 1);
+    else { ed.del.add(it.line); delete ed.upd[it.line]; }
+    glossRender();
+  };
+  row.appendChild(del);
+  return row;
+}
+
+function glossRender(){
+  const f = gloss.files[gloss.kind];
+  if(!f) return;
+  const ed = gloss.edits[gloss.kind];
+  $('#glossNote').textContent = GLOSS_NOTE[gloss.kind] || '';
+  $('#glossArrow').hidden = f.mode !== 'map';
+  $('#glossB').hidden = f.mode !== 'map';
+  $('#glossW').hidden = f.mode !== 'list';
+  const q = ($('#glossFind').value || '').trim().toLowerCase();
+  const list = $('#glossList');
+  list.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  ed.add.forEach((it, i)=>frag.appendChild(glossRow(it, ed, f.mode, true, i)));
+  let shown = 0;
+  for(const raw of f.items){
+    if(ed.del.has(raw.line)) continue;
+    // 用「原文 + 未保存改动」合成当前值，否则删一行触发重渲染会把刚输入的字吃掉
+    const it = Object.assign({}, raw, ed.upd[raw.line] || {});
+    const key = String(it.from || it.word || '').toLowerCase();
+    const val = String(it.to || '').toLowerCase();
+    if(q && !key.includes(q) && !val.includes(q)) continue;
+    frag.appendChild(glossRow(it, ed, f.mode, false, -1));
+    shown++;
+  }
+  if(!frag.childNodes.length){
+    const empty = document.createElement('div');
+    empty.className = 'learn-empty';
+    empty.textContent = q ? '没有匹配的条目' : '这张表还是空的，用上方输入框新增第一条';
+    frag.appendChild(empty);
+  }
+  list.appendChild(frag);
+  const dirty = ed.add.length + Object.keys(ed.upd).length + ed.del.size;
+  $('#glossMeta').textContent = `显示 ${shown} / 共 ${f.items.length} 条`
+    + (dirty ? ` · 未保存 ${dirty} 处` : '');
+  $('#glossHint').textContent = dirty ? '改动尚未写入文件，点「保存」才生效' : '已与磁盘一致';
+  glossCounts();
+}
+
+async function openGloss(){
+  const ok = await glossLoad();
+  if(!ok) return;
+  $('#glossFind').value = '';
+  $('#glossMask').classList.add('show');
+  glossRender();
+}
+$('#btnGloss').onclick = openGloss;
+$('#glossClose').onclick = ()=>$('#glossMask').classList.remove('show');
+$('#glossMask').onclick = e=>{ if(e.target.id === 'glossMask') $('#glossMask').classList.remove('show'); };
+$('#glossTabs').onclick = e=>{
+  const b = e.target.closest('button[data-k]');
+  if(!b) return;
+  gloss.kind = b.dataset.k;
+  [...$('#glossTabs').children].forEach(x=>x.classList.toggle('on', x === b));
+  $('#glossFind').value = '';
+  glossRender();
+};
+$('#glossFind').oninput = ()=>glossRender();
+$('#glossAdd').onclick = ()=>{
+  const f = gloss.files[gloss.kind];
+  const a = $('#glossA').value.trim();
+  const b = $('#glossB').value.trim();
+  const w = $('#glossW').value;
+  if(!a){ toast(f.mode === 'map' ? '先填错词 / 简称' : '先填热词'); return; }
+  if(f.mode === 'map' && !b){ toast('先填正确词 / 全称'); return; }
+  if(f.mode === 'map' && a === b){ toast('错词与正确词不能相同'); return; }
+  const ed = gloss.edits[gloss.kind];
+  ed.add.push(f.mode === 'map' ? {from:a, to:b} : {word:a, weight: w ? Number(w) : null});
+  $('#glossA').value = ''; $('#glossB').value = ''; $('#glossW').value = '';
+  glossRender();
+  $('#glossA').focus();
+};
+$('#glossReload').onclick = async ()=>{
+  gloss.loaded = false;
+  await glossLoad(true);
+  glossRender();
+  toast('已放弃未保存的改动');
+};
+$('#glossSave').onclick = async ()=>{
+  const kind = gloss.kind, ed = gloss.edits[kind], f = gloss.files[kind];
+  const payload = {kind, adds: ed.add, deletes: [...ed.del], updates: []};
+  for(const [line, v] of Object.entries(ed.upd)){
+    const base = f.items.find(x=>x.line === Number(line)) || {};
+    const merged = Object.assign({}, base, v);
+    payload.updates.push({line:Number(line), from:merged.from, to:merged.to,
+                          word:merged.word, weight:merged.weight});
+  }
+  const btn = $('#glossSave'); const old = btn.textContent;
+  btn.disabled = true; btn.textContent = '保存中…';
+  try{
+    const r = await fetch('/api/glossary', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const d = await r.json();
+    if(!r.ok){ toast(d.error || '保存失败'); return; }
+    toast(`已保存：新增 ${d.added}、修改 ${d.updated}、删除 ${d.deleted}。${d.note || ''}`);
+    gloss.loaded = false;
+    await glossLoad(true);
+    glossRender();
+  }catch(e){ toast('保存失败：' + e.message); }
+  finally{ btn.disabled = false; btn.textContent = old; }
+};
 
 $('#btnTerms').onclick = async ()=>{
   const d = await (await fetch('/api/terms')).json();

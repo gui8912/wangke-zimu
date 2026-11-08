@@ -55,6 +55,7 @@ import learn as _LEARN          # noqa: E402  【新增 v1.5】修订学习（�
 import llm_polish as LP        # noqa: E402  【新增 v1.7】讲稿层 LLM 顺滑
 import cloud_llm as CL         # noqa: E402  【新增 v2.2】免费 / 低价云端润色模型
 import queue_state as QS       # noqa: E402  【新增 v2.3】夜间批量队列
+import glossary as GLOSS        # noqa: E402  【新增 v2.5】术语表可视化编辑
 
 REV = OUT / "rev"
 
@@ -1225,6 +1226,33 @@ async def task_cancel(tid: str):
     t["error"] = "已取消"
     _persist(tid)
     return {"ok": True}
+
+
+# ─────────── 【新增 v2.5】术语表：错词 / 简称 / 热词 ───────────
+#
+# 原先只能手工编辑 terms/*.txt，用户反复问「管代在哪里设」「术语表在哪」。
+# 这里做可视化编辑，且只动条目行：注释、分区、换行风格一律原样保留。
+
+@app.get("/api/glossary")
+def api_glossary():
+    try:
+        return GLOSS.snapshot()
+    except Exception as exc:
+        return JSONResponse({"error": f"术语表读取失败：{exc}"}, status_code=500)
+
+
+@app.post("/api/glossary")
+def api_glossary_save(payload: dict):
+    try:
+        r = GLOSS.apply_changes(payload)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except OSError as exc:
+        return JSONResponse({"error": f"写入失败：{exc}"}, status_code=500)
+    GLOSS.reload_caches()
+    r["note"] = ("热词只影响新任务；错词与简称立即生效，"
+                 "老任务点一次「重新清理」即可应用")
+    return r
 
 
 @app.get("/api/terms")
