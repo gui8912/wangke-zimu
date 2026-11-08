@@ -201,7 +201,7 @@ def norm_punct(text: str, mode: str = "keep") -> str:
                     out.append(_FULL_MAP[ch])
                     continue
             if ch == ".":
-                # 【修改 v1.8】原来只排除了「数字.数字」，英文缩写照样被改坏：
+                # modified(v1.8):原来只排除了「数字.数字」，英文缩写照样被改坏：
                 # GMP.GSP → GMP。GSP、No.5 → No。5、e.g. → e。g。（已实测）。
                 # 文档一直承诺"英文缩写里的点不会被动到"，实现却相反。
                 # 现在改成「前一个字符是中文、且后面不是数字」才转句号：
@@ -229,7 +229,7 @@ def build_plain_text(cues: list, mode: str = "para", blank: bool = True,
       raw  —— 全部连成一段，不断行
     blank: 段落之间是否空一行（Markdown 必须空行才是段落，TXT 可选）
     """
-    # 【新增 v1.8】非数组直接报错。原来传字符串会在 c.get 处抛
+    # modified(v1.8) 新增:非数组直接报错。原来传字符串会在 c.get 处抛
     # AttributeError（'str' object has no attribute 'get'），是 500 而不是 400。
     if not isinstance(cues, list):
         raise ValueError("cues 必须是数组")
@@ -343,7 +343,7 @@ def _load_jobs():
     # 却从不清，_prune_tasks 的内存上限在重启后立刻失效（越积越多）。
     # 磁盘文件仍保留作归档，不删用户数据。
 
-    # 【修改 v1.8】两处健壮性：
+    # modified(v1.8):两处健壮性：
     # ① stat 放在 try 里——文件可能在 glob 与排序之间被删（清理脚本/同步盘），
     #    原来会抛 FileNotFoundError 直接让服务起不来；
     # ② JSON 顶层不是对象（数组/字符串/数字）时 d.get 会 AttributeError，
@@ -501,7 +501,7 @@ def _worker(task_id: str):
         task["logs"].append(str(msg))
         if len(task["logs"]) > 200:
             task["logs"] = task["logs"][-200:]
-        # 【修改 v1.8】日志落盘节流到 1 秒一次。原来每来一行日志就整份
+        # modified(v1.8):日志落盘节流到 1 秒一次。原来每来一行日志就整份
         # JSON 序列化 + 写盘，一小时课程会产生上千次写入；日志本身只是
         # 给人看的进度条，没必要逐行持久化。任务状态变更处仍立即 _persist。
         now = time.monotonic()
@@ -808,7 +808,7 @@ def save_terms(payload: dict):
     只改各组的 words，mode / desc / conditional 等规则字段原样保留——
     这些是引擎的行为约定，不能让前端误写。
     """
-    # 【修改 v1.8】原来直接 open + json.load，词表被外部编辑坏（或同步盘
+    # modified(v1.8):原来直接 open + json.load，词表被外部编辑坏（或同步盘
     # 同步到一半）时这里抛 JSONDecodeError，界面上表现为 500 且无法保存任何词。
     try:
         with open(RULES, encoding="utf-8") as f:
@@ -1081,7 +1081,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.8",       # 【修改 v1.8】
+    return {"ok": True, "version": "1.8",       # modified(v1.8):
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1266,7 +1266,7 @@ async def api_revise_tts(payload: dict):
 
 _LLM_BUSY = threading.Lock()   # 同时只跑一份；并发只会让两份都慢到超时
 _LLM_START = [0.0]             # 单调时钟，记录当前这一次开始时间
-# 【新增 v1.8】单次润色的硬上限。llama.cpp 的推理循环在 C++ 里跑，
+# modified(v1.8) 新增:单次润色的硬上限。llama.cpp 的推理循环在 C++ 里跑，
 # Python 侧无法中断（threading 也没有安全的 kill），所以超时只能做到
 # 「不再接受新请求 + 明确告诉你卡住了」，做不到自动回收。
 # 8000 字上限本身约 3 分钟，600 秒留了充足余量，正常不会误判。
@@ -1303,7 +1303,7 @@ def api_llm_polish(payload: dict):
     if not ok:
         return JSONResponse({"error": f"本地润色模型不可用：{detail}"},
                             status_code=400)
-    # 【修改 v1.8】原来是 acquire 失败就一律 409，但推理卡死时锁永远不会释放，
+    # modified(v1.8):原来是 acquire 失败就一律 409，但推理卡死时锁永远不会释放，
     # 用户只会看到「正在润色」的假象、反复重试也没用。现在区分两种情形：
     # 正常占用 → 409（等一下就好）；超时占用 → 503（明说卡住了、要重启）。
     if not _LLM_BUSY.acquire(blocking=False):
@@ -1325,7 +1325,7 @@ def api_llm_polish(payload: dict):
         r["total_elapsed"] = round(time.time() - t0, 1)
         return r
     except Exception as exc:
-        # 【修改 v1.8】traceback 只进服务日志，不回给前端：里面的绝对路径
+        # modified(v1.8):traceback 只进服务日志，不回给前端：里面的绝对路径
         # 属于本机信息，而且对用户也没有可用信息量。
         print(f"[llm] 润色失败：{exc}\n{traceback.format_exc()[-1200:]}", flush=True)
         return JSONResponse({"error": f"润色失败：{exc}"}, status_code=500)

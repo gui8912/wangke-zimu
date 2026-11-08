@@ -207,7 +207,7 @@ def _polish_chunk(llm, text):
     )
     ch = (resp.get("choices") or [{}])[0]
     out = (ch.get("message") or {}).get("content") or ""
-    # 【修改 v1.8】截断必须当错误抛出。llama.cpp 截断时不报错，只把
+    # modified(v1.8):截断必须当错误抛出。llama.cpp 截断时不报错，只把
     # finish_reason 置为 "length" 并返回「写了一半」的正文；不拦就会静默丢内容
     # （实测 max_tokens=80 时，343 字稿只剩 161 字，四项红线里只有覆盖率会掉）。
     if ch.get("finish_reason") == "length":
@@ -258,7 +258,7 @@ def polish(text, log=print):
     if not text:
         raise ValueError("没有可润色的文本")
     if len(text) > MAX_INPUT:
-        # 【新增 v1.8】上限放进模块里，命令行直接调用也受约束（原来只在服务端拦）
+        # modified(v1.8) 新增:上限放进模块里，命令行直接调用也受约束（原来只在服务端拦）
         raise ValueError(f"文本 {len(text)} 字，超过单次上限 {MAX_INPUT} 字，"
                          f"请分成两三段分别润色")
     llm = _ensure(log)
@@ -267,7 +267,7 @@ def polish(text, log=print):
     with _RUN_LOCK:
         for i, ck in enumerate(chunks, 1):
             log(f"润色第 {i}/{len(chunks)} 块（{len(ck)} 字）")
-            parts.append(_polish_with_split(llm, ck))   # 【修改 v1.8】截断自愈
+            parts.append(_polish_with_split(llm, ck))   # modified(v1.8):截断自愈
     out = "\n".join(p for p in parts if p)
     if not out.strip():
         raise RuntimeError("模型没有返回内容")
@@ -367,7 +367,7 @@ def audit(src, out):
             "note": "保留" if keep else f"疑似被删：{last[:18]}",
         }
     else:
-        # 【新增 v1.8】原文过短（一句话不到 6 字）时也要给出这一项。
+        # modified(v1.8) 新增:原文过短（一句话不到 6 字）时也要给出这一项。
         # 原来直接跳过，界面上说的「五项硬红线」只剩四项，看起来像漏检。
         res["末句保留"] = {"pass": True, "hard": True,
                            "note": "原文过短，跳过"}
