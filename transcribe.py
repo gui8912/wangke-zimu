@@ -556,11 +556,17 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
 
         # 字幕走 cue 级
         cues_in = ct.parse_srt(out["srt"].read_text(encoding="utf-8"))
-        kept = []
+        kept, cue_changes = [], []      # 【新增 v1.6】逐条变更，供界面做 diff 预览
         for c in cues_in:
-            new, _, _ = cleaner.clean(" ".join(c["lines"]))
+            orig = " ".join(c["lines"])
+            new, chg, _ = cleaner.clean(orig)
             if new.strip("，。、；：？！,.;:?! "):
                 kept.append({"idx": c["idx"], "time": c["time"], "lines": [new]})
+                if chg:
+                    cue_changes.append({
+                        "idx": c["idx"], "before": orig, "after": new,
+                        "changes": [f"{a}·{b}" for a, b, _ in chg],
+                    })
         clean_srt = outdir / f"{stem}.clean.srt"
         clean_srt.write_text(ct.build_srt(kept), encoding="utf-8")
 
@@ -584,6 +590,8 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
             "clean_srt_text": clean_srt.read_text(encoding="utf-8"),
             "clean_doc_text": "\n".join(doc),
             "report_text": "\n".join(rep),
+            # 【新增 v1.6】逐条变更（原文 / 清理后 / 变更类型），界面据此做 diff 预览
+            "cue_changes": cue_changes,
         })
         log(f"口语清理完成：{len(cues_in)}→{len(kept)} 条")
 

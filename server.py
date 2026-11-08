@@ -164,6 +164,82 @@ def parse_cues(srt_text: str) -> list:
     return out
 
 
+# 【新增 v1.6】导出纯文本：分段方式 + 段间空行 + 标点风格
+_CJK = re.compile(r"[\u4e00-\u9fa5]")
+_FULL_MAP = {",": "，", ";": "；", ":": "：", "?": "？", "!": "！"}
+_HALF_MAP = {"，": ",", "；": ";", "：": ":", "？": "?", "！": "!", "。": "."}
+_SENT_END = ("。", "！", "？", "…", "!", "?", ".")
+
+
+def norm_punct(text: str, mode: str = "keep") -> str:
+    """标点风格规整。
+
+    keep —— 原样（默认；识别结果本身就是全角，通常不需要动）
+    full —— 半角转全角，但**只在中文字符后面转**：
+            "98.5%" 的小数点、英文缩写里的点都不会被动到
+    half —— 全角转半角（用于要贴进英文排版或代码块的场景）
+
+    这里刻意不用无脑 replace：`98.5%`、`A.B`、`3.14` 被改成全角句号是不可逆的破坏。
+    """
+    if not text or mode == "keep":
+        return text
+    out = []
+    for i, ch in enumerate(text):
+        if mode == "full":
+            if ch in _FULL_MAP:
+                prev = text[i - 1] if i else ""
+                if _CJK.match(prev or ""):
+                    out.append(_FULL_MAP[ch])
+                    continue
+            # 句末的半角句点才转。数字之间的（小数）不转
+            if ch == ".":
+                nxt = text[i + 1] if i + 1 < len(text) else ""
+                if not (text[i - 1:i].isdigit() and nxt.isdigit()):
+                    out.append("。")
+                    continue
+        elif mode == "half":
+            if ch in _HALF_MAP:
+                out.append(_HALF_MAP[ch])
+                continue
+        out.append(ch)
+    return "".join(out)
+
+
+def build_plain_text(cues: list, mode: str = "para", blank: bool = True,
+                     punct: str = "keep") -> str:
+    """把 cues 组装成纯文本。
+
+    mode:
+      line —— 每条字幕一行（原来 TXT 的行为，适合逐句核对）
+      para —— 按句末标点合成段落（**默认**，适合当讲稿读）
+      raw  —— 全部连成一段，不断行
+    blank: 段落之间是否空一行（Markdown 必须空行才是段落，TXT 可选）
+    """
+    texts = [str(c.get("text") or "").strip() for c in cues]
+    texts = [t for t in texts if t]
+
+    if mode == "line":
+        paras = texts
+    elif mode == "raw":
+        paras = ["".join(texts)] if texts else []
+    else:                                   # para
+        paras, cur = [], []
+        for t in texts:
+            cur.append(t)
+            # 字幕本身是按屏断行的，一句可能拆成两三条；
+            # 只有遇到句末标点才收段，拼出来才是完整句子
+            if t.endswith(_SENT_END):
+                paras.append("".join(cur))
+                cur = []
+        if cur:
+            paras.append("".join(cur))
+
+    paras = [norm_punct(p, punct) for p in paras]
+    # 「每句一行」与「连成一段」本来就没有段落概念，blank 只对 para 生效
+    sep = ("\n\n" if blank else "\n") if mode == "para" else "\n"
+    return sep.join(paras)
+
+
 def cues_to_srt(cues: list) -> str:
     def fmt(t):
         t = max(0.0, float(t))
@@ -335,6 +411,8 @@ def _rehydrate(task: dict):
             "script_source": script_source,
             "tracks_file": str(tp) if tp.exists() else "",
             "script_file": str(OUT / f"{stem}.script.txt"),
+            # 【新增 v1.6】历史任务没有逐条变更；重新清理一次即可生成
+            "cue_changes": [],
         }
     except Exception as exc:
         # modified(v1.2): 原来静默吞掉，历史任务打不开却毫无线索
@@ -430,6 +508,9 @@ def _worker(task_id: str):
             "script_source": r.get("script_source") or "",
             "tracks_file": str(r.get("tracks_path") or ""),
             "script_file": str(r.get("script_txt_path") or ""),
+            # 【新增 v1.6】逐条变更（原文/清理后/变更类型），界面据此做 diff 预览。
+            # 注意 result 不落盘，重启后这里为空，前端会提示「重新清理一次生成」。
+            "cue_changes": r.get("cue_changes") or [],
         }
         task["status"] = "done"
         task["finished"] = time.time()
@@ -753,18 +834,23 @@ async def reclean(file_id: str = Form(...), cues_json: str = Form(...),
                          termfix=termfix,        # 【新增 v1.5】简称膨胀 + 漏字补全
                          termfix_auto=termfix_auto)
     out, hit, tips, seen = [], 0, [], set()      # modified: 去重从 O(n²) 列表查改成 set
+    diffs = []                                   # 【新增 v1.6】逐条变更，供 diff 预览
     for c in cues:
         if not isinstance(c, dict):
             continue
-        new, changes, _ = cleaner.clean(str(c.get("text") or ""))
+        before = str(c.get("text") or "")
+        new, changes, _ = cleaner.clean(before)
         if changes:
             hit += 1
+            diffs.append({"idx": c.get("idx"), "before": before, "after": new,
+                          "changes": [f"{a}·{b}" for a, b, _ in changes]})
         for s in cleaner.last_suggestions:
             if s not in seen:
                 seen.add(s)
                 tips.append(s)
         out.append({**c, "text": new})
-    return {"cues": out, "changed": hit, "suggestions": tips[:60]}
+    return {"cues": out, "changed": hit, "suggestions": tips[:60],
+            "diffs": diffs}      # 【新增 v1.6】
 
 
 @app.post("/api/save")
@@ -870,6 +956,14 @@ def export_file(payload: dict):
     stem = _safe(payload.get("stem") or "transcript")   # modified: 文件名安全化
     cues = payload.get("cues") or []
     report = payload.get("report") or ""
+    # 【新增 v1.6】纯文本导出选项；非法值一律回落默认，不让它 500
+    mode = str(payload.get("mode") or "para")
+    if mode not in ("line", "para", "raw"):
+        mode = "para"
+    blank = bool(payload.get("blank", True))
+    punct = str(payload.get("punct") or "keep")
+    if punct not in ("keep", "full", "half"):
+        punct = "keep"
 
     # modified(v1.2): 与 /api/save 共用同一套校验，缺时间码不再 500（已复现）
     if kind != "report":
@@ -883,10 +977,12 @@ def export_file(payload: dict):
     elif kind == "vtt":                                  # modified: 新增 WebVTT
         content, ext, mime = cues_to_vtt(cues), "vtt", "text/vtt"
     elif kind == "txt":
-        content = "\n".join(str(c.get("text") or "") for c in cues)
+        # 【修改 v1.6】原来固定「每句一行」，现在按导出设置分段
+        content = build_plain_text(cues, mode, blank, punct)
         ext, mime = "txt", "text/plain"
     elif kind == "md":
-        content = f"# {stem}\n\n" + "\n\n".join(str(c.get("text") or "") for c in cues)
+        # Markdown 必须空行才是段落，这里强制 blank=True，不受设置影响
+        content = f"# {stem}\n\n" + build_plain_text(cues, mode, True, punct)
         ext, mime = "md", "text/markdown"
     elif kind == "report":
         content, ext, mime = report or "（未启用口语清理，无变更报告）", "md", "text/markdown"
@@ -927,7 +1023,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.5",       # 【修改 v1.5】
+    return {"ok": True, "version": "1.6",       # 【修改 v1.6】
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

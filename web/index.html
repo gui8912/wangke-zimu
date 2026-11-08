@@ -303,6 +303,9 @@
   .learn-item .kind{font-size:var(--fs-11);padding:1px 6px;border-radius:var(--r-6);
                     border:1px solid var(--line);color:var(--muted);white-space:nowrap}
   .learn-empty{padding:22px 8px;text-align:center;color:var(--muted);font-size:var(--fs-13);line-height:1.9}
+  /* 【新增 v1.6】清理明细里的原文：不用删除线（长句划线后很难读），改淡色 */
+  .learn-item .old.plain{text-decoration:none;color:var(--muted)}
+  .learn-item .arrow{color:var(--faint);margin:0 4px}
   #learnBadge{display:inline-block;margin-left:5px;min-width:15px;padding:0 4px;border-radius:8px;
               background:var(--primary);color:#fff;font-size:var(--fs-11);line-height:15px;text-align:center}
 
@@ -475,6 +478,8 @@
       <div class="sep"></div>
       <button id="btnTerms">编辑口语词</button>
       <button id="btnReclean" disabled>重新清理</button>
+      <!-- 【新增 v1.6】逐条对照：这次清理到底删了/改了什么 -->
+      <button id="btnCleanDiff" disabled title="查看这次清理逐条改了什么（原文 vs 清理后 + 变更类型）">清理明细</button>
       <button id="btnQC" disabled title="按 Netflix / EBU 标准检查阅读速度与时轴">体检</button>
       <button id="btnAlign" disabled title="用讲义 / PPT 文字稿校准术语与时间轴">文稿对齐</button>
       <!-- 【新增 v1.3】双轨整理稿：对比预览 + 一键回退；无整理稿时禁用 -->
@@ -495,6 +500,8 @@
           <div class="line"></div>
           <a data-kind="report">变更报告<span>口语删除与术语校正明细</span></a>
           <a data-kind="copy">复制全文<span>直接存到剪贴板</span></a>
+          <div class="line"></div>
+          <a data-kind="prefs">导出设置…<span>分段方式 · 空行 · 标点</span></a>
         </div>
       </div>
       </div>
@@ -716,10 +723,72 @@
   </div>
 </div>
 
+<!-- 【新增 v1.6】导出设置：分段方式 / 段间空行 / 标点风格 -->
+<div class="mask" id="exportMask">
+  <div class="modal" style="width:min(580px,95vw)">
+    <h3>导出设置<span class="sub">作用于 TXT / Markdown / 复制全文</span></h3>
+    <div class="body">
+      <div class="field">
+        <label>分段方式 <em>字幕是按屏断行的，讲稿要按句收段</em></label>
+        <div class="align-modes">
+          <label class="chk"><input type="radio" name="expMode" value="para" checked>按句末分段（推荐）</label>
+          <label class="chk"><input type="radio" name="expMode" value="line">每句一行</label>
+          <label class="chk"><input type="radio" name="expMode" value="raw">连成一段</label>
+        </div>
+      </div>
+      <div class="field">
+        <label>段间空行</label>
+        <label class="chk"><input type="checkbox" id="expBlank" checked>段落之间空一行</label>
+        <div class="hint"><span>Markdown 始终空行，否则不成段落</span></div>
+      </div>
+      <div class="field">
+        <label>标点风格</label>
+        <div class="align-modes">
+          <label class="chk"><input type="radio" name="expPunct" value="keep" checked>保持原样</label>
+          <label class="chk"><input type="radio" name="expPunct" value="full">统一全角</label>
+          <label class="chk"><input type="radio" name="expPunct" value="half">统一半角</label>
+        </div>
+        <div class="hint"><span>全角化只转换中文字符后的标点，98.5% 这类小数点不会被改</span></div>
+      </div>
+      <div class="note">字幕 SRT / VTT 不受影响——时间轴必须按条分割。</div>
+    </div>
+    <div class="foot">
+      <div class="spacer"></div>
+      <button id="expCancel">取消</button>
+      <button class="primary" id="expSave">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- 【新增 v1.6】清理明细：逐条对照原文与清理结果，标出变更类型 -->
+<div class="mask" id="cleanDiffMask">
+  <div class="modal" style="width:min(900px,95vw)">
+    <h3>清理明细<span class="sub" id="cleanDiffSub">这次清理逐条改了什么</span></h3>
+    <div class="body">
+      <div class="note" style="margin-bottom:12px">
+        左为识别原文、右为清理结果，右侧标签是触发原因。数字规整与术语修复也计算在内。
+        逐条核对后，哪些改动不认可可以直接在字幕区双击改回。
+      </div>
+      <div id="cleanDiffList" class="learn-list"></div>
+    </div>
+    <div class="foot">
+      <span id="cleanDiffMeta" style="margin-right:auto;color:var(--muted);font-size:var(--fs-12)"></span>
+      <button id="cleanDiffCancel">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 const $ = s => document.querySelector(s);
+// 【新增 v1.6】HTML 转义。v1.5 的「学习建议」弹窗与 v1.6 的「清理明细」都调用了 esc，
+// 但当时忘了定义：打开弹窗直接 ReferenceError（实测）。统一放在最前面。
+function esc(v){
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 const state = {
   fileId:null, kind:null, taskId:null, timer:null,
   stem:'', cues:[], raw:[], dirty:false, mode:'clean',
@@ -731,7 +800,10 @@ const state = {
   saveTimer:null, saving:false,
   // 【新增 v1.3】双轨整理稿状态；本地识别时全为空/false，界面与 v1.2 一致
   provider:'local-qwen3', scriptText:'', scriptSource:'', hasScript:false,
-  subtitleText:'', docText:'', tracksDiff:[], adopted:false
+  subtitleText:'', docText:'', tracksDiff:[], adopted:false,
+  // 【新增 v1.6】本地清理的逐条变更（原文/清理后/变更类型），供 diff 预览。
+  // 历史任务没有这份数据（result 不落盘），点一次「重新清理」即可生成。
+  cueChanges:[]
 };
 
 /* ---------- 主题与字号 ---------- */
@@ -1280,6 +1352,45 @@ $('#learnMask').onclick = e=>{ if(e.target.id === 'learnMask') $('#learnMask').c
 // 进页面时静默刷新角标，不打扰
 fetch('/api/learn/pending').then(r=>r.json()).then(d=>updateLearnBadge(d.stats)).catch(()=>{});
 
+/* ---------- 清理明细（v1.6）---------- */
+function renderCleanDiff(){
+  const box = $('#cleanDiffList');
+  if(!box) return;
+  const items = state.cueChanges || [];
+  if(!items.length){
+    box.innerHTML = '<div class="learn-empty">这次没有改动，或者该任务是旧版本。<br>'
+      + '旧任务不保存逐条明细，点一次「重新清理」即可生成。</div>';
+    $('#cleanDiffMeta').textContent = '';
+    return;
+  }
+  box.innerHTML = '';
+  items.forEach(it=>{
+    const row = document.createElement('div');
+    row.className = 'learn-item';
+    const pair = document.createElement('span');
+    pair.className = 'pair';
+    pair.innerHTML = `<span class="old plain">${esc(it.before || '')}</span>`
+      + '<span class="arrow">→</span>'
+      + `<span class="new">${esc(it.after || '')}</span>`;
+    const kind = document.createElement('span');
+    kind.className = 'kind';
+    kind.textContent = (it.changes || []).join(' · ') || '—';
+    row.append(pair, kind);
+    box.appendChild(row);
+  });
+  $('#cleanDiffMeta').textContent =
+    `共 ${items.length} 条有改动 · 共 ${state.cues.length} 条字幕`;
+}
+
+$('#btnCleanDiff').onclick = ()=>{
+  renderCleanDiff();
+  $('#cleanDiffMask').classList.add('show');
+};
+$('#cleanDiffCancel').onclick = ()=>$('#cleanDiffMask').classList.remove('show');
+$('#cleanDiffMask').onclick = e=>{
+  if(e.target.id === 'cleanDiffMask') $('#cleanDiffMask').classList.remove('show');
+};
+
 $('#tracksCancel').onclick = ()=>$('#tracksMask').classList.remove('show');
 $('#tracksMask').onclick = e=>{ if(e.target.id === 'tracksMask') $('#tracksMask').classList.remove('show'); };
 
@@ -1435,6 +1546,8 @@ function renderResult(res){
   state.mode = res.clean_cues ? 'clean' : 'raw';
   state.cues = JSON.parse(JSON.stringify(res.clean_cues || res.cues || []));
   state.reportText = res.report_text || '';
+  // 【新增 v1.6】逐条变更；旧任务为空，界面会提示重新清理一次
+  state.cueChanges = res.cue_changes || [];
   state.align = null; state.alignMode = 'script';
   // 【新增 v1.3】双轨整理稿；本地识别时 has_script 为 false，按钮保持禁用
   state.provider = res.provider || 'local-qwen3';
@@ -1450,6 +1563,8 @@ function renderResult(res){
   renderTips([]);                         // 新结果，清掉上一轮的建议
   // 先把按钮放开，再做历史记账 —— 记账出问题也不能挡住主流程
   $('#btnReclean').disabled = false;
+  // 【新增 v1.6】清理明细：旧任务也能点开（弹窗里说明「重新清理可生成」）
+  $('#btnCleanDiff').disabled = false;
   $('#btnSave').disabled = false;
   $('#btnDownload').disabled = false;
   $('#btnToRevise').disabled = false;
@@ -1844,6 +1959,8 @@ $('#btnReclean').onclick = async ()=>{
   const d = await r.json();
   if(d.error){ setStatus(d.error,'err'); return; }
   state.cues = d.cues; drawCues(); state.dirty = true;
+  // 【新增 v1.6】重新清理会重算逐条变更，直接刷新明细
+  state.cueChanges = d.diffs || [];
   snapshot('重新清理');
   renderTips(d.suggestions);
   setStatus('重新清理完成','done');
@@ -1867,15 +1984,55 @@ $('#dlMenu').onclick = e=>{
   const a = e.target.closest('a[data-kind]');
   if(!a) return;
   $('#dlMenu').hidden = true;
+  if(a.dataset.kind === 'prefs'){ openExportPrefs(); return; }
   downloadAs(a.dataset.kind);
+};
+
+/* 【新增 v1.6】导出设置：分段方式 / 空行 / 标点，存在本地，下次自动沿用 */
+const EXPORT_KEY = 'asr_export_v1';
+const exportPrefs = { mode:'para', blank:true, punct:'keep' };
+try{ Object.assign(exportPrefs, JSON.parse(localStorage.getItem(EXPORT_KEY) || '{}')); }catch(e){}
+
+function openExportPrefs(){
+  document.querySelectorAll('input[name="expMode"]').forEach(el=>{
+    el.checked = (el.value === exportPrefs.mode);
+  });
+  document.querySelectorAll('input[name="expPunct"]').forEach(el=>{
+    el.checked = (el.value === exportPrefs.punct);
+  });
+  $('#expBlank').checked = !!exportPrefs.blank;
+  $('#exportMask').classList.add('show');
+}
+$('#expCancel').onclick = ()=>$('#exportMask').classList.remove('show');
+$('#exportMask').onclick = e=>{
+  if(e.target.id === 'exportMask') $('#exportMask').classList.remove('show');
+};
+$('#expSave').onclick = ()=>{
+  const m = document.querySelector('input[name="expMode"]:checked');
+  const p = document.querySelector('input[name="expPunct"]:checked');
+  exportPrefs.mode = m ? m.value : 'para';
+  exportPrefs.punct = p ? p.value : 'keep';
+  exportPrefs.blank = $('#expBlank').checked;
+  try{ localStorage.setItem(EXPORT_KEY, JSON.stringify(exportPrefs)); }catch(e){}
+  $('#exportMask').classList.remove('show');
+  const label = {para:'按句末分段', line:'每句一行', raw:'连成一段'}[exportPrefs.mode];
+  toast(`导出设置已保存：${label}${exportPrefs.blank ? ' · 段间空行' : ''}`);
 };
 
 async function downloadAs(kind){
   if(!state.cues.length){ toast('还没有可下载的字幕'); return; }
 
   if(kind === 'copy'){
-    const text = state.cues.map(c=>c.text).join('\n');
+    // 【修改 v1.6】复制也遵守导出设置，和下载 TXT 得到同样的文本
     try{
+      const r = await fetch('/api/export', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({stem: state.stem || 'transcript',
+                              cues: state.cues, kind:'txt',
+                              report: state.reportText, ...exportPrefs})
+      });
+      if(!r.ok){ toast('复制失败'); return; }
+      const text = await r.text();
       await navigator.clipboard.writeText(text);
       toast(`已复制 ${state.cues.length} 句到剪贴板`);
     }catch(e){ toast('复制失败，浏览器可能限制了剪贴板权限'); }
@@ -1885,7 +2042,8 @@ async function downloadAs(kind){
   const r = await fetch('/api/export', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({stem: state.stem || 'transcript',
-                          cues: state.cues, kind, report: state.reportText})
+                          cues: state.cues, kind, report: state.reportText,
+                          ...exportPrefs})
   });
   if(!r.ok){ toast('导出失败'); return; }
   const blob = await r.blob();
@@ -2872,6 +3030,27 @@ document.addEventListener('keydown', e=>{
   else if(e.key === 'ArrowDown'){ e.preventDefault(); jump(1); }
   else if((e.ctrlKey||e.metaKey) && e.key === 'f'){ e.preventDefault(); $('#btnFind').click(); }
 });
+
+/* 截图/演示用：URL 参数直接打开对应弹窗 */
+if(location.search.includes('export=1')){
+  setTimeout(()=>openExportPrefs(), 400);
+}
+if(location.search.includes('cleandiff=1')){
+  setTimeout(()=>{
+    if(!state.cueChanges.length && state.cues.length){
+      // 演示/截图用：真实任务会带 cue_changes，这里造几条示例
+      const kinds = [['语气词·×2'], ['数字规整·×1'], ['术语补全·药品经营质量规范→药品经营质量管理规范']];
+      state.cueChanges = state.cues.slice(0, 3).map((c, i)=>({
+        idx: i + 1,
+        before: (i === 0 ? '嗯，那个，' : '') + c.text,
+        after: c.text,
+        changes: kinds[i % kinds.length]
+      }));
+    }
+    renderCleanDiff();
+    $('#cleanDiffMask').classList.add('show');
+  }, 500);
+}
 </script>
 </body>
 </html>
