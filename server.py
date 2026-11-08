@@ -103,11 +103,19 @@ def _atomic_write(p: Path, text: str):
     来源场景：Subtitle Edit / mp3-to-text 等本地转写工具对词表、字幕草稿
     普遍采用「临时文件再替换」；用途：避免自动保存或规则编辑写到一半时
     进程退出，留下半截 JSON / SRT 把下次启动直接带崩。
+
+    【修改 v1.8】临时文件名加随机后缀。原来固定叫 `<名字>.tmp`，
+    两个并发保存同一目标（自动保存 1.2s 一次 + 手动点保存）会互相覆盖
+    临时文件，后一个 os.replace 时源文件已被前一个搬走 → FileNotFoundError。
     """
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, p)
+    tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError:
+        tmp.unlink(missing_ok=True)     # 失败别在 out/ 里堆垃圾
+        raise
 
 
 def _normalize_cues(cues) -> list:
@@ -192,10 +200,15 @@ def norm_punct(text: str, mode: str = "keep") -> str:
                 if _CJK.match(prev or ""):
                     out.append(_FULL_MAP[ch])
                     continue
-            # 句末的半角句点才转。数字之间的（小数）不转
             if ch == ".":
+                # 【修改 v1.8】原来只排除了「数字.数字」，英文缩写照样被改坏：
+                # GMP.GSP → GMP。GSP、No.5 → No。5、e.g. → e。g。（已实测）。
+                # 文档一直承诺"英文缩写里的点不会被动到"，实现却相反。
+                # 现在改成「前一个字符是中文、且后面不是数字」才转句号：
+                # 中文语境里的句点该转（第一章.总则），英文与数字里的一律不动。
+                prev = text[i - 1] if i else ""
                 nxt = text[i + 1] if i + 1 < len(text) else ""
-                if not (text[i - 1:i].isdigit() and nxt.isdigit()):
+                if _CJK.match(prev or "") and not nxt.isdigit():
                     out.append("。")
                     continue
         elif mode == "half":
@@ -216,7 +229,11 @@ def build_plain_text(cues: list, mode: str = "para", blank: bool = True,
       raw  —— 全部连成一段，不断行
     blank: 段落之间是否空一行（Markdown 必须空行才是段落，TXT 可选）
     """
-    texts = [str(c.get("text") or "").strip() for c in cues]
+    # 【新增 v1.8】非数组直接报错。原来传字符串会在 c.get 处抛
+    # AttributeError（'str' object has no attribute 'get'），是 500 而不是 400。
+    if not isinstance(cues, list):
+        raise ValueError("cues 必须是数组")
+    texts = [str(c.get("text") or "").strip() for c in cues if isinstance(c, dict)]
     texts = [t for t in texts if t]
 
     if mode == "line":
@@ -325,17 +342,36 @@ def _load_jobs():
     # modified(v1.2): 只加载最近 MAX_TASKS 个。原来全量读回，磁盘 job 文件
     # 却从不清，_prune_tasks 的内存上限在重启后立刻失效（越积越多）。
     # 磁盘文件仍保留作归档，不删用户数据。
-    files = sorted(JOBS.glob("*.json"), key=lambda x: x.stat().st_mtime,
-                   reverse=True)[:MAX_TASKS]
+
+    # 【修改 v1.8】两处健壮性：
+    # ① stat 放在 try 里——文件可能在 glob 与排序之间被删（清理脚本/同步盘），
+    #    原来会抛 FileNotFoundError 直接让服务起不来；
+    # ② JSON 顶层不是对象（数组/字符串/数字）时 d.get 会 AttributeError，
+    #    原来这句在 try 外面，同样会带崩启动。
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    try:
+        candidates = list(JOBS.glob("*.json"))
+    except OSError as exc:
+        print(f"[jobs] 无法枚举任务目录：{exc}", flush=True)
+        return
+    files = sorted(candidates, key=_mtime, reverse=True)[:MAX_TASKS]
+
     for p in files:
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
-            tid = d.get("id") or p.stem
+            if not isinstance(d, dict):
+                raise ValueError("任务文件顶层不是 JSON 对象")
+            if not d.get("id"):
+                d["id"] = p.stem
+            tid = d["id"]
         except Exception as exc:
             print(f"[jobs] 跳过损坏的任务文件 {p.name}: {exc}", flush=True)
             continue
-        if not d.get("id"):
-            d["id"] = tid
         d["result"] = None
         if d.get("status") in ("queued", "running"):
             d["status"] = "interrupted"
@@ -460,11 +496,18 @@ def _worker(task_id: str):
     task["started"] = time.time()
     _persist(task_id)
 
+    log_last = [0.0]        # 上一次日志落盘的时间（单调时钟）
     def log(msg):
         task["logs"].append(str(msg))
         if len(task["logs"]) > 200:
             task["logs"] = task["logs"][-200:]
-        _persist(task_id)
+        # 【修改 v1.8】日志落盘节流到 1 秒一次。原来每来一行日志就整份
+        # JSON 序列化 + 写盘，一小时课程会产生上千次写入；日志本身只是
+        # 给人看的进度条，没必要逐行持久化。任务状态变更处仍立即 _persist。
+        now = time.monotonic()
+        if now - log_last[0] >= 1.0:
+            log_last[0] = now
+            _persist(task_id)
 
     try:
         r = T.run_pipeline(src, task.get("model") or "qwen3-asr",
@@ -765,8 +808,17 @@ def save_terms(payload: dict):
     只改各组的 words，mode / desc / conditional 等规则字段原样保留——
     这些是引擎的行为约定，不能让前端误写。
     """
-    with open(RULES, encoding="utf-8") as f:
-        cfg = json.load(f)
+    # 【修改 v1.8】原来直接 open + json.load，词表被外部编辑坏（或同步盘
+    # 同步到一半）时这里抛 JSONDecodeError，界面上表现为 500 且无法保存任何词。
+    try:
+        with open(RULES, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError) as exc:
+        return JSONResponse(
+            {"error": f"词表读取失败，请检查 rules/filler_words.json：{exc}"},
+            status_code=500)
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("groups"), dict):
+        return JSONResponse({"error": "词表结构异常：缺少 groups"}, status_code=500)
 
     groups = payload.get("groups")
     if isinstance(groups, dict):
@@ -817,10 +869,15 @@ def save_terms(payload: dict):
 
 
 @app.post("/api/reclean")
-async def reclean(file_id: str = Form(...), cues_json: str = Form(...),
-                  itn: bool = Form(True), termfix: bool = Form(True),
-                  termfix_auto: bool = Form(True)):
-    """用当前口语词表重新清理一份字幕（输入是前端当前的原始 cues）"""
+def reclean(file_id: str = Form(...), cues_json: str = Form(...),
+            itn: bool = Form(True), termfix: bool = Form(True),
+            termfix_auto: bool = Form(True)):
+    """用当前口语词表重新清理一份字幕（输入是前端当前的原始 cues）。
+
+    【修改 v1.8】由 async def 改成 def：清理是纯 CPU 计算，几千条字幕要
+    跑一两秒。放在 async def 里会占住唯一的事件循环，这期间首页、任务轮询、
+    截图请求全部排队——FastAPI 会把 def 端点丢进线程池，不挡事件循环。
+    """
     # modified: 原来直接 json.loads，非法 JSON 会 500；这里统一兜成 400
     try:
         cues = json.loads(cues_json)
@@ -1024,7 +1081,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.7",       # 【修改 v1.7】
+    return {"ok": True, "version": "1.8",       # 【修改 v1.8】
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1208,6 +1265,12 @@ async def api_revise_tts(payload: dict):
 # align.py 的字级对齐，音画就不同步。这是 v1.3 双轨设计里写死的红线。
 
 _LLM_BUSY = threading.Lock()   # 同时只跑一份；并发只会让两份都慢到超时
+_LLM_START = [0.0]             # 单调时钟，记录当前这一次开始时间
+# 【新增 v1.8】单次润色的硬上限。llama.cpp 的推理循环在 C++ 里跑，
+# Python 侧无法中断（threading 也没有安全的 kill），所以超时只能做到
+# 「不再接受新请求 + 明确告诉你卡住了」，做不到自动回收。
+# 8000 字上限本身约 3 分钟，600 秒留了充足余量，正常不会误判。
+LLM_MAX_SECONDS = int(os.environ.get("ASR_LLM_TIMEOUT", "600"))
 
 
 @app.get("/api/llm/status")
@@ -1240,9 +1303,20 @@ def api_llm_polish(payload: dict):
     if not ok:
         return JSONResponse({"error": f"本地润色模型不可用：{detail}"},
                             status_code=400)
+    # 【修改 v1.8】原来是 acquire 失败就一律 409，但推理卡死时锁永远不会释放，
+    # 用户只会看到「正在润色」的假象、反复重试也没用。现在区分两种情形：
+    # 正常占用 → 409（等一下就好）；超时占用 → 503（明说卡住了、要重启）。
     if not _LLM_BUSY.acquire(blocking=False):
-        return JSONResponse({"error": "已有一份稿子正在润色，请等它完成"},
-                            status_code=409)
+        stuck = time.monotonic() - (_LLM_START[0] or time.monotonic())
+        if stuck > LLM_MAX_SECONDS:
+            return JSONResponse(
+                {"error": f"上一次润色已持续 {int(stuck)} 秒仍未返回，疑似卡死。"
+                          f"推理在 C++ 层执行、无法从 Python 中断，请重启服务后再试"},
+                status_code=503)
+        return JSONResponse(
+            {"error": f"已有一份稿子正在润色（已 {int(stuck)} 秒），请等它完成"},
+            status_code=409)
+    _LLM_START[0] = time.monotonic()
     try:
         logs, t0 = [], time.time()
         r = LP.polish(text, log=lambda m: logs.append(m))
@@ -1251,11 +1325,13 @@ def api_llm_polish(payload: dict):
         r["total_elapsed"] = round(time.time() - t0, 1)
         return r
     except Exception as exc:
-        return JSONResponse(
-            {"error": f"润色失败：{exc}",
-             "detail": traceback.format_exc()[-800:]}, status_code=500)
+        # 【修改 v1.8】traceback 只进服务日志，不回给前端：里面的绝对路径
+        # 属于本机信息，而且对用户也没有可用信息量。
+        print(f"[llm] 润色失败：{exc}\n{traceback.format_exc()[-1200:]}", flush=True)
+        return JSONResponse({"error": f"润色失败：{exc}"}, status_code=500)
     finally:
         _LLM_BUSY.release()
+        _LLM_START[0] = 0.0
 
 
 @app.get("/api/audio/{name}")

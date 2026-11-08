@@ -65,19 +65,32 @@ def load_terms(path) -> list:
 
 
 def load_aliases(path) -> list:
-    """读简称表：简称=>全称。# 注释与空行忽略。"""
+    """读简称表：简称=>全称。# 注释与空行忽略。
+
+    【修改 v1.8】拒绝「全称里还含简称」的条目。clean() 每次保存/重新清理都会
+    跑一遍膨胀，如果配了 `药品经营=>药品经营质量管理规范`，第二遍就会变成
+    `药品经营质量管理规范质量管理规范`，每跑一次长一截。当前表里只有英文缩写
+    （全称是中文，天然不含简称），但 adopt 出来的新条目没有这层保护。
+    """
     p = Path(path)
     if not p.exists():
         return []
-    out = []
+    out, skipped = [], []
     for ln in p.read_text(encoding="utf-8").splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("#") or "=>" not in ln:
             continue
         short, full = ln.split("=>", 1)
         short, full = short.strip(), full.strip()
-        if short and full and short != full:
-            out.append((short, full))
+        if not short or not full or short == full:
+            continue
+        if short in full:
+            skipped.append(ln)
+            continue
+        out.append((short, full))
+    if skipped:
+        print(f"[termfix] 已忽略会自我膨胀的简称配置 {len(skipped)} 条："
+              f"{'；'.join(skipped[:3])}", flush=True)
     return sorted(out, key=lambda x: len(x[0]), reverse=True)
 
 

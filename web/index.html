@@ -1484,12 +1484,22 @@ $('#btnRevLlm').onclick = async ()=>{
   toast(`正在润色 ${src.length} 字，预计 ${est} 秒左右，期间别关页面`);
 
   try{
-    const r = await fetch('/api/llm/polish', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({text: src})
-    });
-    const d = await r.json();
-    if(!r.ok){ toast(d.error || '润色失败'); return; }
+    // 【新增 v1.8】前端也要有超时。服务端的推理在 C++ 层跑、中断不了，
+    // 万一卡死，前端不设上限就会无限转圈；这里 10 分钟兜底，
+    // 到点主动断开并告诉用户去重启服务，而不是让他一直等。
+    const ctrl = new AbortController();
+    const timer = setTimeout(()=>ctrl.abort(), 10 * 60 * 1000);
+    let r, d;
+    try{
+      r = await fetch('/api/llm/polish', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({text: src}), signal: ctrl.signal
+      });
+      d = await r.json();
+    }finally{
+      clearTimeout(timer);
+    }
+    if(!r.ok){ toast(d && d.error ? d.error : '润色失败'); return; }
     llmState.src = d.source || src;
     llmState.out = d.polished || '';
     llmState.tail = d.tail || '';
@@ -1501,7 +1511,11 @@ $('#btnRevLlm').onclick = async ()=>{
     renderLlmPreview();
     $('#llmMask').classList.add('show');
   }catch(e){
-    toast('润色请求失败：' + e.message);
+    if(e && e.name === 'AbortError'){
+      toast('等了 10 分钟仍未返回，已断开。推理卡住了，请重启服务后再试');
+    }else{
+      toast('润色请求失败：' + (e && e.message ? e.message : e));
+    }
   }finally{
     llmState.busy = false;
     btn.disabled = false; btn.textContent = old;

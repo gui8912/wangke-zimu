@@ -38,8 +38,17 @@ MAX_INPUT = 8000
 # 700 字输入 + 提示词 + 输出，留有余量；再大就有截断风险。
 CHUNK_CHARS = 700
 N_CTX = 4096
-MAX_TOKENS = 2000
+MAX_TOKENS = 2400
 THREADS = max(4, min(12, (os.cpu_count() or 8) - 4))
+
+
+class TruncatedOutput(RuntimeError):
+    """模型输出被 max_tokens 截断。
+
+    必须单独识别：llama.cpp 截断时不会报错，只把 finish_reason 置为 "length"，
+    返回的是「写了一半」的正文。不检查就会把它当完整结果继续拼进讲稿，
+    中间整段内容静默消失（实测 max_tokens=80 时 343 字稿只剩 161 字）。
+    """
 
 SYSTEM = "你是药品监管培训讲稿的文字编辑。你的工作只是整理语言，不改事实。"
 
@@ -77,13 +86,27 @@ _RUN_LOCK = threading.Lock()      # llama.cpp 同一实例不能并发推理，�
 
 # ---------------------------------------------------------------- 模型管理
 
+_MODEL_CACHE = {"path": None, "at": 0.0}
+
+
 def find_model():
-    """找 gguf：优先 Q4_K_M，其次任意 gguf。找不到返回 None，不抛异常。"""
+    """找 gguf：优先 Q4_K_M，其次任意 gguf。找不到返回 None，不抛异常。
+
+    【修改 v1.8】结果缓存 30 秒。`/api/llm/status` 每次请求都会走到这里，
+    模型目录下文件多时 rglob 要几十毫秒；状态查询是高频调用（页面加载、
+    服务台探活），没必要每次都扫盘。
+    """
+    now = time.monotonic()
+    cached = _MODEL_CACHE["path"]
+    if cached and now - _MODEL_CACHE["at"] < 30:
+        p = Path(cached)
+        return p if p.exists() else None
     if not MODEL_DIR.exists():
         return None
     for pat in ("*Q4_K_M*.gguf", "*.gguf"):
         cands = sorted(MODEL_DIR.rglob(pat))
         if cands:
+            _MODEL_CACHE["path"], _MODEL_CACHE["at"] = str(cands[0]), now
             return cands[0]
     return None
 
@@ -182,11 +205,39 @@ def _polish_chunk(llm, text):
         ],
         temperature=0.15, top_p=0.9, max_tokens=MAX_TOKENS,
     )
-    out = (resp["choices"][0]["message"]["content"] or "").strip()
+    ch = (resp.get("choices") or [{}])[0]
+    out = (ch.get("message") or {}).get("content") or ""
+    # 【修改 v1.8】截断必须当错误抛出。llama.cpp 截断时不报错，只把
+    # finish_reason 置为 "length" 并返回「写了一半」的正文；不拦就会静默丢内容
+    # （实测 max_tokens=80 时，343 字稿只剩 161 字，四项红线里只有覆盖率会掉）。
+    if ch.get("finish_reason") == "length":
+        raise TruncatedOutput(
+            f"输出达到 {MAX_TOKENS} token 上限被截断（本块 {len(text)} 字）")
+    out = out.strip()
     # 双保险：万一模型仍输出思考段或代码围栏
     out = re.sub(r"<think.*?</think\s*>", "", out, flags=re.S).strip()
     out = re.sub(r"^```[a-z]*\s*|```$", "", out).strip()
     return out
+
+
+def _polish_with_split(llm, text, depth=0):
+    """单块润色；被截断就把这块对半切开重试。
+
+    截断的根因是「输出比输入长」，通常说明这段密度高（术语多、句子长）。
+    对半切是最省事的自愈：每半的输出自然减半，不会再撞上限。
+    递归上限 2 层（最多切成 4 份）；再切句子就太碎、模型反而改得差，
+    这时直接报错让人知道，而不是继续产出半截稿。
+    """
+    try:
+        return _polish_chunk(llm, text)
+    except TruncatedOutput:
+        if depth >= 2 or len(text) < 240:
+            raise
+        parts = chunk_text(text, limit=max(160, len(text) // 2))
+        if len(parts) < 2:                      # 一整句超长、切不开：按字数硬分
+            mid = len(text) // 2
+            parts = [text[:mid], text[mid:]]
+        return "\n".join(_polish_with_split(llm, p, depth + 1) for p in parts)
 
 
 def last_sentence(text):
@@ -206,13 +257,17 @@ def polish(text, log=print):
     text = (text or "").strip()
     if not text:
         raise ValueError("没有可润色的文本")
+    if len(text) > MAX_INPUT:
+        # 【新增 v1.8】上限放进模块里，命令行直接调用也受约束（原来只在服务端拦）
+        raise ValueError(f"文本 {len(text)} 字，超过单次上限 {MAX_INPUT} 字，"
+                         f"请分成两三段分别润色")
     llm = _ensure(log)
     chunks = chunk_text(text)
     parts, t0 = [], time.time()
     with _RUN_LOCK:
         for i, ck in enumerate(chunks, 1):
             log(f"润色第 {i}/{len(chunks)} 块（{len(ck)} 字）")
-            parts.append(_polish_chunk(llm, ck))
+            parts.append(_polish_with_split(llm, ck))   # 【修改 v1.8】截断自愈
     out = "\n".join(p for p in parts if p)
     if not out.strip():
         raise RuntimeError("模型没有返回内容")
@@ -311,6 +366,11 @@ def audit(src, out):
             "pass": keep, "hard": True,
             "note": "保留" if keep else f"疑似被删：{last[:18]}",
         }
+    else:
+        # 【新增 v1.8】原文过短（一句话不到 6 字）时也要给出这一项。
+        # 原来直接跳过，界面上说的「五项硬红线」只剩四项，看起来像漏检。
+        res["末句保留"] = {"pass": True, "hard": True,
+                           "note": "原文过短，跳过"}
 
     ratio = len(out) / max(1, len(src))
     res["长度合理"] = {
