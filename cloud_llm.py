@@ -58,7 +58,11 @@ DEFAULTS = {
     "preset": "glm-4-flash",
     "base_url": PRESETS["glm-4-flash"]["base_url"],
     "model": PRESETS["glm-4-flash"]["model"],
-    "api_key": "",
+    "api_key": "",           # 当前预设正在用的 Key（由 keys[preset] 派生）
+    # 【新增 v2.4】按预设分别保存密钥。原来整份配置只有一个 api_key：
+    # 填了 GLM 的 Key 再填 DeepSeek 会把前者覆盖，切回去时界面还显示
+    # 「已保存密钥」却用错 Key，表现为「换个模型就保存不了」。
+    "keys": {},              # {"glm-4-flash": "sk-…", "deepseek-v4-flash": "sk-…"}
     "price_in": 0.0,
     "price_out": 0.0,
     "currency": "CNY",
@@ -71,32 +75,58 @@ def preset_info(key):
     return PRESETS.get(key) or PRESETS["custom"]
 
 
+def _blank():
+    """DEFAULTS 含可变字典，浅拷贝会让所有调用共用同一个 keys，必须深拷贝。"""
+    return json.loads(json.dumps(DEFAULTS))
+
+
+def mask(key):
+    key = str(key or "")
+    return (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已填" if key else "")
+
+
 def load_config():
-    """读配置；文件不存在/损坏都回落默认值，绝不因为配置把服务带崩。"""
-    cfg = dict(DEFAULTS)
+    """读配置；文件不存在/损坏都回落默认值，绝不因为配置把服务带崩。
+
+    【新增 v2.4】旧版配置没有 keys 字段，这里做一次无损迁移：把已有的
+    api_key 归到它当时的 preset 名下，用户不必重新录入。
+    """
+    cfg = _blank()
     try:
         if CONFIG.exists():
             raw = json.loads(CONFIG.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 cfg.update({k: v for k, v in raw.items() if k in DEFAULTS})
     except Exception:
-        pass
+        cfg = _blank()
+    if not isinstance(cfg.get("keys"), dict):
+        cfg["keys"] = {}
+    if not cfg["keys"] and str(cfg.get("api_key") or "").strip():
+        cfg["keys"][str(cfg.get("preset") or "glm-4-flash")] = str(cfg["api_key"]).strip()
     return cfg
 
 
 def save_config(data):
-    """原子写配置；校验 URL / 模型名；空 api_key 表示沿用已存的密钥。"""
+    """原子写配置；校验 URL / 模型名；空 api_key 表示沿用**该预设**已存的密钥。"""
     if not isinstance(data, dict):
         raise ValueError("配置格式不对")
     cur = load_config()
-    cfg = dict(cur)
+    cfg = json.loads(json.dumps(cur))          # 深拷贝，别把 keys 改到缓存上
     for k in ("enabled", "preset", "base_url", "model", "price_in",
               "price_out", "currency", "timeout", "max_tokens"):
         if k in data:
             cfg[k] = data[k]
-    key = str(data.get("api_key") or "").strip()
-    if key:
-        cfg["api_key"] = key
+    preset = str(cfg.get("preset") or "glm-4-flash")
+    keys = cfg.setdefault("keys", {})
+    new_key = str(data.get("api_key") or "").strip()
+    if new_key:
+        # 只写当前预设自己的槽位，别的模型的 Key 原封不动
+        keys[preset] = new_key
+        cfg["api_key"] = new_key
+    else:
+        # 切换预设但未填新 Key：自动带出该预设已存的 Key；没存过就置空，
+        # 下面启用校验会明确提示「请填 API Key」，不会悄悄用别的模型的 Key。
+        cfg["api_key"] = str(keys.get(preset) or "")
     cfg["enabled"] = bool(cfg["enabled"])
     cfg["base_url"] = str(cfg["base_url"] or "").strip().rstrip("/")
     cfg["model"] = str(cfg["model"] or "").strip()
@@ -126,31 +156,43 @@ def save_config(data):
 
 
 def apply_preset(key):
-    """把预设填进配置（不动 API Key），供界面切换下拉框时调用。"""
+    """把预设填进配置（不动任何已存密钥），供界面切换下拉框时调用。
+
+    【修改 v2.4】返回该预设自己的 masked_key / has_key，前端切换时就能
+    提示「这个模型已存 / 未存密钥」；enabled 沿用当前值，别一换模型就关云端。
+    """
     p = preset_info(key)
-    cfg = dict(DEFAULTS)
+    saved = load_config()
+    cfg = _blank()
     cfg.update({
         "preset": key if key in PRESETS else "custom",
         "base_url": p["base_url"], "model": p["model"],
         "price_in": p["price_in"], "price_out": p["price_out"],
         "currency": p["currency"],
+        "enabled": bool(saved.get("enabled")),
     })
-    cfg["api_key"] = load_config().get("api_key", "")
+    own = str((saved.get("keys") or {}).get(key) or "")
+    if not own and saved.get("preset") == key:       # 旧配置无损迁移兜底
+        own = str(saved.get("api_key") or "")
+    cfg["api_key"] = own
+    cfg["masked_key"] = mask(own)
+    cfg["has_key"] = bool(own)
     return cfg
 
 
 def status():
     cfg = load_config()
-    key = str(cfg.get("api_key") or "")
-    masked = (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已填" if key else "")
+    keys = cfg.get("keys") or {}
+    masked = mask(cfg.get("api_key"))
     p = preset_info(cfg.get("preset"))
     return {
         "enabled": bool(cfg.get("enabled")),
-        "configured": bool(key or str(cfg.get("base_url", "")).startswith("http://127.0.0.1")),
+        "configured": bool(cfg.get("api_key") or str(cfg.get("base_url", "")).startswith("http://127.0.0.1")),
         "preset": cfg.get("preset"),
         "label": p["label"], "note": p["note"],
         "base_url": cfg.get("base_url"), "model": cfg.get("model"),
         "masked_key": masked,
+        "keys_saved": [k for k in PRESETS if str(keys.get(k) or "").strip()],
         "price_in": cfg.get("price_in"), "price_out": cfg.get("price_out"),
         "currency": cfg.get("currency"), "usd_cny": USD_CNY,
         "presets": [{"id": k, "label": v["label"]} for k, v in PRESETS.items()],
@@ -248,13 +290,17 @@ class CloudChat:
 
 def test_connection(data=None):
     """用一条极短消息试连通，供设置界面的「测试连接」按钮调用。"""
-    cfg = dict(load_config())
+    cfg = load_config()
     if isinstance(data, dict):
         for k in ("preset", "base_url", "model", "api_key", "price_in",
-              "price_out", "currency", "timeout"):
+                  "price_out", "currency", "timeout"):
             if k in data and data[k] not in (None, ""):
                 cfg[k] = data[k]
-    # data 里 api_key 为空表示「沿用已保存的密钥」，不需要额外处理
+        # 【修改 v2.4】没填新 Key 时，用「当前预设自己」已存的 Key 去测，
+        # 而不是沿用上一个模型的 Key（否则换模型后测试必定 401）。
+        if not str(data.get("api_key") or "").strip():
+            preset = str(cfg.get("preset") or "glm-4-flash")
+            cfg["api_key"] = str((cfg.get("keys") or {}).get(preset) or "")
     cfg["enabled"] = True
     cfg["base_url"] = str(cfg.get("base_url") or "").rstrip("/")
     if not cfg["base_url"].startswith(("http://", "https://")) or not cfg.get("model"):

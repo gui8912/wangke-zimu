@@ -243,7 +243,9 @@ def api():
     cfg2 = json.loads(raw)
     total = sum(len(v.get("words", [])) + len(v.get("tail_only", []))
                 for v in cfg2["groups"].values())
-    assert total == 101, total
+    # 【修改 v2.4】原来写死 101 条；用户会往词表里加自己的规则
+    # （2026-11-09 新增「我们 / 咱们 / 好」→ 104 条），这里只校验下限与合法性。
+    assert total >= 101, total
     assert (BASE / "rules" / "filler_words.json.bak").exists()
     ok(f"/api/terms 原子写后词表仍合法（{total} 词），备份已生成")
 

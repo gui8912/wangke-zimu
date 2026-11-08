@@ -30,9 +30,13 @@ TERMS = BASE / "terms"
 # 模型目录可用环境变量覆盖：换更大的模型、或放到别的盘时不用改代码
 MODEL_DIR = Path(os.environ.get("ASR_LLM_DIR") or r"D:\AI\models\llm")
 
-# 单次请求的输入上限。8000 字约等于 25 分钟口播，分 12 块左右，
-# CPU 上要跑两三分钟——再长用户等不住，也会让网关超时，所以拦在前面。
-MAX_INPUT = 8000
+# 【修改 v2.4】原来 8000 字直接拒绝，3 万字的课件稿根本没法润色。
+# 底层本来就按 CHUNK_CHARS=700 整句分块、逐块送模型、再拼回一整篇，
+# 所以把 8000 从「硬拒绝」改成「整体硬上限」（只防滥用与内存失控）：
+# 长稿自动分割 → 逐块传输 → 合并回传 → 预览通过后写入最终稿。
+# 可用 ASR_LLM_MAX_CHARS 调整；200000 字约 11 小时口播，足够覆盖整门课。
+MAX_INPUT = int(os.environ.get("ASR_LLM_MAX_CHARS") or 200000)
+AUTO_CHUNK_AT = 8000       # 超过这个字数写一行日志，说明已自动分块
 
 # 每块送给模型的字数。Qwen3-4B 的 n_ctx=4096，中文 1 字约 1.5 token，
 # 700 字输入 + 提示词 + 输出，留有余量；再大就有截断风险。
@@ -274,16 +278,28 @@ def polish(text, log=print):
     if not text:
         raise ValueError("没有可润色的文本")
     if len(text) > MAX_INPUT:
-        # modified(v1.8) 新增:上限放进模块里，命令行直接调用也受约束（原来只在服务端拦）
-        raise ValueError(f"文本 {len(text)} 字，超过单次上限 {MAX_INPUT} 字，"
-                         f"请分成两三段分别润色")
+        # 【修改 v2.4】8000 字的硬拒绝已取消：底层按整句分块，
+        # 现在这里只是防滥用 / 防内存失控的总量上限。
+        raise ValueError(f"文本 {len(text)} 字，超过硬上限 {MAX_INPUT} 字，"
+                         f"可用 ASR_LLM_MAX_CHARS 调整")
     llm = _ensure(log)
     chunks = chunk_text(text)
-    parts, t0 = [], time.time()
+    if len(text) > AUTO_CHUNK_AT:
+        log(f"长稿 {len(text)} 字，自动分 {len(chunks)} 块逐块润色后合并")
+    parts, t0, restored = [], time.time(), 0
     with _RUN_LOCK:
         for i, ck in enumerate(chunks, 1):
             log(f"润色第 {i}/{len(chunks)} 块（{len(ck)} 字）")
-            parts.append(_polish_with_split(llm, ck))   # modified(v1.8):截断自愈
+            part = _polish_with_split(llm, ck)   # modified(v1.8):截断自愈
+            # 【新增 v2.4】块是人为切的，模型常把块尾客套句删掉。
+            # 除最后一块外，块尾句由程序补回——这是分块引入的丢失，
+            # 不该让用户逐块去找；原文真正的末句仍交给界面「补回原末句」，
+            # 不静默补，红线闸门保持有效。
+            tail = last_sentence(ck)
+            if i < len(chunks) and tail and tail not in part:
+                part = (part.rstrip() + "\n" + tail).strip()
+                restored += 1
+            parts.append(part)
     out = "\n".join(p for p in parts if p)
     if not out.strip():
         raise RuntimeError("模型没有返回内容")
@@ -297,6 +313,8 @@ def polish(text, log=print):
         "audit": audit(text, out),
         "diff": diff_ops(text, out),
         "chunks": len(chunks),
+        "chunk_chars": CHUNK_CHARS,
+        "tail_restored": restored,     # 【新增 v2.4】自动补回的块尾句数量
         "elapsed": round(time.time() - t0, 1),
         "model": getattr(llm, "model_name", None) or (m.name if m else ""),
         "backend": "cloud" if usage else "local",

@@ -28,7 +28,7 @@ def ok(name, cond, extra=""):
     print(f"  {'✓' if cond else '✗'} {name}{(' — ' + str(extra)) if extra and not cond else ''}")
 
 
-def q_unit():
+def q_unit(tmp: Path):
     print("[队列] 可排序队列与闸门")
     q = QS.JobQueue()
     for x in ("a", "b", "c"):
@@ -59,6 +59,22 @@ def q_unit():
     st["start_at"] = time.time() - 1
     ok("过点放行", g.allowed())
 
+    # 【新增 v2.4】定时到点必须把 start_at 清掉并落盘，否则配置里永远留着
+    # 一个昨天的时间戳，前端每次刷新都显示「定时 …」。wait() 会写文件，
+    # 这里把 CONFIG 重定向到临时目录，绝不碰真实 config/queue.json。
+    old_cfg = QS.CONFIG
+    QS.CONFIG = tmp / "queue_gate.json"
+    try:
+        due = {"paused": False, "start_at": time.time() - 1}
+        QS.Gate(due).wait()
+        ok("到点清掉定时标记", due.get("start_at") is None, due)
+        saved = json.loads(QS.CONFIG.read_text(encoding="utf-8"))
+        ok("清标记已落盘", saved["start_at"] is None, saved)
+        paused_future = {"paused": True, "start_at": time.time() + 3600}
+        ok("手动暂停优先于定时", not QS.Gate(paused_future).allowed())
+    finally:
+        QS.CONFIG = old_cfg
+
 
 def cloud_unit(tmp: Path):
     print("[云端] 配置、计费、OpenAI 兼容调用")
@@ -83,6 +99,32 @@ def cloud_unit(tmp: Path):
            st2["masked_key"])
         ok("空 key 沿用已存密钥", CL.save_config({"model": "glm-4-flash"})["api_key"]
            == "sk-abcdef1234567890xyz")
+
+        # 【新增 v2.4】按预设分别保存密钥：现场反馈「填了 GLM 再填 DeepSeek 存不上」
+        CL.save_config({"enabled": True, "preset": "deepseek-v4-flash",
+                        "base_url": "https://api.deepseek.com",
+                        "model": "deepseek-v4-flash",
+                        "api_key": "sk-deepseek-9876543210abc",
+                        "price_in": 0.14, "price_out": 0.28, "currency": "USD"})
+        ok("切换模型用新 Key", CL.load_config()["api_key"] == "sk-deepseek-9876543210abc")
+        back = CL.save_config({"preset": "glm-4-flash",
+                               "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                               "model": "glm-4-flash",
+                               "price_in": 0, "price_out": 0, "currency": "CNY"})
+        ok("切回自动带出原 Key", back["api_key"] == "sk-abcdef1234567890xyz", back["api_key"])
+        ok("两个 Key 互不覆盖",
+           set(CL.status()["keys_saved"]) == {"glm-4-flash", "deepseek-v4-flash"},
+           CL.status()["keys_saved"])
+        dj = CL.apply_preset("deepseek-v4-flash")
+        ok("切换预设报该模型状态", dj["has_key"] and "…" in dj["masked_key"], dj)
+        ok("未存 Key 的预设不串用", CL.apply_preset("custom")["api_key"] == "")
+        # 测试连接走「当前预设自己的 Key」，不再是上一个模型的
+        ok("配置可重复读取", isinstance(CL.load_config(), dict))
+        # 恢复成 GLM，避免影响后面的计费/HTTP 用例
+        CL.save_config({"preset": "glm-4-flash",
+                        "base_url": "https://open.bigmodel.cn/api/paas/v4",
+                        "model": "glm-4-flash", "enabled": True,
+                        "price_in": 0, "price_out": 0, "currency": "CNY"})
         try:
             CL.save_config({"enabled": True, "base_url": "ftp://x", "model": "m"})
             ok("非法 URL 被拒", False)
@@ -148,6 +190,19 @@ def batch_unit(tmp: Path):
     print("[批量] 入队、跳过重复、队列设置、重启续跑")
     import server as S
 
+    # 【修复 v2.4】api_queue_set 会 QS.save() 落盘；原来没重定向 CONFIG，
+    # 跑一次测试就把真实队列写成「暂停 + 定时 + 重试3次」，
+    # 用户点「重试」后任务一直排队不跑。测试必须完全隔离。
+    old_cfg = QS.CONFIG
+    QS.CONFIG = tmp / "queue.json"
+    try:
+        _batch_unit_body(tmp, S)
+    finally:
+        QS.CONFIG = old_cfg
+
+
+def _batch_unit_body(tmp: Path, S):
+
     jobs = tmp / "jobs"; jobs.mkdir()
     media = tmp / "media"; media.mkdir()
     inbox = media / "inbox"; inbox.mkdir()
@@ -179,6 +234,8 @@ def batch_unit(tmp: Path):
     ok("自动重试可配", st["auto_retry"] == 3)
     st = S.api_queue_set({"start_at": time.time() + 600})
     ok("定时开始可设", st["start_at"] is not None)
+    # 【新增 v2.4】暂停态下设定时，到点也必须能开跑
+    ok("设定时自动解除暂停", not st["paused"], st)
 
     ids = S.JOB_Q.snapshot()
     ok("顺序调整", S.api_queue_move({"id": ids[0], "delta": 1})["ok"])
@@ -205,6 +262,13 @@ def batch_unit(tmp: Path):
     ok("queued 重新入队", "q1" in S.JOB_Q.snapshot(), S.JOB_Q.snapshot())
     ok("running 标中断", S.TASKS["r1"]["status"] == "interrupted", S.TASKS.get("r1"))
 
+    # 【新增 v2.4】源文件禁止删除：旧客户端就算传 purge_media=True 也不生效
+    keep = media / "a.mp4"
+    ok("删除前源文件在", keep.exists())
+    S.TASKS["r1"]["status"] = "done"
+    S.tasks_batch({"action": "delete", "ids": ["r1"], "purge_media": True})
+    ok("旧参数也删不掉源文件", keep.exists())
+
 
 def guards():
     print("[护栏] 文件与接线")
@@ -221,6 +285,13 @@ def guards():
     ok("批量 CLI 存在", (BASE / "batch_add.py").exists())
     ok("启动器存在", (BASE / "启动批量任务.bat").exists())
     ok("中文说明存在", (BASE / "批量任务说明.txt").exists())
+    # 【新增 v2.4】首页说明书 + 源文件禁止删除
+    ok("首页有使用说明按钮", 'id="btnManual"' in web)
+    ok("说明书静态页存在", (BASE / "web" / "说明书.html").exists())
+    ok("说明书生成脚本存在", (BASE / "samples" / "gen_manual.py").exists())
+    ok("任务栏不再有连源文件一起删", 'id="purgeMedia"' not in web)
+    ok("后端忽略 purge_media", "purge = False" in src)
+    ok("Paraformer 有心跳进度", "funasr-beat" in (BASE / "transcribe.py").read_text(encoding="utf-8"))
     gitignore = (BASE / ".gitignore").read_text(encoding="utf-8")
     ok("配置目录已排除入库", "/config/" in gitignore)
     bat = (BASE / "启动批量任务.bat").read_bytes()
@@ -235,7 +306,7 @@ def guards():
 
 def main():
     tmp = Path(tempfile.mkdtemp(prefix="v21_"))
-    q_unit()
+    q_unit(tmp)
     cloud_unit(tmp)
     batch_unit(tmp)
     guards()

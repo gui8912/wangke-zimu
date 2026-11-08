@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>网课转字幕 · 使用说明书</title>
+<style>
+:root{--fg:#1f2328;--muted:#5b6572;--line:#dfe3e8;--bg:#fff;--soft:#f6f8fa;
+      --accent:#1a5fb4;--accent-soft:#eaf2fc}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 34px 60px;background:var(--bg);color:var(--fg);
+     font:15px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:980px;margin:0 auto}
+h1{font-size:26px;margin:0 0 6px;padding-bottom:14px;border-bottom:2px solid var(--accent)}
+h2{font-size:20px;margin:34px 0 12px;padding-left:11px;border-left:4px solid var(--accent)}
+h3{font-size:16px;margin:22px 0 8px;color:var(--accent)}
+p{margin:8px 0}
+blockquote{margin:12px 0;padding:8px 14px;background:var(--accent-soft);
+           border-left:3px solid var(--accent);color:#25436b;border-radius:0 6px 6px 0}
+blockquote p{margin:2px 0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:var(--soft);font-weight:600;white-space:nowrap}
+tr:nth-child(even) td{background:#fcfdfe}
+code{background:var(--soft);border:1px solid var(--line);border-radius:4px;
+     padding:1px 5px;font:13px/1.5 Consolas,"Cascadia Mono",monospace}
+pre{background:#f6f8fa;border:1px solid var(--line);border-radius:8px;
+    padding:13px 16px;overflow:auto;margin:12px 0}
+pre code{background:none;border:0;padding:0;font-size:13px;line-height:1.6}
+ul,ol{margin:8px 0;padding-left:26px}
+li{margin:3px 0}
+hr{border:0;border-top:1px solid var(--line);margin:26px 0}
+a{color:var(--accent)}
+.toc{background:var(--soft);border:1px solid var(--line);border-radius:8px;
+     padding:12px 20px;margin:18px 0 26px}
+.toc b{display:block;margin-bottom:6px;color:var(--muted);font-size:13px}
+.toc a{display:inline-block;margin:2px 16px 2px 0;font-size:14px;text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.foot{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);
+      color:var(--muted);font-size:12px}
+@media print{.toc{display:none}body{padding:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>网课转字幕 · 使用说明书</h1>
+<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.4 ｜ 2026-11-09 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
+<hr>
+<nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a></nav>
+<h2 id="s1">一、三分钟上手</h2>
+<ol><li>双击 <code>启动界面.bat</code>（或在「服务台」里启动「网课转字幕」），浏览器自动打开</li></ol>
+<p><code>http://127.0.0.1:7870/</code>。</p>
+<ol><li>把一节课拖进左侧虚线框 → 点「开始转写」。</li><li>跑完在右侧逐句校对 → 点「保存」→「下载字幕」选 SRT / VTT / TXT / Markdown。</li></ol>
+<p>顶栏最右侧的 <strong>「使用说明」</strong> 随时打开本手册（带目录、可新窗口打印 / 搜索），</p>
+<p>不用翻文件。</p>
+<p><strong>第一次用建议</strong>：先拿一段 2–5 分钟的课试跑，确认速度、术语、断句都合口味，</p>
+<p>再排一整晚的批量任务。</p>
+<hr>
+<h2 id="s2">二、单节课的完整流程</h2>
+<table><thead><tr><th>步骤</th><th>操作</th><th>说明</th></tr></thead><tbody>
+<tr><td>1 上传</td><td>拖文件 / 点击选择</td><td>mp4 / mkv / mov / mp3 / wav / m4a 等；多个文件直接拖进去会批量排队</td></tr>
+<tr><td>2 选参数</td><td>顶部下拉</td><td>识别源默认「本地 Qwen3-ASR · 精度优先」；语种默认中文</td></tr>
+<tr><td>3 开关</td><td>顶部复选框</td><td>清理口语、数字规整、术语补全默认开；「云端整理稿」只在用云端识别源时可用</td></tr>
+<tr><td>4 开始</td><td>「开始转写」</td><td>左中状态区显示进度，任务栏出现进度条 + 阶段 + 预计剩余</td></tr>
+<tr><td>5 校对</td><td>右侧字幕行</td><td>点字幕行跳到对应时间；查找替换、合并碎句、时间轴整理、体检、文稿对齐</td></tr>
+<tr><td>6 清理明细</td><td>「清理明细」</td><td>逐条看这次删了 / 改了什么，避免误删专业表述</td></tr>
+<tr><td>7 保存 / 导出</td><td>「保存」「下载字幕 ▾」</td><td>导出前可在「导出设置」里选分段方式、空行、标点</td></tr>
+<tr><td>8 改稿</td><td>「改稿 →」</td><td>七遍改稿流程；「LLM 润色」是可选用第 0 遍底稿</td></tr>
+<tr><td>9 成稿</td><td>「复制文本」</td><td>一键把当前成稿放进剪贴板，直接粘贴到 Word（不再生成 docx）</td></tr>
+</tbody></table>
+<p><strong>改稿页的「复制文本」</strong>（v2.4）：原来的「导出成稿 ▾」是下拉菜单，点击只弹菜单、</p>
+<p>再选格式才下载 Word 文档，依赖 python-docx 常失败，表现为「点了没反应」。</p>
+<p>现在改成单按钮，一步复制到剪贴板，版式由你在 Word 里定。</p>
+<p><strong>双轨红线</strong>：字幕轨永远是识别原文 + 字级时间戳；讲稿轨才允许顺滑改写。</p>
+<p>整段改写绝不进字幕层，否则时间轴会断，音画不同步。</p>
+<hr>
+<h2 id="s3">三、批量 / 夜间无人值守（重点）</h2>
+<h3>3.1 网页端</h3>
+<p>左侧「任务」卡片 → 展开 <strong>「批量 · 夜间无人值守」</strong>：</p>
+<ul><li><strong>批量添加课件…</strong>：一次选多个文件；也可把多个文件一起拖到上方虚线框。</li><li><strong>定时开始</strong>：选日期时间 → 「设定」。到点自动开跑，不用守着；「取消定时」撤销。</li><li><strong>暂停队列 / 继续队列</strong>：白天要用机器时先暂停，晚上继续。</li><li><strong>失败自动重试</strong>：建议 1 次；失败任务自动排到队尾，别的课先跑。</li><li><strong>跳过已转录</strong>：同名同大小且已完成 / 已排队 / 识别中的文件不会重复入队。</li><li><strong>文件夹监控</strong>：勾上后，往 <code>media/inbox/</code> 丢文件会自动排队（约 1 分钟内发现）。</li><li><strong>队列顺序</strong>：每条右侧 ↑ ↓ 调整先后，急用的课提到最前。</li></ul>
+<p>任务栏上方是批量操作条：**全选 / 反选 / 批量重试 / 批量取消 / 删除选中 /</p>
+<p>清空已结束**。</p>
+<blockquote>删除只清任务记录和 <code>out/_jobs/</code> 里的状态文件；<code>out/</code> 里的字幕稿、<br><code>media/</code> 里的源音视频<strong>一律保留，工具不提供任何自动删除源文件的入口</strong>。<br>需要释放磁盘时，请自己在资源管理器里整理 <code>media/</code>。</blockquote>
+<p>每个识别中的任务显示 <strong>百分比 · 阶段（如「识别 12/28」） · 已用时</strong>：</p>
+<p>Qwen3 路径逐片上报真实进度；Paraformer 是整段推理，百分比在跑完前不动，</p>
+<p>但阶段与「已用时」会持续走动，不会看起来像卡死。队列被暂停或设了定时开始时，</p>
+<p>排队任务会直接写明原因。</p>
+<h3>3.2 命令行 / 计划任务</h3>
+<pre><code>python batch_add.py &quot;D:/课程/*.mp4&quot; &quot;E:/录音/第一节.m4a&quot;
+python batch_add.py &quot;D:/课程&quot; --at &quot;22:30&quot;     :: 今晚 22:30 开跑
+python batch_add.py &quot;D:/课程&quot; --at &quot;+60&quot;       :: 60 分钟后开跑
+python batch_add.py --status                   :: 看队列
+python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+<p>大视频<strong>不重复占磁盘</strong>：同一块盘建 NTFS 硬链接（秒级），跨盘才复制。</p>
+<p>Windows 计划任务里把「程序」设为 Python 解释器、「参数」设为</p>
+<p><code>batch_add.py "D:/课程" --at "22:30"</code>、「起始位置」设为工具目录即可。</p>
+<h3>3.3 无人值守的三道保险</h3>
+<ol><li><strong>重启续跑</strong>：排队中的任务状态落盘，服务重启后自动重新排队；</li></ol>
+<p>只有「正在识别中」被强行打断的那一条需要手动点「重试」。</p>
+<ol><li><strong>防休眠</strong>：识别中每 20 秒调用 <code>SetThreadExecutionState</code> 阻止 Windows 睡眠，</li></ol>
+<p>跑完立即释放，不改电源计划。</p>
+<ol><li><strong>汇总报告</strong>：队列清空时自动写 <code>out/队列报告.md</code>，列出每节课的状态、</li></ol>
+<p>耗时、字数、失败原因——早上起来一眼看完。</p>
+<blockquote>合盖 / 断电 / 系统更新重启仍会中断当前任务；建议跑批量时接电源、<br>在系统设置里把「合盖」改为「不采取操作」。</blockquote>
+<hr>
+<h2 id="s4">四、讲稿润色：本地模型 / 免费模型怎么选</h2>
+<h3>4.1 在哪里设置</h3>
+<p>「改稿」页 → <strong>「润色模型设置」</strong>（就在「LLM 润色」按钮旁边）：</p>
+<table><thead><tr><th>项</th><th>填什么</th></tr></thead><tbody>
+<tr><td>后端</td><td>本地模型（默认） / 云端 OpenAI 兼容模型</td></tr>
+<tr><td>预设</td><td>智谱 GLM-4-Flash（永久免费） / DeepSeek V4-Flash（低价） / 自定义</td></tr>
+<tr><td>接口地址</td><td>智谱 <code>https://open.bigmodel.cn/api/paas/v4</code>；DeepSeek <code>https://api.deepseek.com</code></td></tr>
+<tr><td>模型名</td><td><code>glm-4-flash</code>；<code>deepseek-v4-flash</code>（旧名 <code>deepseek-chat</code> 已于 2026-07 停用）</td></tr>
+<tr><td>API Key</td><td>到 <code>open.bigmodel.cn</code> 或 <code>platform.deepseek.com</code> 注册后在控制台创建，粘贴一次即可</td></tr>
+<tr><td>单价</td><td>预设自动填好，只用于界面估算费用</td></tr>
+</tbody></table>
+<p>点「测试连接」确认通了，再点「保存」。不填 Key 或把后端切回「本地模型」</p>
+<p>随时回到纯本地，零外传。</p>
+<blockquote><strong>每个预设的 Key 分开保存</strong>：填了智谱的，再切到 DeepSeek 填另一个，<br>两个互不覆盖；切换下拉会自动带出该模型自己的 Key，输入框留空即沿用。<br>「当前」一栏会显示本模型是否已存 Key、总共存了几个。<br>注意：只填 Key 还不够，要把<strong>「后端」选成「云端 OpenAI 兼容模型」</strong>才会真的用云端；<br>否则界面会提示「密钥已保存，当前仍是本地模型」。</blockquote>
+<p><strong>本地模型实际怎么调用</strong>（不用填任何 Key、不联网）：把「后端」选成</p>
+<p><strong>「本地模型（默认）」</strong>保存，回改稿页点「LLM 润色」即可。模型是</p>
+<p><code>D:\AI\models\llm\Qwen\Qwen3-4B-GGUF\Qwen3-4B-Q4_K_M.gguf</code>（2.4GB），</p>
+<p><strong>第一次点润色才加载</strong>（懒加载，约 2.4GB 内存），纯 CPU 约 30 字/秒。</p>
+<p>「润色模型设置」里点开就能看到模型是否就绪（不可用会写明原因并置灰按钮）。</p>
+<p>模型目录可用 <code>ASR_LLM_DIR</code> 改。跑完先看 diff 预览和五项红线，点「采用」</p>
+<p>才写成 <code>&lt;课程名&gt;_润色</code> 文件——不会自动覆盖原稿。</p>
+<p><strong>长稿自动分块（v2.4）</strong>：原来 8000 字会被硬拦，现在 3 万字也能一次跑完。</p>
+<p>程序按 <strong>700 字整句切块</strong>（不切断句子）→ 逐块送模型 → 自动合并成一整篇 →</p>
+<p>回传预览 → 确认后写入成稿。非末尾块的结尾句若被模型删掉，程序会自动补回</p>
+<p>并在提示里报数量；<strong>原文真正的最后一句</strong>仍由界面「补回原末句」交给你决定，</p>
+<p>红线闸门不会失效。前端与服务端超时按块数自动放宽（3 万字约 43 块，</p>
+<p>本地模型可能跑 20 分钟左右），整体硬上限 20 万字（<code>ASR_LLM_MAX_CHARS</code>）。</p>
+<blockquote>想更快：在设置里切到 GLM-4-Flash（免费）或 DeepSeek，43 块通常一两分钟跑完；<br>想零外传就保持本地模型，晚上挂着跑即可。</blockquote>
+<p><strong>安全边界</strong>：音视频识别<strong>永远在本机</strong>，云端模型只接收「讲稿文字」做润色；</p>
+<p>字幕与时间轴一个字都不上云。API Key 只存本机 <code>config/cloud_llm.json</code>，</p>
+<p>该目录已加入 <code>.gitignore</code>，界面只显示脱敏串。</p>
+<h3>4.2 成本账（1 小时中文课，约 1.2 万字）</h3>
+<table><thead><tr><th>方案</th><th>花多少钱</th><th>耗时</th><th>说明</th></tr></thead><tbody>
+<tr><td>本地 Qwen3-ASR 识别</td><td><strong>¥0</strong></td><td>约 30–45 分钟</td><td>2 路分片并行后实测 1.8–2.2× 实时</td></tr>
+<tr><td>本地 Qwen3-4B 润色</td><td><strong>¥0</strong></td><td>数分钟</td><td>纯 CPU，稿子不出机</td></tr>
+<tr><td>智谱 GLM-4-Flash 润色</td><td><strong>¥0</strong></td><td>十几秒</td><td>官方长期免费，限 30 并发 / 约 3 次每秒</td></tr>
+<tr><td>DeepSeek V4-Flash 润色</td><td><strong>约 ¥0.05</strong></td><td>十几秒</td><td>$0.14/M 输入 + $0.28/M 输出；夜间低谷约半价</td></tr>
+<tr><td>云端 ASR（腾讯云/火山）</td><td>约 ¥1–2 / 小时</td><td>几分钟</td><td><strong>本项目不走这条路</strong>，仅供对照</td></tr>
+</tbody></table>
+<p>润色一稿约 2–3 万 token（输入+输出）。**成本的大头是「按音频时长计费的云端 ASR」，</p>
+<p>不是文字润色**；把识别留在本地、只让文字上云，几十节课的成本也接近零。</p>
+<h3>4.3 再省一点的六个习惯</h3>
+<ol><li>识别一律本地；云端只开「LLM 润色」。</li><li>「LLM 润色」一稿只跑一次，之后的修改用本地七遍改稿 / 查找替换，不重复调模型。</li><li>批量任务勾「跳过已转录」，重复拖入同一批课件不白跑。</li><li>DeepSeek 放在<strong>北京时间 18:00–次日 09:00</strong> 跑（官方低谷价，约半价）。</li><li>专业术语、简称、漏字交给本地术语表与「术语补全」，不用花钱让模型猜。</li><li>先批量跑完识别，第二天集中校对时再统一润色，避免边跑边改造成重复调用。</li></ol>
+<p>润色结果要先过<strong>五项硬红线</strong>（术语、条款号、数字、末句、长度）才能「采用」；</p>
+<p>界面会显示本次用了多少 token、约合多少钱。</p>
+<hr>
+<h2 id="s5">五、性能：CPU 到底用满了没有</h2>
+<p>实测（20 核 Intel Ultra 7 265K / 63GB，真实课程 240 秒）：</p>
+<table><thead><tr><th>方案</th><th>墙钟</th><th>整机 CPU</th><th>峰值内存</th></tr></thead><tbody>
+<tr><td>顺序、torch 20 线程</td><td>125s</td><td>100%</td><td>7.8 GB</td></tr>
+<tr><td>顺序、torch 10 线程</td><td>134s</td><td>70%</td><td>7.8 GB</td></tr>
+<tr><td><strong>2 路分片并行、各 8 线程</strong></td><td><strong>99s（1.26×）</strong></td><td>93%</td><td>9.5 GB</td></tr>
+</tbody></table>
+<p>另一次 3 片样本：顺序 197s → 并行 108s（<strong>1.82×</strong>），</p>
+<p><strong>文本 100% 一致、字级时间戳 ±2ms 一致</strong>。</p>
+<p>结论：单步自回归解码喂不满核心，减线程只会更慢；<strong>把多个分片并行</strong>才是正解。</p>
+<p>默认 <code>ASR_QWEN3_WORKERS=2</code>（约 9–10GB 内存）。内存吃紧设 1，</p>
+<p>余量大可试 3（每 +1 路约多 2–6GB）。</p>
+<p><strong>Paraformer 也做了并行</strong>（v2.4，300 秒真实课程，同一模型实例多线程）：</p>
+<table><thead><tr><th>方案</th><th>墙钟</th><th>加速</th><th>文本一致率</th></tr></thead><tbody>
+<tr><td>单路 4 线程（旧）</td><td>17.5s</td><td>1×</td><td>100%</td></tr>
+<tr><td>单路 <strong>20 线程</strong></td><td>16.5s</td><td><strong>1.06×</strong></td><td>100%</td></tr>
+<tr><td><strong>2 路分片并行</strong></td><td>8.7s</td><td><strong>2.01×</strong></td><td>98.9%</td></tr>
+<tr><td>4 路分片并行</td><td>6.2s</td><td><strong>2.82×</strong></td><td>96.8%</td></tr>
+</tbody></table>
+<p>两个反直觉点：① 把单路线程拉到 20 核几乎没用（模型小，单路并行度有限），</p>
+<p><strong>只有切片并发</strong>才能喂满核心；② 同进程创建多个 FunASR 模型实例会直接段错误</p>
+<p>（exit 139），所以实现是「一个实例 + 多线程」，实测稳定。</p>
+<p>代价是切点附近约 1%~3% 的字差异（每片独立跑 VAD / 标点）。默认 2 路是</p>
+<p>速度与准确性的折中；<strong>追求逐字精确（法规条文）把 <code>ASR_FUNASR_WORKERS</code> 设 1</strong>，</p>
+<p>回到整段推理的零回归路径。分片后每完成一片都会上报进度，长课不再停在 12%。</p>
+<p>实测整条 79 分钟课件：整段单路 400 秒（6分40秒）产出 1431 条 / 21858 字；</p>
+<p>用满 20 核的 Qwen3 要 40 分钟以上。<strong>占用率不是目标，端到端耗时才是</strong>。</p>
+<hr>
+<h2 id="s6">六、参数速查（环境变量，改完重启服务）</h2>
+<table><thead><tr><th>变量</th><th>默认</th><th>作用</th></tr></thead><tbody>
+<tr><td><code>ASR_QWEN3_WORKERS</code></td><td>2</td><td>分片并行路数（1–4）</td></tr>
+<tr><td><code>ASR_QWEN3_WINDOW</code></td><td>170</td><td>每片秒数（夹在 30–175），越大内存越高</td></tr>
+<tr><td><code>ASR_QWEN3_MAXTOK</code></td><td>2048</td><td>单片最大输出 token</td></tr>
+<tr><td><code>ASR_FUNASR_WORKERS</code></td><td>2</td><td>Paraformer 并行路数（1–4）；<strong>设 1 = 整段推理、逐字精确</strong></td></tr>
+<tr><td><code>ASR_FUNASR_CHUNK</code></td><td>600</td><td>Paraformer 每片秒数（120–1800），越大切点越少、内存越高</td></tr>
+<tr><td><code>ASR_LLM_TIMEOUT</code></td><td>600</td><td>润色卡死判定秒数</td></tr>
+<tr><td><code>ASR_LLM_PROXY</code></td><td>空</td><td>云端模型走代理时显式指定；默认绕开失效的环境代理</td></tr>
+<tr><td><code>ASR_MODEL_ROOT</code></td><td><code>D:/AI/models</code></td><td>本地模型根目录</td></tr>
+<tr><td><code>ASR_NO_BROWSER</code></td><td>空</td><td>设 1 启动服务时不自动开浏览器</td></tr>
+</tbody></table>
+<hr>
+<h2 id="s7">七、常见问题</h2>
+<table><thead><tr><th>现象</th><th>原因 / 处理</th></tr></thead><tbody>
+<tr><td>任务栏一直「排队中」</td><td>队列被暂停或设了定时开始；展开「批量 · 夜间无人值守」看状态</td></tr>
+<tr><td>长课跑到一半进程消失</td><td>2.3 已修（长音频整批前向段错误）；若仍发生，查 <code>out/_crash.log</code></td></tr>
+<tr><td>内存暴涨 / 机器卡</td><td>把 <code>ASR_QWEN3_WORKERS</code> 设 1，或 <code>ASR_QWEN3_WINDOW</code> 调小到 120</td></tr>
+<tr><td>CPU 只占 14%，想把 20 核用满</td><td>单路 Paraformer 只用约 4 核；2.4 起默认 2 路分片并行（见第五节）。给单路塞 20 线程实测只快 6%</td></tr>
+<tr><td>3 万字 / 8000 字上限</td><td>v2.4 已取消硬拦：自动按 700 字整句分块、逐块润色、合并回传，预览后写入成稿</td></tr>
+<tr><td>导出成稿点了没反应</td><td>已改为「复制文本」单按钮，直接粘贴到 Word</td></tr>
+<tr><td>「管带 / 管道」被识别成别的词</td><td>在 <code>terms/corrections.txt</code> 加 <code>管带=&gt;管代</code>、<code>terms/hotwords.txt</code> 加 `管代</td><td>20<code>、</code>管理者代表`；改完下次转写即生效，不用重启</td></tr>
+<tr><td>填了 GLM 的 Key，再填 DeepSeek 存不上</td><td>2.4 起每个预设分开存 Key；切换下拉会自动带出本模型的 Key，留空即沿用</td></tr>
+<tr><td>填了 Key 但润色还是本地模型</td><td>要把「后端」选成「云端 OpenAI 兼容模型」，只存 Key 不会自动切换</td></tr>
+<tr><td>云端润色报 401 / 403</td><td>Key 填错或模型名用了已停用的 <code>deepseek-chat</code>；先点「测试连接」</td></tr>
+<tr><td>云端润色连不上</td><td>本机环境代理可能失效；默认已绕开，确需代理设 <code>ASR_LLM_PROXY</code></td></tr>
+<tr><td>润色后末句被删</td><td>界面有「补回原末句」；红线会拦住「采用」</td></tr>
+<tr><td>字幕与声音对不上</td><td>别把整理稿应用到字幕轨；用「文稿对齐」按讲义校准</td></tr>
+<tr><td>重启后任务不见了</td><td>排队任务会自动续跑；被标「中断」的点「重试」</td></tr>
+<tr><td>想彻底重来</td><td>任务栏「清空已结束」；<code>out/</code> 里的字幕稿不会被删</td></tr>
+</tbody></table>
+<hr>
+<h2 id="s8">八、目录与产物</h2>
+<pre><code>media/            上传的音视频；inbox/ 为自动监控目录
+out/              &lt;课程名&gt;.raw.srt / .clean.srt / .clean.txt / .json / .tracks.json
+                  .clean.report.md（清理明细）、队列报告.md
+out/_jobs/        任务状态（重启续跑靠它）
+config/           队列设置、云端模型 Key（不入库）
+terms/            热词、错词校正、简称表
+rules/            口语词规则
+samples/          回归测试与真机验证脚本</code></pre>
+<p><strong>备份</strong>：定期把 <code>out/</code> 同步到 NAS；<code>media/</code> 源文件可从原课程重新导入。</p>
+<p><code>config/</code> 含密钥，外发前先删。</p>
+<p class="foot">本页由 samples/gen_manual.py 从 使用说明书.md 生成；修改说明书后重跑脚本即可。</p>
+</div>
+</body>
+</html>

@@ -62,6 +62,11 @@ REV = OUT / "rev"
 # 【修改 v2.3】换成可排序的 JobQueue；队列状态落盘，重启后 queued 任务自动续跑。
 JOB_Q = QS.JobQueue()
 QSTATE = QS.load()
+# 【新增 v2.4】昨晚设的定时、今早开机后不该还挂着一个过去的时间戳。
+# 保留用户手动设的 paused（那是一次独立操作），只清过期的定时标记。
+if QSTATE.get("start_at") and float(QSTATE["start_at"]) <= time.time():
+    QSTATE["start_at"] = None
+    QS.save(QSTATE)
 QGATE = QS.Gate(QSTATE)
 PERSIST_LOCK = threading.Lock()
 
@@ -512,7 +517,11 @@ def _prune_tasks(limit: int):
 def _queue_pos(tid: str) -> int:
     # modified(v1.2): 已取消 / 已中断的 tid 仍留在队列里（worker 会跳过），
     # 原来把它们算进位次，前端显示「第 3 位」其实前面根本没人。
-    waiting = [x for x in JOB_Q.snapshot()
+    # 【修改 v2.4】兼容标准 queue.Queue：旧回归脚本会换掉 JOB_Q，
+    # 自定义 JobQueue 才有 snapshot()，否则取它的底层 deque。
+    items = (JOB_Q.snapshot() if hasattr(JOB_Q, "snapshot")
+             else list(getattr(JOB_Q, "queue", ())))
+    waiting = [x for x in items
                if (TASKS.get(x) or {}).get("status") == "queued"]
     try:
         return waiting.index(tid) + 1
@@ -965,6 +974,11 @@ def api_queue_set(payload: dict):
     if "start_at" in payload:
         v = payload["start_at"]
         QSTATE["start_at"] = float(v) if v else None
+        # 【新增 v2.4】定时开始与暂停互斥：CLI / 直接调 API 若只带 start_at，
+        # 而队列仍处于暂停态，到点也永远不会开跑（Gate 先看 paused）。
+        # 设定未来的定时即自动解除暂停；只点「暂停」不会带 start_at，不受影响。
+        if QSTATE["start_at"]:
+            QSTATE["paused"] = False
     QS.save(QSTATE)
     QGATE.notify()
     return api_queue()
@@ -1062,27 +1076,17 @@ def _retry_task(tid: str):
 
 
 def _remove_task(tid: str, purge_media: bool = False):
-    """删任务记录 + job 文件；产物（out/ 下的 SRT/TXT）一律保留。
+    """删任务记录 + job 文件；产物（out/ 下的 SRT/TXT）与 media/ 源文件一律保留。
 
-    用户的字幕稿是劳动成果，清列表绝不能顺手删掉。源文件默认也保留，
-    只有显式勾了「同时删上传的音视频」才删，且必须确认没有别的任务引用它。
+    用户的字幕稿是劳动成果，清列表绝不能顺手删掉。
+    【修改 v2.4】按张兆贵要求「源文件禁止删除」：原 purge_media 为真时
+    定位源文件、查共享引用、unlink 的整段逻辑【删除 v2.4】，去向为
+    「不再提供任何自动删除源文件的途径」，需要释放磁盘由用户手动整理 media/。
+    purge_media 形参保留只为兼容旧调用，恒不生效。
     """
     t = TASKS.get(tid)
     if not t:
         return False
-    if purge_media:
-        p = _locate(t.get("path"), MEDIA)
-        if p is not None and _inside(p, MEDIA):
-            shared = any(
-                other is not t and
-                (q := _locate(other.get("path"), MEDIA)) is not None and
-                q.resolve() == p.resolve()
-                for other in TASKS.values())
-            if not shared:
-                try:
-                    p.unlink()
-                except OSError:
-                    pass
     TASKS.pop(tid, None)
     try:
         _job_path(tid).unlink(missing_ok=True)
@@ -1098,10 +1102,11 @@ def tasks_batch(payload: dict):
     action: cancel / retry / delete / clear
       cancel  批量取消排队任务
       retry   批量重试失败 / 中断 / 已取消
-      delete  删除选中的终态任务（可附带 purge_media）
+      delete  删除选中的终态任务（只清记录，源文件与产物都保留）
       clear   清空全部终态任务（ids 为空即可）
 
     正在识别的任务一律不动：worker 正在写产物，删记录会让结果无处安放。
+    【修改 v2.4】不再接受 purge_media；即使旧客户端传来也强制为 False。
     """
     action = str(payload.get("action") or "")
     ids = payload.get("ids") or []
@@ -1117,7 +1122,7 @@ def tasks_batch(payload: dict):
         targets = [str(x) for x in ids if str(x) in TASKS]
 
     done, skipped = 0, []
-    purge = bool(payload.get("purge_media"))
+    purge = False        # 【修改 v2.4】源文件禁止删除，忽略任何 purge_media 入参
     for tid in targets:
         t = TASKS.get(tid)
         if t is None:
@@ -1456,7 +1461,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.3",       # modified(v2.3): 进度条/批量队列/云端润色
+    return {"ok": True, "version": "2.4",       # modified(v2.4): 首页说明书/源文件禁删/进度可见
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1703,10 +1708,12 @@ def api_llm_polish(payload: dict):
     text = (payload.get("text") or "").strip()
     if not text:
         return JSONResponse({"error": "没有可润色的文本"}, status_code=400)
+    # 【修改 v2.4】8000 字硬拦改成整体硬上限（默认 20 万字）；
+    # 3 万字的稿子由 llm_polish 自动整句分块、逐块润色、合并回传。
     if len(text) > LP.MAX_INPUT:
         return JSONResponse(
-            {"error": f"文本 {len(text)} 字，超过单次上限 {LP.MAX_INPUT} 字，"
-                      f"请分成两三段分别润色"}, status_code=400)
+            {"error": f"文本 {len(text)} 字，超过硬上限 {LP.MAX_INPUT} 字，"
+                      f"可用 ASR_LLM_MAX_CHARS 调整"}, status_code=400)
     ok, detail = LP.available()
     if not ok:
         return JSONResponse({"error": f"本地润色模型不可用：{detail}"},
@@ -1714,9 +1721,13 @@ def api_llm_polish(payload: dict):
     # modified(v1.8):原来是 acquire 失败就一律 409，但推理卡死时锁永远不会释放，
     # 用户只会看到「正在润色」的假象、反复重试也没用。现在区分两种情形：
     # 正常占用 → 409（等一下就好）；超时占用 → 503（明说卡住了、要重启）。
+    # 【修改 v2.4】长稿要按块数放宽卡死判定：3 万字约 43 块，本地模型
+    # 可能跑 20 分钟，固定 600 秒会把正常运行的上一稿误判成「卡死」。
+    est_chunks = max(1, len(text) // LP.CHUNK_CHARS + 1)
+    max_wait = max(LLM_MAX_SECONDS, est_chunks * 90)
     if not _LLM_BUSY.acquire(blocking=False):
         stuck = time.monotonic() - (_LLM_START[0] or time.monotonic())
-        if stuck > LLM_MAX_SECONDS:
+        if stuck > max_wait:
             return JSONResponse(
                 {"error": f"上一次润色已持续 {int(stuck)} 秒仍未返回，疑似卡死。"
                           f"推理在 C++ 层执行、无法从 Python 中断，请重启服务后再试"},

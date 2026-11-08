@@ -136,7 +136,7 @@ def api():
 
     # 无改动的句子不应出现在 diffs 里
     clean_cues = json.dumps([{"idx": 1, "time": "00:00:01,000 --> 00:00:02,000",
-                              "text": "我们坚持四不两直。"}], ensure_ascii=False)
+                              "text": "坚持四不两直。"}], ensure_ascii=False)
     data2 = urllib.parse.urlencode({"file_id": "v16_probe",
                                     "cues_json": clean_cues}).encode()
     r2 = json.loads(opener.open(urllib.request.Request(f"{API}/api/reclean", data=data2),

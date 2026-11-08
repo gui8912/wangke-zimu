@@ -136,13 +136,15 @@ class Gate:
 
     def wait(self):
         while True:
-            if self.allowed():
-                return
-            # 到点了就把「定时开始」清掉并落盘，避免每次启动都重复触发
+            # 【修复 v2.4】必须放在 allowed() 之前：原来 allowed() 先 return，
+            # 「到点清标记」这段永远执行不到，过期的定时会一直留在
+            # config/queue.json，前端每次刷新都显示一个昨天的「定时」。
             at = self.state.get("start_at")
-            if at and time_now() >= float(at) and not self.state.get("paused"):
+            if at and not self.state.get("paused") and time_now() >= float(at):
                 self.state["start_at"] = None
                 save(self.state)
+                return
+            if self.allowed():
                 return
             self.event.wait(timeout=2)
             self.event.clear()

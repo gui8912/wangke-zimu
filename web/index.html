@@ -462,6 +462,8 @@
   <label class="chk lo-tx" title="云端自带整理稿时跳过本地口语清理，避免双重改写">
     <input type="checkbox" id="useScriptTrack" disabled>云端整理稿</label>
   <button class="primary lo-tx" id="btnStart" disabled>开始转写</button>
+  <!-- 【新增 v2.4】首页即可查阅说明书：静态页由 samples/gen_manual.py 生成 -->
+  <button class="lo-tx" id="btnManual" title="打开使用说明书（8 章：批量夜间 / 模型设置 / 成本 / 排障）">使用说明</button>
   <div class="prefs">
     <button id="btnFont" class="iconbtn" title="调整字号">A<sup id="fontTag">中</sup></button>
     <button id="btnTheme" class="iconbtn" title="切换暗色 / 浅色">◐</button>
@@ -531,7 +533,9 @@
         <button id="btnBatchCancel" title="取消选中的排队任务">批量取消</button>
         <button id="btnBatchDelete" title="删除选中的已结束任务；out/ 里的字幕稿保留">删除选中</button>
         <button id="btnBatchClear" title="清空全部已结束任务">清空已结束</button>
-        <label class="chk" title="删除任务时一并删掉上传的音视频；out/ 里的字幕稿永不删除"><input type="checkbox" id="purgeMedia">连源文件一起删</label>
+        <!-- 【删除 v2.4】原「连源文件一起删」复选框整体移除：按张兆贵要求，
+             media/ 源文件禁止删除。入口去向前：无任何自动删除源文件的途径，
+             需要释放磁盘时由用户自己在资源管理器中手动整理。 -->
       </div>
       <div id="taskList" class="tasklist"><div class="empty small">暂无任务</div></div>
       <!-- 【新增 v2.3】批量 / 夜间无人值守 -->
@@ -649,14 +653,11 @@
     <div class="revfoot">
       <span id="revStats">尚未开始</span>
       <div class="spacer"></div>
-      <div class="menu-wrap">
-        <button id="btnRevExport" disabled>导出成稿 ▾</button>
-        <div class="menu" id="revMenu" hidden>
-          <a data-fmt="docx">Word 文档<span>公文版式：仿宋三号，行距 28 磅</span></a>
-          <a data-fmt="md">Markdown<span>带标题，可贴进笔记软件</span></a>
-          <a data-fmt="txt">纯文本<span>每段一行</span></a>
-        </div>
-      </div>
+      <!-- 【修改 v2.4】原来「导出成稿 ▾」是下拉菜单，点了只弹菜单、
+           再选格式才下载 docx（依赖 python-docx，常失败，用户反馈「点了没反应」）。
+           按张兆贵要求改成单按钮「复制文本」：直接把当前成稿放进剪贴板，
+           自己粘贴到 Word。下拉菜单与 /api/revise/export 下载链路整体下线。 -->
+      <button id="btnRevExport" disabled title="把当前成稿复制到剪贴板，直接粘贴到 Word">复制文本</button>
     </div>
   </div>
   <div class="card revside">
@@ -925,7 +926,7 @@
       </div>
       <div class="cfgrow"><label>接口地址</label><input id="cloudBase" placeholder="https://open.bigmodel.cn/api/paas/v4"></div>
       <div class="cfgrow"><label>模型名</label><input id="cloudModel" placeholder="glm-4-flash"></div>
-      <div class="cfgrow"><label>API Key</label><input id="cloudKey" type="password" placeholder="留空表示沿用已保存的密钥" autocomplete="off"></div>
+      <div class="cfgrow"><label>API Key</label><input id="cloudKey" type="password" placeholder="留空表示沿用本模型已保存的密钥" autocomplete="off"></div>
       <div class="cfgrow"><label>单价</label>
         <span class="qhint">输入 <input id="cloudPriceIn" type="number" step="0.01" style="width:80px">
         / 输出 <input id="cloudPriceOut" type="number" step="0.01" style="width:80px">
@@ -944,6 +945,8 @@
           · 云端 ASR（腾讯云 / 火山）按音频时长计费，约每小时 1–2 元，我们不走那条路：
             <b>识别永远在本地</b>，只有讲稿文字上云。<br>
           · API Key 只存本机 config/cloud_llm.json，已排除出 git；界面只显示脱敏串。<br>
+          · 【新增 v2.4】<b>每个预设的 Key 分开保存</b>：填了智谱的再填 DeepSeek 的，
+            互不影响；切换下拉会自动带出该模型自己的 Key，留空即沿用。<br>
           · 不填 Key 或关掉开关，随时回到纯本地模式。
         </div>
       </details>
@@ -958,6 +961,22 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 【新增 v2.4】首页使用说明弹窗。
+     内容是 web/说明书.html（由 samples/gen_manual.py 从 使用说明书.md 生成），
+     经 /static 直接读磁盘，改说明书不用重启服务；iframe 隔离样式不污染主界面。 -->
+<div class="mask" id="manualMask">
+  <div class="modal" style="width:min(1000px,96vw);height:88vh">
+    <h3 style="display:flex;align-items:center;gap:10px">
+      <span>使用说明书</span>
+      <span class="sub" style="margin-left:0;flex:1">8 章 · 批量夜间 / 模型设置 / 成本 / 排障</span>
+      <button id="btnManualNew" title="新标签页打开，可打印或用 Ctrl+F 搜索">新窗口</button>
+      <button id="btnManualClose">关闭</button>
+    </h3>
+    <iframe id="manualFrame" src="about:blank" title="使用说明书"
+            style="flex:1;border:0;width:100%;background:#fff"></iframe>
+  </div>
+</div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -1189,6 +1208,9 @@ async function refreshQueue(){
     const d = await (await fetch('/api/queue')).json();
     const s = $('#queueSummary');
     let tag;
+    // 【新增 v2.4】把队列状态缓存下来，任务行/顶部状态才能解释「为什么一直排队」
+    state.queuePaused = !!d.paused;
+    state.queueAt = d.start_at || null;
     if(d.paused) tag = '已暂停';
     else if(d.start_at) tag = '定时 ' + new Date(d.start_at * 1000)
         .toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'});
@@ -1755,17 +1777,21 @@ $('#btnRevLlm').onclick = async ()=>{
   if(!st.available){ toast(`本地润色不可用：${st.detail}`); return; }
 
   const est = Math.max(5, Math.round(src.length / 30));   // CPU 上约 30 字/秒
+  // 【新增 v2.4】长稿自动分块：按 700 字整句切，块数决定超时与提示
+  const chunks = Math.max(1, Math.ceil(src.length / 700));
   llmState.busy = true;
   const btn = $('#btnRevLlm'), old = btn.textContent;
   btn.disabled = true; btn.textContent = '润色中…';
-  toast(`正在润色 ${src.length} 字，预计 ${est} 秒左右，期间别关页面`);
+  toast(chunks > 1
+    ? `正在润色 ${src.length} 字，自动分 ${chunks} 块，预计 ${est} 秒左右，期间别关页面`
+    : `正在润色 ${src.length} 字，预计 ${est} 秒左右，期间别关页面`);
 
   try{
-    // 【新增 v1.8】前端也要有超时。服务端的推理在 C++ 层跑、中断不了，
-    // 万一卡死，前端不设上限就会无限转圈；这里 10 分钟兜底，
-    // 到点主动断开并告诉用户去重启服务，而不是让他一直等。
+    // 【修改 v2.4】超时按块数放宽：3 万字约 43 块，本地模型可能跑 20 分钟，
+    // 固定 10 分钟会把正常运行的长稿误断；云端每块更快，按同一上限也无妨。
+    const limitMs = Math.max(10 * 60 * 1000, chunks * 90 * 1000);
     const ctrl = new AbortController();
-    const timer = setTimeout(()=>ctrl.abort(), 10 * 60 * 1000);
+    const timer = setTimeout(()=>ctrl.abort(), limitMs);
     let r, d;
     try{
       r = await fetch('/api/llm/polish', {
@@ -1786,11 +1812,17 @@ $('#btnRevLlm').onclick = async ()=>{
     llmState.elapsed = d.elapsed || 0;
     llmState.blocked = d.blocked || [];
     llmState.usage = d.usage || null;          // 【新增 v2.2】云端 token / 费用
+    llmState.chunks = d.chunks || 1;
+    llmState.tailRestored = d.tail_restored || 0;
     renderLlmPreview();
     $('#llmMask').classList.add('show');
+    if(chunks > 1)
+      toast(`已完成 ${d.chunks || chunks} 块并合并为一整篇；自动补回 `
+            + `${d.tail_restored || 0} 处块尾句，确认无误后点「采用」写入成稿`);
   }catch(e){
     if(e && e.name === 'AbortError'){
-      toast('等了 10 分钟仍未返回，已断开。推理卡住了，请重启服务后再试');
+      toast(`等了 ${Math.round(Math.max(10*60, chunks*90)/60)} 分钟仍未返回，已断开。`
+            + '推理卡住了，请重启服务后再试');
     }else{
       toast('润色请求失败：' + (e && e.message ? e.message : e));
     }
@@ -1914,7 +1946,11 @@ function cloudFill(st, keepKey){
   $('#cloudPriceOut').value = st.price_out ?? 0;
   $('#cloudCurrency').value = st.currency || 'CNY';
   if(!keepKey) $('#cloudKey').value = '';
-  $('#cloudNow').textContent = st.masked_key ? '已保存密钥：' + st.masked_key : '尚未保存密钥';
+  // 【修改 v2.4】明确显示「哪些模型已存 Key」，避免切换后误以为没保存
+  const saved = st.keys_saved || [];
+  const own = st.masked_key || '';
+  $('#cloudNow').textContent = (own ? `本模型已保存密钥：${own}` : '本模型尚未保存密钥')
+    + (saved.length ? `（共 ${saved.length} 个模型已存）` : '');
   $('#cloudNote').textContent = st.note || '';
 }
 async function openCloudCfg(){
@@ -1943,6 +1979,12 @@ $('#cloudPreset').onchange = async ()=>{
     $('#cloudPriceIn').value = d.price_in ?? 0;
     $('#cloudPriceOut').value = d.price_out ?? 0;
     $('#cloudCurrency').value = d.currency || 'CNY';
+    // 【修改 v2.4】切换预设要清掉上一个模型残留的输入，并提示该模型自己的
+    // 密钥状态；保存时后端会自动从该预设的槽位取 Key，不会串到别的模型。
+    $('#cloudKey').value = '';
+    $('#cloudNow').textContent = d.has_key
+      ? `本模型已保存密钥：${d.masked_key}（留空即沿用）`
+      : '本模型尚未保存密钥，请粘贴后点「保存」';
     $('#cloudNote').textContent = (d.preset === 'glm-4-flash')
       ? '智谱 GLM-4-Flash 永久免费；到 open.bigmodel.cn 注册后在「API 密钥」里创建 Key。'
       : '以服务商最新公告为准；DeepSeek 夜间（北京时间 18:00–次日 09:00）为低谷价。';
@@ -1964,7 +2006,12 @@ $('#cloudSave').onclick = async ()=>{
     if(d.error){ cloudResult('✗ ' + d.error, false); return; }
     cloudFill(d);
     $('#cloudFoot').textContent = d.enabled ? '当前：云端模型' : '当前：本地模型';
-    cloudResult(d.enabled ? `✓ 已切换到 ${d.model}` : '✓ 已回到纯本地模型', true);
+    // 【修改 v2.4】存了 Key 但「后端」仍是本地时，明确说明已保存、只是没启用，
+    // 否则用户会以为「填了 Key 保存不上」。
+    if(!d.enabled && d.masked_key)
+      cloudResult('✓ 密钥已保存（本模型）。当前仍是本地模型，要用云端润色请把「后端」切到云端', true);
+    else
+      cloudResult(d.enabled ? `✓ 已切换到 ${d.model}` : '✓ 已回到纯本地模型', true);
     refreshLlmStatus();            // 刷新「LLM 润色」按钮的可用状态
   }catch(e){ cloudResult('保存失败：' + e, false); }
 };
@@ -2116,6 +2163,11 @@ $('#btnStart').onclick = async ()=>{
   poll();
 };
 
+function fmtDur(s){
+  s = Math.max(0, Math.floor(s || 0));
+  const m = Math.floor(s / 60);
+  return m ? `${m}分${s % 60}秒` : `${s}秒`;
+}
 async function poll(){
   clearTimeout(state.timer);
   const r = await fetch('/api/task/'+state.taskId);
@@ -2126,7 +2178,10 @@ async function poll(){
   }
   if(d.status === 'queued'){
     const pos = d.position ? `（第 ${d.position} 位）` : '';
-    setStatus('排队中…'+pos,'run');
+    // 【新增 v2.4】排队被拦住要直接给原因，别让人以为识别没启动
+    const why = state.queuePaused ? ' · 队列已暂停，需点「继续队列」'
+              : state.queueAt ? ' · 等待定时开始' : '';
+    setStatus('排队中…'+pos+why,'run');
     setFileStatus('排队中','run');
     state.timer = setTimeout(poll, 1500);
     return;
@@ -2156,10 +2211,13 @@ async function poll(){
     refreshTasks();
     return;
   }
-  // 【新增 v2.0】顶部状态也带上分片进度，长课不用盯着任务栏
+  // 【修改 v2.4】原来写死「Qwen3 较慢」，但 Paraformer 也在走这里；
+  // 且 Paraformer 整段推理没有分片进度，必须说明进度为何长时间不动。
   const p = d.progress;
   const pg = (p && p.pct) ? ` · ${Math.round(p.pct)}% ${p.stage || ''}` : '';
-  setStatus('转写中…（Qwen3 较慢，请耐心等待）' + pg,'run');
+  const used = d.started ? ` · 已用 ${fmtDur(Date.now()/1000 - d.started)}` : '';
+  const isPara = state.provider === 'local-paraformer';
+  setStatus('识别中…' + pg + used + (isPara ? '（Paraformer 整段推理，完成前百分比不变）' : ''), 'run');
   setFileStatus('识别中…','run');
   refreshTasks();
   state.timer = setTimeout(poll, 2000);
@@ -2232,6 +2290,9 @@ function taskEta(t, p){
   if(!st) return '';
   const used = Date.now()/1000 - st;
   if(used < 20 || p.pct <= 2) return '';
+  // 【新增 v2.4】Paraformer 整段推理 / Qwen3 加载模型期间 pct 恒为 12，
+  // 按「已用时长 × 剩余比例」外推会算出几倍于真实的剩余时间，不如不算。
+  if(p.pct <= 12) return '整段推理中，暂不估算';
   const left = used * (100 - p.pct) / p.pct;
   if(!isFinite(left) || left < 0) return '';
   return left >= 3600 ? `约剩 ${(left/3600).toFixed(1)} 小时`
@@ -2325,12 +2386,20 @@ function renderTasks(list){
       const info = document.createElement('div');
       info.className = 'pg';
       const eta = taskEta(t, p);
-      info.textContent = `${Math.round(Number(p.pct) || 0)}% · ${p.stage || ''}${eta ? ' · ' + eta : ''}`;
+      // 【新增 v2.4】百分比可能长时间不动（Paraformer 整段推理 / 模型加载），
+      // 补一个一直在走的「已用时」，让人一眼看出任务没死。
+      const used = (t.status === 'running' && t.started)
+        ? ` · 已用 ${fmtDur(Date.now()/1000 - t.started)}` : '';
+      info.textContent = `${Math.round(Number(p.pct) || 0)}% · ${p.stage || ''}${eta ? ' · ' + eta : ''}${used}`;
       main.appendChild(info);
     }else if(t.status === 'queued'){
       const info = document.createElement('div');
       info.className = 'pg';
-      info.textContent = t.position ? `排队第 ${t.position} 位` : '排队中';
+      let why = t.position ? `排队第 ${t.position} 位` : '排队中';
+      // 【新增 v2.4】被暂停/定时拦住时要说清原因，否则看起来像「识别没反应」
+      if(state.queuePaused) why += ' · 队列已暂停，点「继续队列」才会开跑';
+      else if(state.queueAt) why += ' · 等待定时开始';
+      info.textContent = why;
       main.appendChild(info);
     }
     row.appendChild(main);
@@ -2339,6 +2408,24 @@ function renderTasks(list){
   box.innerHTML = '';
   box.appendChild(frag);
 }
+/* 【新增 v2.4】首页「使用说明」：首次打开才加载 iframe，不拖慢首屏 */
+const MANUAL_URL = '/static/' + encodeURIComponent('说明书.html');
+function openManual(){
+  const f = $('#manualFrame');
+  if(!f.dataset.ready){ f.src = MANUAL_URL; f.dataset.ready = '1'; }
+  $('#manualMask').classList.add('show');
+}
+function closeManual(){ $('#manualMask').classList.remove('show'); }
+if($('#btnManual')) $('#btnManual').onclick = openManual;
+if($('#btnManualClose')) $('#btnManualClose').onclick = closeManual;
+if($('#btnManualNew')) $('#btnManualNew').onclick = ()=>window.open(MANUAL_URL, '_blank');
+if($('#manualMask')) $('#manualMask').onclick = e=>{
+  if(e.target.id === 'manualMask') closeManual();
+};
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape') closeManual();
+});
+
 /* 【新增 v2.0】批量操作：统一走 /api/tasks/batch */
 async function batchAction(action, opts){
   opts = opts || {};
@@ -2349,7 +2436,7 @@ async function batchAction(action, opts){
   try{
     const r = await fetch('/api/tasks/batch', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({action, ids, purge_media: !!($('#purgeMedia') && $('#purgeMedia').checked)})
+      body: JSON.stringify({action, ids})
     });
     const d = await r.json();
     if(d.error){ toast(d.error); return; }
@@ -3633,32 +3720,33 @@ $('#btnRevRun').onclick = ()=>rvRunPass(rv.step + 1);
 $('#btnRevRerun').onclick = ()=>rvRunPass(rv.step);
 $('#btnRevPrev').onclick = ()=>{ if(rv.step > 0) rvGoto(rv.step - 1); };
 
-$('#btnRevExport').onclick = e=>{
-  e.stopPropagation();
-  $('#revMenu').hidden = !$('#revMenu').hidden;
+/* 【修改 v2.4】「复制文本」：一步把当前成稿放进剪贴板，自己粘贴到 Word。
+   原来是「导出成稿 ▾」下拉 → 选格式 → 下载 docx，链路长且 docx 常失败。
+   navigator.clipboard 在 http://127.0.0.1 属安全上下文可用；
+   万一被浏览器策略拦住，用隐藏 textarea + execCommand 兜底。 */
+async function copyText(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    return true;
+  }catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let done = false;
+    try{ done = document.execCommand('copy'); }catch(_){}
+    ta.remove();
+    return done;
+  }
+}
+$('#btnRevExport').onclick = async ()=>{
+  const text = rv.versions[rv.step] ?? rv.text;
+  if(!text || !text.trim()){ toast('没有内容可复制'); return; }
+  const okc = await copyText(text);
+  toast(okc ? `已复制 ${text.length} 字，直接粘贴到 Word 即可`
+            : '复制失败，请在右侧正文里全选后手动复制');
 };
-document.addEventListener('click', e=>{
-  if(!e.target.closest('.menu-wrap')) $('#revMenu').hidden = true;
-});
-document.querySelectorAll('#revMenu a').forEach(a=>{
-  a.onclick = async ()=>{
-    const fmt = a.dataset.fmt;
-    const text = rv.versions[rv.step] ?? rv.text;
-    if(!text.trim()){ toast('没有内容可导出'); return; }
-    const r = await fetch('/api/revise/export', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({fmt, stem: rv.stem || '成稿', text})});
-    if(!r.ok){ toast('导出失败'); return; }
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    const el = document.createElement('a');
-    el.href = url; el.download = `${rv.stem || '成稿'}.${fmt}`;
-    el.click();
-    setTimeout(()=>URL.revokeObjectURL(url), 1000);
-    $('#revMenu').hidden = true;
-    toast('已导出 ' + el.download);
-  };
-});
 
 /* 快捷键：改稿区里 Ctrl+Enter 跑下一遍 */
 document.addEventListener('keydown', e=>{

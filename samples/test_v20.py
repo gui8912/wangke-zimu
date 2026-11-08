@@ -157,7 +157,9 @@ def batch(tmp: Path):
     p3 = media / "solo.mp4"; p3.write_bytes(b"y")
     mk("c", "done", p3)
     S.tasks_batch({"action": "delete", "ids": ["c"], "purge_media": True})
-    ok("独占源文件可删", not p3.exists())
+    # 【修改 v2.4】按张兆贵要求「源文件禁止删除」：即使旧客户端传
+    # purge_media=True，独占的源文件也必须保留。
+    ok("独占源文件也禁止删", p3.exists())
     ok("out 产物永不删（未调用删除）", (BASE / "out").exists())
 
     # 非法参数
@@ -219,8 +221,10 @@ def guards():
     ok("worker 传 progress", "progress=progress" in srv)
     ok("批量接口已注册", '@app.post("/api/tasks/batch")' in srv)
     for key in ("btnBatchRetry", "btnBatchCancel", "btnBatchDelete", "btnBatchClear",
-                "selAll", "btnSelInv", "purgeMedia", "taskEta", "batchAction", "initTaskBar"):
+                "selAll", "btnSelInv", "btnManual", "taskEta", "batchAction", "initTaskBar"):
         ok("前端 " + key, key in web)
+    # 【新增 v2.4】「连源文件一起删」入口已整体下线
+    ok("前端无 purgeMedia 控件", 'id="purgeMedia"' not in web)
 
 
 def main():

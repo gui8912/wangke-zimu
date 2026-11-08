@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import threading                    # 【新增 v2.4】FunASR 整段识别期间的心跳进度
 import time
 import warnings
 from pathlib import Path
@@ -302,23 +303,118 @@ def transcribe(wav: Path, cfg: dict, hotword: str, device: str,
         item = _run_qwen3(wav, cfg, device, language, log, progress)
     else:
         _emit(progress, 12, "识别中")
-        item = _run_funasr(wav, cfg, hotword, device)
+        item = _run_funasr(wav, cfg, hotword, device, log, progress)
     item["_cost_s"] = round(time.time() - t1, 1)
     return item
 
 
-def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str) -> dict:
+def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str,
+                log=print, progress=None) -> dict:
+    _emit(progress, 11, "加载识别模型")
     model = get_model(cfg, device)
-    gen = dict(input=str(wav), batch_size_s=300, disable_pbar=True)
+    gen = dict(batch_size_s=300, disable_pbar=True)
     if cfg.get("hotword") and hotword:
         gen["hotword"] = hotword
-    res = model.generate(**gen)
+
+    if FUNASR_WORKERS > 1:
+        return _run_funasr_parallel(wav, model, gen, log, progress)
+
+    # ASR_FUNASR_WORKERS=1：整段推理，零回归路径。
+    # 【新增 v2.4】generate() 是阻塞调用，长课期间进度条会一直停在 12%，
+    # 用守护心跳把「已用时长」写进阶段文案；pct 不动，前端不算假 ETA。
+    gen["input"] = str(wav)
+    stop = threading.Event()
+    t0 = time.time()
+
+    def beat():
+        while not stop.wait(5):
+            _emit(progress, 12, f"整段识别中 · 已用 {int(time.time() - t0)} 秒")
+
+    threading.Thread(target=beat, daemon=True, name="funasr-beat").start()
+    try:
+        res = model.generate(**gen)
+    finally:
+        stop.set()
     # modified: 空返回原来会 res[0] IndexError，报错信息完全看不出原因
     if isinstance(res, list):
         if not res:
             raise RuntimeError("识别返回空结果：音频可能是静音或过短（不足 1 秒）")
         return res[0]
     return res
+
+
+def _run_funasr_parallel(wav: Path, model, gen: dict, log, progress) -> dict:
+    """【新增 v2.4】Paraformer 分片并行：低能量处切片、多线程共用一个模型实例。
+
+    为什么不用多实例：实测同一进程创建第 2 个 AutoModel 会原生段错误（exit 139）。
+    多线程并发调用同一个实例的 generate() 则安全（基准 2/4 路都跑通）。
+    每片独立跑 VAD+标点，时间戳按片偏移拼回，字幕轨仍是「识别原文 + 字级时间戳」，
+    没有把任何改写塞进字幕层。代价是切点附近约 1%~3% 的字差异，见模块常量注释。
+    """
+    import tempfile
+    import wave as _wave
+    import numpy as np
+    import torch
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
+
+    pcm = normalize_audio_input(str(wav))
+    parts = split_audio_into_chunks(
+        wav=pcm, sr=16000, max_chunk_sec=FUNASR_CHUNK_SEC,
+        search_expand_sec=min(30.0, FUNASR_CHUNK_SEC / 6))
+    total = len(parts)
+    workers = min(FUNASR_WORKERS, total)
+    # 2 路各 8 线程 / 4 路各 4 线程，与基准一致；核多了只会互相抢。
+    torch.set_num_threads(max(2, min(8, 16 // workers)))
+    log(f"Paraformer：{len(pcm) / 16000 / 60:.1f} 分钟切 {total} 片，{workers} 路并行")
+
+    def write_part(chunk, path):
+        with _wave.open(str(path), "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(16000)
+            f.writeframes((np.clip(chunk, -1, 1) * 32767).astype("<i2").tobytes())
+
+    results = [None] * total
+    done = [0]
+    lock = threading.Lock()
+
+    def one(i, chunk, offset):
+        off_ms = int(round(offset * 1000))
+        with tempfile.TemporaryDirectory(prefix="fasr_") as td:
+            p = Path(td) / f"p{i}.wav"
+            write_part(chunk, p)
+            res = model.generate(input=str(p), **gen)
+        d = res[0] if isinstance(res, list) and res else {}
+        sents = []
+        for s in (d.get("sentence_info") or []):
+            s = dict(s)
+            s["start"] = int(s.get("start") or 0) + off_ms
+            s["end"] = int(s.get("end") or 0) + off_ms
+            sents.append(s)
+        with lock:
+            done[0] += 1
+            # 每片完成就上报，长课进度条真的会走，不再停在 12%
+            _emit(progress, 12 + 78 * done[0] / total, f"识别 {done[0]}/{total}")
+        return {
+            "text": str(d.get("text") or ""),
+            "timestamp": [[int(a) + off_ms, int(b) + off_ms]
+                          for a, b in (d.get("timestamp") or [])],
+            "sentence_info": sents,
+        }
+
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="funasr") as ex:
+        futs = {ex.submit(one, i, c, o): i for i, (c, o) in enumerate(parts)}
+        for f in as_completed(futs):
+            results[futs[f]] = f.result()      # 异常在这里抛出，别静默吞掉
+
+    _emit(progress, 90, "识别完成")
+    return {
+        "text": "".join(r["text"] for r in results),
+        "timestamp": [x for r in results for x in r["timestamp"]],
+        "sentence_info": [s for r in results for s in r["sentence_info"]] or None,
+    }
 
 
 _QWEN3_CACHE = {}
@@ -343,6 +439,18 @@ QWEN3_MAX_NEW_TOKENS = int(os.environ.get("ASR_QWEN3_MAXTOK") or 2048)
 # 所以「CPU 还有余量」的真相是：单步自回归解码喂不满核心，多片并行才能榨出吞吐。
 # 并发每 +1 约多 2~6GB 内存，默认 2 是 63GB 机器上的稳妥值；内存紧张设 1。
 QWEN3_WORKERS = min(4, max(1, int(os.environ.get("ASR_QWEN3_WORKERS") or 2)))
+
+# 【新增 v2.4】Paraformer 分片并行。基准实测（20 核 / 300 秒真实课程，单模型实例）：
+#   单路 4 线程 17.5s ｜ 单路 20 线程 16.5s（只快 6%，把核塞满没用）
+#   2 路并行 8.7s（2.01×，文本一致率 98.9%）
+#   4 路并行 6.2s（2.82×，文本一致率 96.8%）
+# 同进程创建多个 AutoModel 实例会原生段错误（exit 139），所以只用一个实例
+# + 多线程并发调用 generate()；片在低能量处切，时间戳按片偏移拼回。
+# 代价：切点附近有约 1%~3% 的字差异；追求逐字精确设 ASR_FUNASR_WORKERS=1
+# 即可回到「整段推理」的零回归路径。
+FUNASR_WORKERS = min(4, max(1, int(os.environ.get("ASR_FUNASR_WORKERS") or 2)))
+FUNASR_CHUNK_SEC = min(1800.0, max(120.0,
+                                  float(os.environ.get("ASR_FUNASR_CHUNK") or 600)))
 QWEN3_THREADS = max(4, min(8, (os.cpu_count() or 8) // 2))
 
 
