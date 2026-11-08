@@ -306,6 +306,30 @@
   /* 【新增 v1.6】清理明细里的原文：不用删除线（长句划线后很难读），改淡色 */
   .learn-item .old.plain{text-decoration:none;color:var(--muted)}
   .learn-item .arrow{color:var(--faint);margin:0 4px}
+
+  /* LLM 润色预览：硬红线用左侧色条表达，不靠小圆点堆装饰 */
+  .llm-audit{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
+  .llm-row{display:flex;gap:10px;align-items:flex-start;padding:8px 11px;
+           border:1px solid var(--line);border-left:3px solid var(--line-strong);
+           border-radius:var(--r-6);font-size:var(--fs-12);line-height:1.6}
+  .llm-row .k{width:118px;flex:none;color:var(--muted)}
+  .llm-row .v{flex:1;min-width:0;word-break:break-word}
+  .llm-row .t{flex:none;font-size:var(--fs-11);padding:1px 6px;border-radius:var(--r-6);
+              background:var(--badge-bg);color:var(--badge-fg)}
+  .llm-row.ok{border-left-color:var(--ok)}
+  .llm-row.ok .t{background:var(--ok-bg);color:var(--ok)}
+  .llm-row.bad{border-left-color:var(--danger);background:var(--b-high)}
+  .llm-row.bad .t{background:#fee2e2;color:var(--danger)}
+  .llm-row.soft{border-left-color:var(--note-line)}
+  .llm-row.soft .t{background:var(--note-bg);color:var(--note-fg)}
+  .llm-head{display:flex;gap:8px;align-items:center;margin:0 0 8px;
+            font-size:var(--fs-12);color:var(--muted)}
+  .llm-head span{color:var(--faint)}
+  .llm-details{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+  .llm-details summary{cursor:pointer;font-size:var(--fs-12);color:var(--muted);margin-bottom:8px}
+  .llm-full{white-space:pre-wrap;line-height:1.9;font-size:var(--fs-13);
+            padding:12px 14px;background:var(--soft2);border-radius:var(--r-6);
+            max-height:38vh;overflow-y:auto;color:var(--text)}
   #learnBadge{display:inline-block;margin-left:5px;min-width:15px;padding:0 4px;border-radius:8px;
               background:var(--primary);color:#fff;font-size:var(--fs-11);line-height:15px;text-align:center}
 
@@ -544,6 +568,7 @@
       <span class="revtag" id="revTag">不动</span>
       <div class="spacer"></div>
       <button id="btnRevPrev" disabled>上一步</button>
+      <button id="btnRevLlm" title="用本地 Qwen3-4B 把口语稿整理成可读底稿。只作用于讲稿，字幕与时间轴完全不受影响；跑之前先看 diff 和红线检查，通过了才采用">LLM 润色</button>
       <button id="btnRevRerun" disabled>重跑本遍</button>
       <button class="primary" id="btnRevRun" disabled>执行第 1 遍</button>
     </div>
@@ -774,6 +799,34 @@
     <div class="foot">
       <span id="cleanDiffMeta" style="margin-right:auto;color:var(--muted);font-size:var(--fs-12)"></span>
       <button id="cleanDiffCancel">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- LLM 润色预览 -->
+<div class="mask" id="llmMask">
+  <div class="modal" style="width:min(1000px,96vw)">
+    <h3>LLM 润色预览<span class="sub" id="llmSub"></span></h3>
+    <div class="body">
+      <div class="note" style="margin-bottom:12px">
+        用本地模型把口语转成书面讲稿，<b>只改讲稿，字幕与时间轴一个字都不动</b>。
+        下面是五项硬红线：任何一项不过都不允许采用——漏句、改条款号这类问题，
+        在几千字的稿子里肉眼是发现不了的。
+      </div>
+      <div id="llmAudit" class="llm-audit"></div>
+      <div class="llm-head">逐段差异<span id="llmDiffMeta"></span></div>
+      <div id="llmDiff" class="learn-list"></div>
+      <details class="llm-details">
+        <summary>润色后全文（点开可通读、可选中复制）</summary>
+        <div id="llmFull" class="llm-full"></div>
+      </details>
+    </div>
+    <div class="foot">
+      <span id="llmFoot" style="margin-right:auto;color:var(--muted);font-size:var(--fs-12)"></span>
+      <button id="llmRetail" hidden>补回原末句</button>
+      <button id="llmCopy">复制润色稿</button>
+      <button id="llmClose">关闭</button>
+      <button class="primary" id="llmAdopt" disabled>采用为新起点</button>
     </div>
   </div>
 </div>
@@ -1389,6 +1442,190 @@ $('#btnCleanDiff').onclick = ()=>{
 $('#cleanDiffCancel').onclick = ()=>$('#cleanDiffMask').classList.remove('show');
 $('#cleanDiffMask').onclick = e=>{
   if(e.target.id === 'cleanDiffMask') $('#cleanDiffMask').classList.remove('show');
+};
+
+/* ---------- LLM 润色（v1.7，讲稿层的「第 0 遍」底稿）----------
+   三条闸门：
+     1. 五项硬红线任一不过 → 「采用」禁用（漏句/改数字在长稿里肉眼查不出来）
+     2. 必须看过 diff 预览才能采用（采用只在弹窗里，没有直接写入的入口）
+     3. 采用后另起 stem（_润色），原稿 v0 不动，随时可回溯
+   字幕层完全不受影响：这里只读写讲稿（rv.versions），从不碰 state.cues。 */
+const llmState = {src:'', out:'', tail:'', audit:{}, diff:[], model:'', elapsed:0,
+                  busy:false, blocked:[]};
+let llmStatus = null;
+
+async function llmEnsureStatus(){
+  if(llmStatus) return llmStatus;
+  try{ llmStatus = await (await fetch('/api/llm/status')).json(); }
+  catch(e){ llmStatus = {available:false, detail:'无法连接服务'}; }
+  return llmStatus;
+}
+
+$('#btnRevLlm').onclick = async ()=>{
+  if(llmState.busy){ toast('正在润色，请稍等'); return; }
+  const src = (rv.versions[0] || '').trim();
+  if(!src){ toast('原稿是空的：先在转写页点「用当前转写结果」，或把讲稿粘到原稿框'); return; }
+
+  const st = await llmEnsureStatus();
+  if(!st.available){ toast(`本地润色不可用：${st.detail}`); return; }
+
+  const est = Math.max(5, Math.round(src.length / 30));   // CPU 上约 30 字/秒
+  llmState.busy = true;
+  const btn = $('#btnRevLlm'), old = btn.textContent;
+  btn.disabled = true; btn.textContent = '润色中…';
+  toast(`正在润色 ${src.length} 字，预计 ${est} 秒左右，期间别关页面`);
+
+  try{
+    const r = await fetch('/api/llm/polish', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text: src})
+    });
+    const d = await r.json();
+    if(!r.ok){ toast(d.error || '润色失败'); return; }
+    llmState.src = d.source || src;
+    llmState.out = d.polished || '';
+    llmState.tail = d.tail || '';
+    llmState.audit = d.audit || {};
+    llmState.diff = d.diff || [];
+    llmState.model = d.model || '';
+    llmState.elapsed = d.elapsed || 0;
+    llmState.blocked = d.blocked || [];
+    renderLlmPreview();
+    $('#llmMask').classList.add('show');
+  }catch(e){
+    toast('润色请求失败：' + e.message);
+  }finally{
+    llmState.busy = false;
+    btn.disabled = false; btn.textContent = old;
+  }
+};
+
+function renderLlmPreview(){
+  // 红线：硬项不过标红；参考项一律灰（LLM 必然删口语，那不是失败）
+  const box = $('#llmAudit'); box.innerHTML = '';
+  for(const [k, v] of Object.entries(llmState.audit || {})){
+    const cls = v.hard ? (v.pass ? 'ok' : 'bad') : 'soft';
+    const tag = v.hard ? (v.pass ? '通过' : '不通过') : '参考';
+    const row = document.createElement('div');
+    row.className = 'llm-row ' + cls;
+    row.innerHTML = `<span class="k">${esc(k)}</span>`
+                  + `<span class="v">${esc(v.note || '')}</span>`
+                  + `<span class="t">${tag}</span>`;
+    box.appendChild(row);
+  }
+
+  const list = $('#llmDiff'); list.innerHTML = '';
+  const ops = (llmState.diff || []).filter(o=>o.op !== 'equal');
+  if(!ops.length){
+    list.innerHTML = '<div class="learn-empty">没有差异，模型没有改动文字。</div>';
+  }else{
+    for(const o of ops){
+      const b = (o.before || '').trim(), a = (o.after || '').trim();
+      const row = document.createElement('div');
+      row.className = 'learn-item';
+      const pair = document.createElement('span');
+      pair.className = 'pair';
+      pair.innerHTML = `<span class="${b ? 'old' : 'arrow'}">${esc(b || '（空）')}</span>`
+        + '<span class="arrow">→</span>'
+        + `<span class="${a ? 'new' : 'old plain'}">${esc(a || '（删除）')}</span>`;
+      const kind = document.createElement('span');
+      kind.className = 'kind';
+      kind.textContent = {replace:'改写', insert:'新增', delete:'删除'}[o.op] || o.op;
+      row.append(pair, kind);
+      list.appendChild(row);
+    }
+  }
+  $('#llmDiffMeta').textContent =
+    `共 ${ops.length} 处改动 · ${llmState.out.length} 字`;
+
+  $('#llmFull').textContent = llmState.out;
+  $('#llmSub').textContent =
+    `${llmState.model} · ${llmState.elapsed}s · ${llmState.src.length} → ${llmState.out.length} 字`;
+
+  // 从 audit 实时重算，而不是用后端给的 blocked：
+  // 「补回末句」会在前端改 audit，后端那份就过期了
+  llmRecomputeBlocked();
+  const bad = llmState.blocked;
+  $('#llmAdopt').disabled = bad.length > 0;
+  $('#llmFoot').textContent = bad.length
+    ? `硬红线未通过，不能采用：${bad.join('；')}`
+    : '硬红线全部通过，可以采用为第 0 遍底稿';
+  $('#llmFoot').style.color = bad.length ? 'var(--danger)' : 'var(--muted)';
+  // 只是末句丢了的话，给一个明确的一键修复入口，不用整段重跑
+  const tailLost = bad.some(x=>x.startsWith('末句保留'));
+  $('#llmRetail').hidden = !(tailLost && llmState.tail);
+}
+
+function llmRecomputeBlocked(){
+  llmState.blocked = Object.entries(llmState.audit || {})
+    .filter(([, v]) => v.hard && !v.pass)
+    .map(([k, v]) => `${k}：${v.note}`);
+}
+
+$('#llmRetail').onclick = ()=>{
+  if(!llmState.tail) return;
+  if(llmState.out.includes(llmState.tail)){ toast('润色稿里已经有这句了'); return; }
+  llmState.out = llmState.out.replace(/\s*$/, '') + '\n' + llmState.tail;
+  const t = llmState.audit['末句保留'];
+  if(t){ t.pass = true; t.note = `已补回原句：${llmState.tail.slice(0, 16)}`; }
+  // 补回会改变字数，长度这一项得跟着重算，否则闸门用的是旧数字
+  const len = llmState.audit['长度合理'];
+  if(len){
+    const r = llmState.out.length / Math.max(1, llmState.src.length);
+    len.pass = r >= 0.6 && r <= 1.25;
+    len.note = `${llmState.src.length} → ${llmState.out.length} 字（${r.toFixed(2)}×）`;
+  }
+  renderLlmPreview();
+  toast('已补回原末句，顺手看一眼它和上一句接不接得上');
+};
+
+$('#llmClose').onclick = ()=>$('#llmMask').classList.remove('show');
+$('#llmMask').onclick = e=>{
+  if(e.target.id === 'llmMask') $('#llmMask').classList.remove('show');
+};
+
+$('#llmCopy').onclick = async ()=>{
+  try{
+    await navigator.clipboard.writeText(llmState.out);
+    toast(`已复制润色稿（${llmState.out.length} 字）`);
+  }catch(e){ toast('复制失败，浏览器可能限制了剪贴板权限'); }
+};
+
+$('#llmAdopt').onclick = async ()=>{
+  if((llmState.blocked || []).length){ toast('硬红线未通过，不能采用'); return; }
+  const base = (rv.stem || state.stem || '未命名').replace(/_润色\d*$/, '');
+  const btn = $('#llmAdopt');
+  btn.disabled = true; btn.textContent = '保存中…';
+  try{
+    // v0 有「已存在不覆盖」的保护，所以先探一下，避免保存被静默 kept
+    let stem = base + '_润色', n = 2;
+    for(;;){
+      const v = await (await fetch(
+        '/api/revise/versions?stem=' + encodeURIComponent(stem))).json();
+      const exist = v.versions && v.versions['0'];
+      if(!exist || exist === llmState.out) break;
+      stem = `${base}_润色${n++}`;
+      if(n > 20){ toast('同名润色稿太多，请先清理'); return; }
+    }
+    const r = await fetch('/api/revise/save', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({stem, pass: 0, text: llmState.out})
+    });
+    if(!r.ok){ toast((await r.json()).error || '保存失败'); return; }
+
+    clearTimeout(rvSaveTimer);          // 别让待发的自动保存盖掉新 stem
+    rv.stem = stem;
+    rv.versions = {'0': llmState.out};
+    rv.step = 0; rv.text = llmState.out;
+    rv.issues = {}; rv.notes = {}; rv.keep = {}; rv.checked = {};
+    rvRender(); rvStore();
+    $('#llmMask').classList.remove('show');
+    toast(`已用润色稿起稿（${stem}），原稿仍在「${base}」里可追溯`);
+  }catch(e){
+    toast('采用失败：' + e.message);
+  }finally{
+    btn.disabled = false; btn.textContent = '采用为新起点';
+  }
 };
 
 $('#tracksCancel').onclick = ()=>$('#tracksMask').classList.remove('show');
@@ -3034,6 +3271,38 @@ document.addEventListener('keydown', e=>{
 /* 截图/演示用：URL 参数直接打开对应弹窗 */
 if(location.search.includes('export=1')){
   setTimeout(()=>openExportPrefs(), 400);
+}
+if(location.search.includes('llm=demo')){
+  setTimeout(async ()=>{
+    await switchWs('revise');
+    llmState.src = '那么我们说，嗯，这个两品一械的监管，啊，主要依据是药品管理法第一百二十条。\n'
+      + '就是说，二零二六年我们检查了三百五十家零售药店，合格率百分之九十八点五。\n'
+      + '那今天就到这里，谢谢大家。';
+    llmState.out = '两品一械的监管主要依据是药品管理法第一百二十条。2026年共检查350家零售药店，'
+      + '合格率达到98.5%。\n那今天就到这里，谢谢大家。';
+    llmState.model = 'Qwen3-4B-Q4_K_M.gguf';
+    llmState.elapsed = 12.4;
+    llmState.tail = '那今天就到这里，谢谢大家。';
+    llmState.diff = [
+      {op:'replace', before: llmState.src.split('\n')[0], after: llmState.out.split('\n')[0]},
+      {op:'replace', before: llmState.src.split('\n')[1], after: llmState.out.split('\n')[1]},
+      {op:'equal', before: llmState.src.split('\n')[2], after: llmState.out.split('\n')[2]},
+    ];
+    llmState.blocked = location.search.includes('bad=1')
+      ? ['末句保留：疑似被删：那今天就到这里，谢谢大家'] : [];
+    llmState.audit = {
+      '术语保留':   {pass:true, hard:true,  note:'7 条全部保留'},
+      '条款号保留': {pass:true, hard:true,  note:'1 处一致'},
+      '数字保留':   {pass:true, hard:true,  note:'4 处一致'},
+      '末句保留':   {pass:!llmState.blocked.length, hard:true,
+                     note: llmState.blocked.length ? '疑似被删：那今天就到这里，谢谢大家' : '保留'},
+      '长度合理':   {pass:true, hard:true,  note:'78 → 63 字（0.81×）'},
+      '内容覆盖（参考）': {pass:true, hard:false, note:'100%'},
+      '残留口语（参考）': {pass:true, hard:false, note:'无'},
+    };
+    renderLlmPreview();
+    $('#llmMask').classList.add('show');
+  }, 500);
 }
 if(location.search.includes('cleandiff=1')){
   setTimeout(()=>{

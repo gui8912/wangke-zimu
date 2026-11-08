@@ -42,6 +42,7 @@ import revise as RV             # noqa: E402
 import align as AL              # noqa: E402
 import asr_providers as P       # noqa: E402  【新增 v1.3】识别源抽象层
 import learn as _LEARN          # noqa: E402  【新增 v1.5】修订学习（只记录，不自动应用）
+import llm_polish as LP        # noqa: E402  【新增 v1.7】讲稿层 LLM 顺滑
 
 REV = OUT / "rev"
 
@@ -1023,7 +1024,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.6",       # 【修改 v1.6】
+    return {"ok": True, "version": "1.7",       # 【修改 v1.7】
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1031,7 +1032,9 @@ def api_health():
             "provider": P.preferred_from_env().id,
             "cloud_ready": [p["id"] for p in P.list_providers()
                             if p["kind"] == "cloud" and p["configured"]
-                            and p.get("ready")]}
+                            and p.get("ready")],
+            # 【新增 v1.7】本地润色模型是否就绪（只查文件与依赖，不加载）
+            "llm": LP.available()[0]}
 
 
 # ─────────────────────── 【新增 v1.3】识别源与双轨整理稿 ───────────────────────
@@ -1197,6 +1200,62 @@ async def api_revise_tts(payload: dict):
         return JSONResponse({"error": f"朗读生成失败（需要联网）：{exc}"}, status_code=500)
     return {"url": f"/api/audio/{name}", "chars": len(text),
             "truncated": full_len > limit}
+
+
+# ─────────────────────── 【新增 v1.7】讲稿层 LLM 顺滑 ───────────────────────
+#
+# 只作用于讲稿层。字幕（cues + 字级时间戳）一个字都不碰——整段改写会打断
+# align.py 的字级对齐，音画就不同步。这是 v1.3 双轨设计里写死的红线。
+
+_LLM_BUSY = threading.Lock()   # 同时只跑一份；并发只会让两份都慢到超时
+
+
+@app.get("/api/llm/status")
+def api_llm_status():
+    """模型是否就绪。前端据此置灰按钮并写明原因，而不是点了等半天才失败。"""
+    ok, detail = LP.available()
+    return {"available": ok, "detail": detail,
+            "model_dir": str(LP.MODEL_DIR),
+            "max_input": LP.MAX_INPUT, "chunk_chars": LP.CHUNK_CHARS}
+
+
+@app.post("/api/llm/polish")
+def api_llm_polish(payload: dict):
+    """讲稿润色：只返回预览，不落盘、不碰字幕。
+
+    用同步端点（def 而非 async def）：FastAPI 会把同步端点放进线程池，
+    模型在 CPU 上要跑十几秒到几分钟，期间首页、截图、任务轮询照常响应。
+
+    为什么不在这里保存：润色结果必须先过 diff 预览和红线审计才能采用，
+    直接落盘就等于绕过了闸门。采用由前端另起 stem 调 /api/revise/save。
+    """
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "没有可润色的文本"}, status_code=400)
+    if len(text) > LP.MAX_INPUT:
+        return JSONResponse(
+            {"error": f"文本 {len(text)} 字，超过单次上限 {LP.MAX_INPUT} 字，"
+                      f"请分成两三段分别润色"}, status_code=400)
+    ok, detail = LP.available()
+    if not ok:
+        return JSONResponse({"error": f"本地润色模型不可用：{detail}"},
+                            status_code=400)
+    if not _LLM_BUSY.acquire(blocking=False):
+        return JSONResponse({"error": "已有一份稿子正在润色，请等它完成"},
+                            status_code=409)
+    try:
+        logs, t0 = [], time.time()
+        r = LP.polish(text, log=lambda m: logs.append(m))
+        r["blocked"] = LP.blocked(r["audit"])   # 硬红线未过的项，前端据此禁用「采用」
+        r["logs"] = logs
+        r["total_elapsed"] = round(time.time() - t0, 1)
+        return r
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"润色失败：{exc}",
+             "detail": traceback.format_exc()[-800:]}, status_code=500)
+    finally:
+        _LLM_BUSY.release()
 
 
 @app.get("/api/audio/{name}")
