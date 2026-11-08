@@ -308,6 +308,19 @@ def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str) -> dict:
 
 _QWEN3_CACHE = {}
 
+# 【新增 v1.9】长音频必须自己切片、逐片推理。
+# 事故现场：79 分钟课程整段交给 model.transcribe()，库内部按 180s 切成 27 片后
+# 「整批」送进前向，单次 logits 就几十 GB，进程直接段错误（exit 139）消失，
+# Python 侧一个异常都拿不到——任务状态永远停在 running。
+# 另一个坑：库默认 max_new_tokens=512，170s 的中文片段约 700 字，会被静默截断。
+# 窗口还要夹在安全区间：库的切片会在「目标切点 ±search_expand」里找最低能量处下刀，
+# 窗口小于 2×search_expand 时切点会落回起点附近，每轮只推进 1 个采样点（实测把
+# 12s 全静音音频切成十几万片、内存涨到被系统杀掉），所以窗口下限设 30s、
+# 搜索半径压到窗口的 1/6。
+QWEN3_WINDOW_SEC = min(175.0, max(30.0, float(os.environ.get("ASR_QWEN3_WINDOW") or 170)))
+QWEN3_EXPAND_SEC = min(5.0, QWEN3_WINDOW_SEC / 6.0)
+QWEN3_MAX_NEW_TOKENS = int(os.environ.get("ASR_QWEN3_MAXTOK") or 2048)
+
 
 def _resolve_ms_dir(model_id: str) -> str:
     """把 ModelScope 模型 ID 解析成本地目录；已缓存则秒回，不重复下载"""
@@ -336,20 +349,60 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log) -> dict:
             device_map=device,
             forced_aligner=aligner_dir,
             forced_aligner_kwargs=dict(dtype=dtype, device_map=device),
+            # modified(v1.9): 库默认批大小 32，长音频会整批前向吃爆内存；
+            # 同时 max_new_tokens 默认 512，170s 的片段约 700 字会被截断。
+            max_inference_batch_size=1,
+            max_new_tokens=QWEN3_MAX_NEW_TOKENS,
         )
         _QWEN3_CACHE[cfg["model"]] = model
         log(f"模型就绪，耗时 {time.time() - t0:.1f}s")
 
     lang = None if language in (None, "", "auto") else language
-    res = model.transcribe(audio=str(wav), language=lang, return_time_stamps=True)
-    # modified: 空列表原来直接 res[0] 会 IndexError
-    if not res:
+
+    # 【修改 v1.9】原来把整段音频一次性交给库：model.transcribe(audio=str(wav))。
+    # 现在按低能量边界切成 QWEN3_WINDOW_SEC 的片，逐片识别后拼回，内存恒定在单片水平。
+    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
+
+    pcm = normalize_audio_input(str(wav))
+    parts = split_audio_into_chunks(wav=pcm, sr=16000, max_chunk_sec=QWEN3_WINDOW_SEC,
+                                    search_expand_sec=QWEN3_EXPAND_SEC)
+    log(f"音频 {len(pcm) / 16000 / 60:.1f} 分钟，切 {len(parts)} 片逐片识别")
+
+    texts, ts, silent = [], [], 0
+    for i, (chunk, offset) in enumerate(parts, 1):
+        off_ms = int(round(offset * 1000))
+        r = None
+        for attempt in (1, 2):
+            try:
+                res = model.transcribe(audio=(chunk, 16000), language=lang,
+                                       return_time_stamps=True)
+                r = res[0] if res else None
+                break
+            except Exception as exc:
+                # 单片失败不拖垮整段：先重试一次，仍失败才带位置报错，
+                # 免得 70 分钟的活干到第 20 片白跑一场还看不出卡在哪。
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"第 {i}/{len(parts)} 片（{offset / 60:.1f} 分钟处）识别失败：{exc}"
+                    ) from exc
+                log(f"第 {i} 片出错，重试一次：{exc}")
+
+        text = ((getattr(r, "text", "") or "") if r else "").strip()
+        if not text:
+            silent += 1
+        texts.append(text)
+        stamps = (getattr(r, "time_stamps", None) or []) if r else []
+        ts.extend([int(t.start_time * 1000) + off_ms, int(t.end_time * 1000) + off_ms]
+                  for t in stamps)
+        log(f"识别 {i}/{len(parts)}（{offset / 60:.1f} 分钟）：{len(text)} 字")
+
+    full = "".join(texts).strip()
+    if not full:
         raise RuntimeError("识别返回空结果：音频可能是静音或过短")
-    r = res[0]
-    stamps = getattr(r, "time_stamps", None) or []
-    ts = [[int(t.start_time * 1000), int(t.end_time * 1000)] for t in stamps]
-    log(f"转写 {len(r.text)} 字，对齐 {len(ts)} 个字")
-    return {"text": r.text, "timestamp": ts}
+    tail = f"，其中 {silent} 片静音" if silent else ""
+    log(f"转写 {len(full)} 字，对齐 {len(ts)} 个字{tail}")
+    return {"text": full, "timestamp": ts}
+
 
 
 _MODEL_CACHE = {}

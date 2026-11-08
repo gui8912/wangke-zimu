@@ -36,6 +36,16 @@ PEAKS = OUT / "_peaks"
 for d in (MEDIA, OUT, WEB, JOBS, PEAKS):
     d.mkdir(parents=True, exist_ok=True)
 
+# 【新增 v1.9】原生层崩溃（段错误 / abort）在 Python 侧完全无声：进程直接消失，
+# 任务状态永远停在 running，日志也断在半句。开启 faulthandler 后，崩溃瞬间会把
+# 各线程的 Python 栈追加写到 out/_crash.log，下次出事能直接看出卡在哪一步。
+try:
+    import faulthandler
+    _CRASH_LOG = open(OUT / "_crash.log", "a", encoding="utf-8", buffering=1)
+    faulthandler.enable(file=_CRASH_LOG, all_threads=True)
+except Exception as _exc:      # 打不开就静默降级，不能因为诊断功能拖垮启动
+    print(f"[crash] faulthandler 未启用：{_exc}", flush=True)
+
 import transcribe as T          # noqa: E402
 import clean_transcript as CT   # noqa: E402
 import revise as RV             # noqa: E402
@@ -112,7 +122,17 @@ def _atomic_write(p: Path, text: str):
     tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, p)
+        # 【新增 v1.9】Windows 上 os.replace 偶尔会撞「目标正被占用」（杀软扫描、
+        # 索引服务瞬时打开文件），表现为 PermissionError。瞬时冲突重试两次即可，
+        # 别把一次偶发当成保存失败丢给用户——实测高负载下并发压测能撞到。
+        for attempt in range(3):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
     except OSError:
         tmp.unlink(missing_ok=True)     # 失败别在 out/ 里堆垃圾
         raise
@@ -328,7 +348,9 @@ def _persist(tid: str):
     data = {k: v for k, v in task.items() if k != "result"}
     data["logs"] = (task.get("logs") or [])[-120:]
     p = _job_path(tid)
-    tmp = p.with_suffix(".tmp")
+    # modified(v1.9): 临时名加随机后缀。原来固定 <id>.tmp，同时跑起两个实例
+    # （桌面启动器 + 命令行）时两边会互相覆盖，后写入的那个 os.replace 直接抛错。
+    tmp = p.with_name(f"{p.stem}.{uuid.uuid4().hex[:8]}.tmp")
     with PERSIST_LOCK:
         try:
             tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -373,10 +395,15 @@ def _load_jobs():
             print(f"[jobs] 跳过损坏的任务文件 {p.name}: {exc}", flush=True)
             continue
         d["result"] = None
-        if d.get("status") in ("queued", "running"):
+        stale = d.get("status") in ("queued", "running")
+        if stale:
             d["status"] = "interrupted"
             d["error"] = "服务重启，任务中断；可点「重试」重新排队"
         TASKS[tid] = d
+        # modified(v1.9): 状态改了要立刻落盘。原来只在内存里改，磁盘上还写着
+        # running——进程崩过之后打开任务文件看到的是假的「正在运行」，排查时误导人。
+        if stale:
+            _persist(tid)
 
 
 def _locate(p, *dirs):
@@ -1081,7 +1108,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "1.8",       # modified(v1.8):
+    return {"ok": True, "version": "1.9",       # modified(v1.9): 长音频段错误修复
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
