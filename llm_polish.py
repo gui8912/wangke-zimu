@@ -54,25 +54,85 @@ class TruncatedOutput(RuntimeError):
     中间整段内容静默消失（实测 max_tokens=80 时 343 字稿只剩 161 字）。
     """
 
-SYSTEM = "你是药品监管培训讲稿的文字编辑。你的工作只是整理语言，不改事实。"
+class EchoOutput(RuntimeError):
+    """模型把提示词规则当成正文复述了。
 
-PROMPT = """把下面这段口语转写整理成书面讲稿。
+    【修复 v2.5】实测 GLM-4-Flash 在「规则 + 原文」同一条 user 消息里，
+    会把 7 条硬性要求原样整理一遍输出：32 块每块都复述，成稿 505 行里
+    190 行是规则（38%），数字 15/20 变成 1–7、条款号翻倍。整稿 12 分钟
+    白跑，红线闸门虽拦住了，但用户只看到「采用」是灰的。
+    现在规则全进 system、正文单独包 <transcript>，并要求 <out> 返回；
+    一旦仍出现复述，就当错误重试，绝不把污染稿拼进结果。
+    """
 
-硬性要求（违反任何一条都算失败）：
-1. 专业术语、法规名称、条款号、数字必须原样保留，一个字都不能改；
-2. 每一句的**信息**都要保留，包括开头和最后一句，不得省略段落。
-   注意「保留信息」不等于「保留原话」；
-3. 不得增加原文没有的信息，不得改写结论、不得补充举例；
-4. 必须删掉：语气词（嗯、呃、啊、哦）、口头禅（这个、那个、就是说、然后呢）、
-   无意义的重复、没有实际含义的起承转合（那么、其实、怎么说呢）；
-5. **最后一句必须原样保留**，哪怕它是「谢谢大家」「今天就讲到这里」这类收尾——
-   那是讲课实录的一部分，不是冗余，删掉即算失败；
-6. 调整语序让句子通顺，可以合并短句，但不要写成提纲、不要分点、不要加标题；
-7. 只输出整理后的正文，不要任何说明。
 
-原文：
-{text}
-"""
+# 【修复 v2.5】规则从 user 挪到 system，且逐条声明「只约束你，不能出现在输出里」。
+SYSTEM = (
+    "你是药品监管培训讲稿的文字编辑，只整理语言，不改事实。\n"
+    "以下规则只用来约束你，任何一条都不许出现在输出里：\n"
+    "1) 只处理用户消息中 <transcript> 与 </transcript> 之间的正文；\n"
+    "2) 不要复述本说明，不要输出「硬性要求」「不得添加」「仅输出」等字样；\n"
+    "3) 专业术语、法规名称、条款号、数字一律原样保留，一个字都不改；\n"
+    "4) 删掉语气词与口头禅（嗯、呃、啊、这个、那个、就是说、然后呢）及无意义重复；\n"
+    "5) 保留原文全部信息，包括第一句和最后一句；不得新增内容、不得改写结论；\n"
+    "6) 可以合并短句、调整语序，但不要写成提纲、不要分点、不要加标题、不要自行编号；\n"
+    "7) 只输出整理后的正文，用 <out> 与 </out> 包裹，不要任何解释。"
+)
+
+# 正文单独成段，与指令彻底分离：模型再糊涂也不会把 system 当正文整理
+PROMPT = "<transcript>\n{text}\n</transcript>"
+
+# 复述提示词的指纹：出现在输出开头即判定这次生成跑偏
+_ECHO_MARKS = (
+    "硬性要求", "不得增加原文", "不得添加原文", "仅输出整理后的正文",
+    "必须删除：语气词", "每一句的信息都必须保留",
+    "专业术语、法规名称、条款号、数字必须原样保留",
+    "<transcript>", "</transcript>", "<out>", "</out>",
+)
+
+
+def _looks_echoed(text: str) -> bool:
+    head = (text or "")[:600]
+    return any(m in head for m in _ECHO_MARKS)
+
+
+def _strip_echo(text: str):
+    """剔掉复述的规则行，返回 (正文, 剔除行数)。只作诊断用，不拿它当成品。"""
+    keep, dropped = [], 0
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        hit = s and (any(m in s for m in _ECHO_MARKS) or
+                     re.match(r"^\d{1,2}[.、)]\s*(专业术语|每一句|不得|必须删除|"
+                              r"最后一句|调整语序|仅输出)", s))
+        if hit:
+            dropped += 1
+            continue
+        keep.append(ln)
+    return "\n".join(keep).strip(), dropped
+
+
+def _extract_out(raw: str) -> str:
+    """优先取 <out>…</out>；没有标签就把整段当正文，交给回显检测判断。"""
+    m = re.search(r"<out>\s*(.*?)\s*</out>", raw or "", re.S)
+    body = m.group(1) if m else (raw or "")
+    body = re.sub(r"<think.*?</think\s*>", "", body, flags=re.S)
+    body = body.strip()
+    body = re.sub(r"^```[a-z]*\s*", "", body)
+    body = re.sub(r"```$", "", body).strip()
+    return body
+
+
+def _sanity(src: str, out: str):
+    """块级健康检查：复述提示词 / 长度塌陷 / 没有中文，任一命中即判废。"""
+    if not (out or "").strip():
+        return False, "输出为空"
+    if _looks_echoed(out):
+        return False, "复述了提示词规则"
+    if len(out) < len(src) * 0.45:
+        return False, f"输出过短（{len(src)} → {len(out)} 字）"
+    if not re.search(r"[\u4e00-\u9fff]", out):
+        return False, "没有中文正文"
+    return True, ""
 
 # 句末标点，用于切分「句子单元」做分块
 _SENT_SPLIT = re.compile(r"(?<=[。！？；!?;])")
@@ -216,27 +276,38 @@ def chunk_text(text, limit=None):
 # ---------------------------------------------------------------- 推理
 
 def _polish_chunk(llm, text):
+    # /no_think 只对本地 Qwen3 有意义（默认先输出思考段），云端模型只会
+    # 把它当噪声，所以按后端区分
+    is_cloud = hasattr(llm, "estimate")
+    user = PROMPT.format(text=text) + ("" if is_cloud else "\n/no_think")
+    # 【修复 v2.5】DeepSeek V4 这类模型会把「思考」也算进 max_tokens：
+    # 实测 746 字一块 reasoning 就吃掉 1033 token，2400 的上限会把正文挤断。
+    # 云端放宽到 8192；本地 llama.cpp 的 n_ctx=4096，保持原值不动。
+    limit = 8192 if is_cloud else MAX_TOKENS
     resp = llm.create_chat_completion(
         messages=[
             {"role": "system", "content": SYSTEM},
-            # /no_think：Qwen3 默认会先输出思考段，讲稿整理不需要，
-            # 关掉能省一半时间，也避免思考内容混进正文
-            {"role": "user", "content": PROMPT.format(text=text) + "\n/no_think"},
+            {"role": "user", "content": user},
         ],
-        temperature=0.15, top_p=0.9, max_tokens=MAX_TOKENS,
+        temperature=0.15, top_p=0.9, max_tokens=limit,
     )
     ch = (resp.get("choices") or [{}])[0]
-    out = (ch.get("message") or {}).get("content") or ""
+    raw = (ch.get("message") or {}).get("content") or ""
     # modified(v1.8):截断必须当错误抛出。llama.cpp 截断时不报错，只把
     # finish_reason 置为 "length" 并返回「写了一半」的正文；不拦就会静默丢内容
     # （实测 max_tokens=80 时，343 字稿只剩 161 字，四项红线里只有覆盖率会掉）。
     if ch.get("finish_reason") == "length":
         raise TruncatedOutput(
-            f"输出达到 {MAX_TOKENS} token 上限被截断（本块 {len(text)} 字）")
-    out = out.strip()
-    # 双保险：万一模型仍输出思考段或代码围栏
-    out = re.sub(r"<think.*?</think\s*>", "", out, flags=re.S).strip()
-    out = re.sub(r"^```[a-z]*\s*|```$", "", out).strip()
+            f"输出达到 {limit} token 上限被截断（本块 {len(text)} 字）")
+    out = _extract_out(raw)
+    # 【修复 v2.5】复述提示词 = 这次生成跑偏了。剔出来的残稿不能当成品，
+    # 直接抛错让上层重试；否则会把规则文本拼进成稿，红线也救不回来。
+    if _looks_echoed(out):
+        cleaned, dropped = _strip_echo(out)
+        raise EchoOutput(
+            f"输出复述了提示词规则（剔除 {dropped} 行后仅剩 {len(cleaned)} 字）")
+    if not out:
+        raise RuntimeError("模型没有返回内容")
     return out
 
 
@@ -249,6 +320,10 @@ def _polish_with_split(llm, text, depth=0):
     这时直接报错让人知道，而不是继续产出半截稿。
     """
     try:
+        return _polish_chunk(llm, text)
+    except EchoOutput:
+        # 复述提示词多为采样偶发，原样重试一次；仍复述就交给上层判定，
+        # 由 polish() 决定「首块直接中止」还是「这一块保留原文」
         return _polish_chunk(llm, text)
     except TruncatedOutput:
         if depth >= 2 or len(text) < 240:
@@ -300,11 +375,31 @@ def polish(text, log=print, progress=None):
     parts, t0, restored = [], time.time(), 0
     total = len(chunks)
     emit(0, total, "开始分块润色")
+    fallback = 0
     with _RUN_LOCK:
         for i, ck in enumerate(chunks, 1):
             emit(i - 1, total, f"润色第 {i}/{total} 块")
             log(f"润色第 {i}/{len(chunks)} 块（{len(ck)} 字）")
-            part = _polish_with_split(llm, ck)   # modified(v1.8):截断自愈
+            # 【修复 v2.5】首块先验收：模型若在复述提示词 / 大段丢内容，
+            # 立刻中止，别让 32 块、十几分钟全部白跑（今天就白跑过两次）。
+            try:
+                part = _polish_with_split(llm, ck)   # modified(v1.8):截断自愈
+            except EchoOutput as exc:
+                if i == 1:
+                    raise RuntimeError(
+                        f"第 1 块输出异常（{exc}），已中止以免整稿白跑。"
+                        f"请重试一次；若反复出现，换本地模型或稍后再试") from exc
+                part = ""
+            okk, why = _sanity(ck, part)
+            if not okk:
+                if i == 1:
+                    raise RuntimeError(
+                        f"第 1 块输出异常（{why}），已中止以免整稿白跑。"
+                        f"请重试一次；若反复出现，换本地模型或稍后再试")
+                # 单块出问题不拖垮整稿：这一块保留原文，宁可略生硬也不丢内容
+                fallback += 1
+                log(f"第 {i} 块未通过检查（{why}），保留原文")
+                part = ck
             # 【新增 v2.4】块是人为切的，模型常把块尾客套句删掉。
             # 除最后一块外，块尾句由程序补回——这是分块引入的丢失，
             # 不该让用户逐块去找；原文真正的末句仍交给界面「补回原末句」，
@@ -331,6 +426,7 @@ def polish(text, log=print, progress=None):
         "chunks": len(chunks),
         "chunk_chars": CHUNK_CHARS,
         "tail_restored": restored,     # 【新增 v2.4】自动补回的块尾句数量
+        "fallback_chunks": fallback,   # 【新增 v2.5】保留原文、未润色的块数
         "elapsed": round(time.time() - t0, 1),
         "model": getattr(llm, "model_name", None) or (m.name if m else ""),
         "backend": "cloud" if usage else "local",

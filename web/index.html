@@ -212,6 +212,13 @@
   #btnLlmAgain.has{border-color:var(--primary);color:var(--primary)}
   #btnLlmAgain.has::after{content:"●";color:var(--ok);font-size:8px;
                           vertical-align:super;margin-left:3px}
+  /* 红线未通过时的醒目横幅：说明原因 + 给下一步动作 */
+  .llm-block{margin:0 0 10px;padding:10px 12px;border:1px solid var(--danger);
+             border-radius:var(--r-8);background:var(--badge-bg);color:var(--danger);
+             font-size:var(--fs-12);line-height:1.65}
+  .llm-block b{display:block;margin-bottom:4px;font-size:var(--fs-13)}
+  .llm-block .row{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap}
+  .llm-block .row button{background:var(--soft2);border:1px solid var(--line);color:var(--text)}
   .revfoot{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--line);
            background:var(--soft);font-size:var(--fs-12);color:var(--muted)}
   .revside .sidehead{display:flex;align-items:baseline;gap:8px;padding:11px 14px;
@@ -978,6 +985,8 @@
         下面是五项硬红线：任何一项不过都不允许采用——漏句、改条款号这类问题，
         在几千字的稿子里肉眼是发现不了的。
       </div>
+      <!-- 【新增 v2.5】未通过时给醒目横幅 + 下一步动作，别只留一个灰按钮 -->
+      <div id="llmBlockTip" class="llm-block" hidden></div>
       <div id="llmAudit" class="llm-audit"></div>
       <div class="llm-head">逐段差异<span id="llmDiffMeta"></span></div>
       <div id="llmDiff" class="learn-list"></div>
@@ -2046,7 +2055,10 @@ $('#btnRevLlm').onclick = async ()=>{
     markLlmAgain(true);          // 结果已在服务端落盘，入口点亮
     renderLlmPreview();
     $('#llmMask').classList.add('show');
-    if(chunks > 1)
+    if(d.fallback_chunks)
+      toast(`已完成，但其中 ${d.fallback_chunks} 块未通过检查、已保留原文；`
+            + '建议重跑一次，或先看 diff 再决定');
+    else if(chunks > 1)
       toast(`已完成 ${d.chunks || chunks} 块并合并为一整篇；自动补回 `
             + `${d.tail_restored || 0} 处块尾句，确认无误后点「采用」写入成稿`);
   }catch(e){
@@ -2115,6 +2127,34 @@ function renderLlmPreview(){
   llmRecomputeBlocked();
   const bad = llmState.blocked;
   $('#llmAdopt').disabled = bad.length > 0;
+  $('#llmAdopt').title = bad.length
+    ? `不能采用：${bad.join('；')}`
+    : '把润色稿设为第 0 遍底稿（原稿仍保留，可回溯）';
+  // 【新增 v2.5】灰按钮必须自己解释原因，并给出下一步，而不是让人反复点
+  const tip = $('#llmBlockTip');
+  if(tip){
+    if(!bad.length){
+      tip.hidden = true;
+    }else{
+      tip.hidden = false;
+      tip.innerHTML = '';
+      const h = document.createElement('b');
+      h.textContent = `本稿有 ${bad.length} 项硬红线未通过，不能采用`;
+      const p = document.createElement('div');
+      p.textContent = `${bad.join('；')}。常见原因：模型把提示词规则当正文复述，`
+        + '或改写了数字 / 条款号 / 末句。建议重跑一次；急着用可先复制文本人工核对。';
+      const row = document.createElement('div');
+      row.className = 'row';
+      const again = document.createElement('button');
+      again.textContent = '关掉并重新润色';
+      again.onclick = ()=>{ $('#llmMask').classList.remove('show'); $('#btnRevLlm').click(); };
+      const copy = document.createElement('button');
+      copy.textContent = '先复制文本自行核对';
+      copy.onclick = ()=>$('#llmCopy').click();
+      row.append(again, copy);
+      tip.append(h, p, row);
+    }
+  }
   $('#llmFoot').textContent = bad.length
     ? `硬红线未通过，不能采用：${bad.join('；')}`
     : '硬红线全部通过，可以采用为第 0 遍底稿';
