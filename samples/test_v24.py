@@ -125,9 +125,23 @@ def long_polish_unit():
         model_name = "fake"
 
         def create_chat_completion(self, messages=None, **kw):
-            # 固定返回一段不含块尾句的文本，模拟「模型把结尾客套话删了」；
-            # 若返回整个 prompt 内容，末句仍在正文里，就测不到补回逻辑。
-            return {"choices": [{"message": {"content": "这是润色后的正文。"},
+            # 模拟「模型把块尾客套话删了」，但保留足够长度：
+            # v2.5 起首块有健康检查，固定返回 9 个字会被判「输出过短」而中止，
+            # 那是真实保护、不是要测的行为，所以按原文 80% 返回、只去掉最后一行。
+            import re as _re
+            body = ""
+            for m in messages or []:
+                if m.get("role") == "user":
+                    body = m.get("content") or ""
+            hit = _re.search(r"<transcript>\s*(.*?)\s*</transcript>", body, _re.S)
+            src = (hit.group(1) if hit else body).strip()
+            lines = [x for x in src.splitlines() if x.strip()]
+            if len(lines) > 1:
+                lines = lines[:-1]
+            out = "\n".join(lines)
+            if len(out) < len(src) * 0.5:
+                out = src[: int(len(src) * 0.8)]
+            return {"choices": [{"message": {"content": out},
                                  "finish_reason": "stop"}]}
 
     old = LP._ensure
