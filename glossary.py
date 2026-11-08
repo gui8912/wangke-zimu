@@ -13,6 +13,11 @@ from pathlib import Path
 import os
 import uuid
 
+try:                          # 【新增 v2.7】「试一句」要复现清洗链路
+    import termfix as TF
+except Exception:
+    TF = None
+
 BASE = Path(__file__).resolve().parent
 
 KINDS = {
@@ -32,12 +37,30 @@ MAX_WEIGHT = 100
 # ─────────────────────────── 读写 ───────────────────────────
 
 def _read(path: Path):
-    """返回 (统一成 LF 的文本, 原换行符, 是否有末尾换行)。"""
+    """返回 (统一成 LF 的文本, 原换行符, 是否有末尾换行, 是否带 BOM, 原编码)。
+
+    【修改 v2.7】用 utf-8-sig 解码并记住 BOM：用记事本另存过的词表常带 BOM，
+    旧实现会把 BOM 当成第一行的第一个字符，导致第一条词条永远匹配不上
+    （界面上看是「这条明明在表里却不生效」）。保存时按原样写回 BOM。
+
+    另外兼容 GBK：中文 Windows 上用记事本「另存为 ANSI」会把文件存成 GBK，
+    旧实现直接 UnicodeDecodeError，整个术语表弹窗打不开。这里按原编码读、
+    按原编码写，不改用户的文件格式。
+    """
     if not path.exists():
-        return "", "\n", False
-    raw = path.read_bytes().decode("utf-8")
+        return "", "\n", False, False, "utf-8"
+    raw_bytes = path.read_bytes()
+    bom = raw_bytes.startswith(b"\xef\xbb\xbf")
+    try:
+        raw, enc = raw_bytes.decode("utf-8-sig"), "utf-8"
+    except UnicodeDecodeError:
+        try:
+            raw, enc = raw_bytes.decode("gbk"), "gbk"
+        except UnicodeDecodeError as exc:
+            raise ValueError(
+                f"{path.name} 既不是 UTF-8 也不是 GBK 编码，请用记事本另存为 UTF-8") from exc
     nl = "\r\n" if "\r\n" in raw else "\n"
-    return raw.replace("\r\n", "\n"), nl, raw.endswith("\n")
+    return raw.replace("\r\n", "\n"), nl, raw.endswith("\n"), bom, enc
 
 
 def _split(text: str):
@@ -50,7 +73,7 @@ def _split(text: str):
 
 def parse_items(path: Path, mode: str) -> list:
     """解析条目行。注释、空行、无法识别的行一律跳过（也绝不改动）。"""
-    text, _, _ = _read(path)
+    text, _, _, _, _ = _read(path)
     lines, _ = _split(text)
     items = []
     for i, raw in enumerate(lines):
@@ -138,7 +161,7 @@ def apply_changes(payload: dict) -> dict:
     meta = KINDS[kind]
     path, mode = meta["path"], meta["mode"]
 
-    text, nl, trailing = _read(path)
+    text, nl, trailing, bom, enc = _read(path)
     lines, _ = _split(text)
     current = {it["line"]: it for it in parse_items(path, mode)}
 
@@ -222,7 +245,16 @@ def apply_changes(payload: dict) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        tmp.write_bytes(out.encode("utf-8"))
+        try:
+            data = out.encode(enc)    # 【新增 v2.7】按原编码写回（UTF-8 / GBK）
+        except UnicodeEncodeError as exc:
+            # GBK 装不下新加的罕见字：明确让用户转存 UTF-8，不要写半个文件
+            tmp.unlink(missing_ok=True)
+            raise ValueError(
+                f"该词含 {enc.upper()} 不支持的字符，请先把 {path.name} 另存为 UTF-8") from exc
+        if bom:                       # 原文件带 BOM，按原样写回
+            data = b"\xef\xbb\xbf" + data
+        tmp.write_bytes(data)
         os.replace(tmp, path)
     except OSError:
         tmp.unlink(missing_ok=True)
@@ -234,18 +266,69 @@ def apply_changes(payload: dict) -> dict:
             "total": len(parse_items(path, mode))}
 
 
-def reload_caches() -> None:
-    """让改完的术语立即生效：清洗模块的术语/简称是模块级缓存，不刷新就要重启。
+# ─────────────────────────── 试改（字幕 / 讲稿共用同一套规则）───────────────────────────
 
-    错词表不走缓存（run_pipeline 每次都读），所以只处理热词与简称。
+def preview(text: str) -> dict:
+    """【新增 v2.7】把一句话按「错词校正 → 简称膨胀 → 术语补全」跑一遍。
+
+    存在的理由：用户反复问「术语表改了，字幕清理到底用不用」。
+    与其解释，不如让他在弹窗里输入一句原文，直接看到三步各自改了什么。
+    这里刻意复用 clean_transcript 的加载函数与 termfix 的实现，
+    不复写一套规则——预览结果与真实清理结果必须一致。
+    """
+    text = str(text or "").strip()[:400]
+    if not text:
+        raise ValueError("请先输入一句要试的原文")
+
+    import clean_transcript as CT
+    corrections = CT.load_corrections(KINDS["corrections"]["path"])
+    terms, aliases = CT.load_glossary()
+
+    stage, steps = text, []
+    hits = []
+    for wrong, right in corrections:
+        if wrong in stage:
+            n = stage.count(wrong)
+            stage = stage.replace(wrong, right)
+            hits.append(f"{wrong} → {right}×{n}")
+    if hits:
+        steps.append({"name": "错词校正", "detail": "；".join(hits), "after": stage})
+
+    alog = []
+    if TF is not None:
+        stage, alog = TF.expand_aliases(stage, aliases)
+        if alog:
+            steps.append({"name": "简称膨胀", "detail": "；".join(alog), "after": stage})
+
+        stage, changes, suggestions = TF.complete(stage, terms, auto=True)
+        if changes:
+            steps.append({"name": "术语补全",
+                          "detail": "；".join(f"{a}：{b}" for a, b, _ in changes),
+                          "after": stage})
+    else:
+        suggestions = []
+
+    return {"before": text, "after": stage, "steps": steps,
+            "suggestions": suggestions[:8],
+            "note": "预览与「重新清理 / 识别后清理」走同一套规则；"
+                    "实际清理还会删语气词、合并重复，这里只演示术语表的部分。"}
+
+
+def reload_caches() -> bool:
+    """让改完的术语立即生效：清洗模块的术语/简称按 mtime 缓存，刷新一次即可。
+
+    【修改 v2.7】原来只改模块级 `_TERMS/_ALIASES`；现在 Cleaner 在构造时
+    自己取词表，必须让缓存失效才会读到新内容。返回是否刷新成功，
+    界面据此提示「已生效 / 下次清理生效」，不再含糊。
     """
     try:
         import clean_transcript as CT
-        tf = getattr(CT, "TF", None)
-        if tf is None:
-            return
-        CT._TERMS = tf.load_terms(KINDS["hotwords"]["path"])
-        CT._ALIASES = tf.load_aliases(KINDS["aliases"]["path"])
+        if getattr(CT, "TF", None) is None:
+            return False
+        terms, aliases = CT.load_glossary(force=True)
+        # 兼容仍直接读这两个名字的旧代码/测试
+        CT._TERMS, CT._ALIASES = terms, aliases
+        return True
     except Exception:
-        # 缓存刷新失败不影响保存本身；下次重启自然生效
-        pass
+        # 刷新失败不影响保存本身；下次重启自然生效
+        return False

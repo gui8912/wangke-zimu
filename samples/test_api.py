@@ -45,7 +45,9 @@ def get(path):
 
 src = Path("samples/test_lesson.mp3")
 print("[1] 上传", flush=True)
-up = post_form("/api/upload", {}, {"file": (src.name, src.read_bytes())})
+# 【修改 v2.7】用带时间戳的文件名，避免「同名同大小已完成 → 跳过」把测试挡成 400
+upname = f"api_smoke_{int(time.time())}.mp3"
+up = post_form("/api/upload", {}, {"file": (upname, src.read_bytes())})
 print("   ", up, flush=True)
 
 print("[2] 转写（paraformer）", flush=True)

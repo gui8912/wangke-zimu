@@ -49,13 +49,29 @@ MIN_TERM_LEN = 4       # 短于此长度的术语不参与补全（太容易误�
 
 # ────────────────────── 配置加载 ──────────────────────
 
+def read_text_any(path) -> str:
+    """【新增 v2.7】读词表：优先 UTF-8（含 BOM），失败再按 GBK。
+
+    中文 Windows 上用记事本「另存为 ANSI」得到的是 GBK；旧实现直接
+    UnicodeDecodeError，整个识别任务失败。词表内容都是中文，两种编码
+    足以覆盖，读不出来才明确报错。
+    """
+    raw = Path(path).read_bytes()
+    for enc in ("utf-8-sig", "gbk"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{Path(path).name} 不是 UTF-8 / GBK 编码，请另存为 UTF-8")
+
+
 def load_terms(path) -> list:
     """读术语表：每行一个，# 注释，行尾 |权重 忽略。"""
     p = Path(path)
     if not p.exists():
         return []
     out = []
-    for ln in p.read_text(encoding="utf-8").splitlines():
+    for ln in read_text_any(p).splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("#"):
             continue
@@ -76,7 +92,7 @@ def load_aliases(path) -> list:
     if not p.exists():
         return []
     out, skipped = [], []
-    for ln in p.read_text(encoding="utf-8").splitlines():
+    for ln in read_text_any(p).splitlines():
         ln = ln.strip()
         if not ln or ln.startswith("#") or "=>" not in ln:
             continue

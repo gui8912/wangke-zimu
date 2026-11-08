@@ -7,7 +7,9 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 API = "http://127.0.0.1:7870"
-TID = sys.argv[1] if len(sys.argv) > 1 else "6c700b29d26e"
+# 【修改 v2.7】不再写死任务 ID：从 /api/tasks 取最近一条已完成任务，
+# 否则换机器/清过任务记录就 404，看起来像接口坏了。
+TID = sys.argv[1] if len(sys.argv) > 1 else ""
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -23,6 +25,12 @@ def post(path, obj):
     with opener.open(req, timeout=120) as r:
         return json.loads(r.read().decode("utf-8"))
 
+
+if not TID:
+    listing = get("/api/tasks")
+    done = [x for x in listing.get("tasks", []) if x.get("status") == "done"]
+    assert done, "服务里没有已完成任务，请先转写一条再跑本测试"
+    TID = done[0]["id"]
 
 task = get("/api/task/" + TID)
 assert task["status"] == "done", task

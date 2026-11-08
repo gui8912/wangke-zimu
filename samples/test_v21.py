@@ -87,7 +87,7 @@ def cloud_unit(tmp: Path):
         p = CL.apply_preset("glm-4-flash")
         ok("免费模型价格为 0", p["price_in"] == 0 and p["price_out"] == 0, p)
         d = CL.apply_preset("deepseek-v4-flash")
-        ok("DeepSeek 用新模型名", d["model"] == "deepseek-v4-flash", d)
+        ok("DeepSeek 用新模型名", d["model"] == "deepseek-flash", d)
 
         cfg = CL.save_config({"enabled": True, "preset": "glm-4-flash",
                               "base_url": "https://open.bigmodel.cn/api/paas/v4",

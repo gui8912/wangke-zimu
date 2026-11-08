@@ -35,7 +35,8 @@ except Exception:            # 缺模块时不影响原有清洗
     ITN = None
 
 # 【新增 v1.5】术语修复：简称膨胀 + 漏字补全
-# 术语表与简称表在模块级加载一次，避免每句都读盘
+# 术语表与简称表按文件 mtime 缓存，避免每句都读盘，又能在用户
+# 直接编辑 terms/*.txt 后（不必重启服务）于下一次清理时自动生效。
 try:
     import termfix as TF
     _TERMS = TF.load_terms(BASE / "terms" / "hotwords.txt")
@@ -43,6 +44,36 @@ try:
 except Exception:            # 缺模块或缺文件时不影响原有清洗
     TF = None
     _TERMS, _ALIASES = [], []
+
+_GLOSSARY_CACHE = {"key": None, "terms": [], "aliases": []}
+
+
+def _file_key(path: Path):
+    """用于判断词表是否被改过；文件不存在也返回稳定值。"""
+    try:
+        st = path.stat()
+        return (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (str(path), 0, 0)
+
+
+def load_glossary(force: bool = False):
+    """【新增 v2.7】读取热词与简称，按 mtime 缓存。
+
+    为什么不再只靠模块级常量：用户多年来习惯直接用记事本改 terms/*.txt，
+    旧实现只在服务启动时读一次，改完必须重启（或走界面保存触发 reload），
+    表现就是「术语表改了、重新清理却没反应」。现在每次构造 Cleaner
+    都核对一次 mtime，外部编辑立即生效；文件没变时零读盘开销。
+    """
+    key = (_file_key(BASE / "terms" / "hotwords.txt"),
+           _file_key(BASE / "terms" / "aliases.txt"))
+    if not force and _GLOSSARY_CACHE["key"] == key:
+        return _GLOSSARY_CACHE["terms"], _GLOSSARY_CACHE["aliases"]
+    terms = TF.load_terms(BASE / "terms" / "hotwords.txt") if TF else []
+    aliases = TF.load_aliases(BASE / "terms" / "aliases.txt") if TF else []
+    _GLOSSARY_CACHE.update(key=key, terms=terms, aliases=aliases)
+    return terms, aliases
+
 
 # 句首 / 句尾判定用的标点集合
 _PUNCT = "，。！？；：、,.;:?!…"
@@ -62,7 +93,10 @@ def load_corrections(path: Path) -> list:
     pairs = []
     if not path.exists():
         return pairs
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # 【修改 v2.7】兼容记事本另存的 GBK；UTF-8 仍是首选
+    text = (TF.read_text_any(path) if TF is not None
+            else path.read_text(encoding="utf-8-sig"))
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=>" not in line:
             continue
@@ -119,6 +153,9 @@ class Cleaner:
         # 弱上下文只进建议；False 则全部只建议，一个字都不动
         self.termfix = termfix
         self.termfix_auto = termfix_auto
+        # 【新增 v2.7】构造时取一次术语/简称（按 mtime 缓存）。
+        # 这样「改完术语表 → 点重新清理」一定用的是新词，不依赖服务重启。
+        self.terms, self.aliases = load_glossary() if termfix else ([], [])
         self.protect = [re.compile(p) for p in cfg.get("protect_patterns", [])]
         self.warn_ratio = cfg.get("warn_shrink_ratio", 0.5)
 
@@ -257,7 +294,7 @@ class Cleaner:
         # 放在填充词与重复合并之后：此时句子已定型，补字的上下文判断才准。
         # 强上下文自动改，弱上下文只进建议（last_suggestions）。
         if self.termfix and TF is not None:
-            text, tch, tsg = TF.fix(text, _TERMS, _ALIASES,
+            text, tch, tsg = TF.fix(text, self.terms, self.aliases,
                                     auto=self.termfix_auto)
             if tch:
                 changes.extend(tch)

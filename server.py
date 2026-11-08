@@ -409,6 +409,10 @@ def _load_jobs():
             continue
         d["result"] = None
         st = d.get("status")
+        # 【修复 v2.7】先登记再落盘。原来 running 分支先调 _persist(tid)，
+        # 而 _persist 从 TASKS 取任务——此时还没登记，直接 return，
+        # 「改成 interrupted」永远写不进磁盘，每次重启都重复同一判断。
+        TASKS[tid] = d
         if st == "queued":
             # 【新增 v2.3】夜间无人值守的关键：排队中的任务必须自动续跑。
             # 原实现把 queued 和 running 一起标成「中断」，等于重启一次
@@ -420,7 +424,6 @@ def _load_jobs():
             d["error"] = "服务重启，任务中断；可点「重试」重新排队"
             # 状态改了要立刻落盘，磁盘上不再留假的 running
             _persist(tid)
-        TASKS[tid] = d
 
     for tid in resume:
         JOB_Q.put(tid)
@@ -506,8 +509,17 @@ def _rehydrate(task: dict):
 
 
 def _prune_tasks(limit: int):
-    """只淘汰已结束的任务；排队中和识别中的不能被清掉。"""
+    """只淘汰已结束的任务；排队中和识别中的不能被清掉。
+
+    【新增 v2.7】同时给「结果载荷」设上限：result 里是整份 cues（长课
+    一两千条），300 个任务就是几百 MB。只保留最近 20 份，更早的置空；
+    再次打开时 _rehydrate 会从 out/ 的产物重建，功能不受影响。
+    """
     terminal = {"done", "error", "cancelled", "interrupted"}
+    with_result = [k for k, v in TASKS.items()
+                   if v.get("status") in terminal and v.get("result")]
+    for k in with_result[:-20] if len(with_result) > 20 else []:
+        TASKS[k]["result"] = None
     while len(TASKS) > limit:
         victim = next((k for k, v in TASKS.items()
                        if v.get("status") in terminal), None)
@@ -731,8 +743,11 @@ def upload(file: UploadFile = File(...)):
     解码器无限期挂住，未限制大小的上传会把磁盘撑满。
     """
     fid = uuid.uuid4().hex[:12]
-    safe = _safe(Path(file.filename or "upload.bin").name)[:120] or "upload"
-    ext = Path(safe).suffix.lower()
+    raw_name = Path(file.filename or "upload.bin").name
+    # 【修复 v2.7】先取扩展名再截断文件名。原来先截到 120 字再取后缀，
+    # 超长中文文件名会把「.mp4」截掉，前端收到「不支持的文件类型」。
+    ext = Path(raw_name).suffix.lower()
+    safe = (_safe(raw_name)[:max(1, 120 - len(ext))] or "upload") + ext
     if ext not in ALLOWED_MEDIA_EXT:
         return JSONResponse(
             {"error": f"不支持的文件类型：{ext or '无扩展名'}"}, status_code=400)
@@ -884,7 +899,12 @@ def _enqueue_upload(file_id: str, opt: dict):
         if not getattr(prov, "ready", False):
             return None, f"{prov.name} 的 HTTP 调用尚未接入"
     src = Path(info["path"])
-    size = src.stat().st_size if src.exists() else 0
+    # 【新增 v2.7】stat 可能因文件被外部清理/同步盘改名而抛 OSError，
+    # 原来会 500；这里按 0 处理，交给 _already_done 与 _worker 报「源文件已清理」。
+    try:
+        size = src.stat().st_size if src.exists() else 0
+    except OSError:
+        size = 0
     if _already_done(info["name"], size):
         return None, "同名同大小的课已完成，已跳过"
     tid = uuid.uuid4().hex[:12]
@@ -1025,18 +1045,24 @@ def api_queue_set(payload: dict):
     for k in ("paused", "watch", "skip_done"):
         if k in payload:
             QSTATE[k] = bool(payload[k])
-    if "auto_retry" in payload:
-        QSTATE["auto_retry"] = max(0, min(5, int(payload["auto_retry"])))
-    if "watch_interval" in payload:
-        QSTATE["watch_interval"] = max(10, min(3600, int(payload["watch_interval"])))
-    if "start_at" in payload:
-        v = payload["start_at"]
-        QSTATE["start_at"] = float(v) if v else None
+    # 【新增 v2.7】数值参数统一兜成 400。原来传 "abc" 会 ValueError → 500，
+    # 界面只看到「保存失败」，不知道是哪个字段写错了。
+    try:
+        if "auto_retry" in payload:
+            QSTATE["auto_retry"] = max(0, min(5, int(payload["auto_retry"])))
+        if "watch_interval" in payload:
+            QSTATE["watch_interval"] = max(10, min(3600, int(payload["watch_interval"])))
+        if "start_at" in payload:
+            v = payload["start_at"]
+            QSTATE["start_at"] = float(v) if v else None
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "队列参数不合法：auto_retry / watch_interval "
+                                      "需为整数，start_at 需为时间戳"}, status_code=400)
+    if QSTATE.get("start_at"):
         # 【新增 v2.4】定时开始与暂停互斥：CLI / 直接调 API 若只带 start_at，
         # 而队列仍处于暂停态，到点也永远不会开跑（Gate 先看 paused）。
         # 设定未来的定时即自动解除暂停；只点「暂停」不会带 start_at，不受影响。
-        if QSTATE["start_at"]:
-            QSTATE["paused"] = False
+        QSTATE["paused"] = False
     QS.save(QSTATE)
     QGATE.notify()
     return api_queue()
@@ -1044,7 +1070,12 @@ def api_queue_set(payload: dict):
 
 @app.post("/api/queue/move")
 def api_queue_move(payload: dict):
-    tid, delta = str(payload.get("id") or ""), int(payload.get("delta") or 0)
+    # 【新增 v2.7】delta 非法时 400，而不是 500
+    try:
+        delta = int(payload.get("delta") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "delta 必须是整数"}, status_code=400)
+    tid = str(payload.get("id") or "")
     ok = JOB_Q.move(tid, delta)
     return {"ok": ok, "queue": [x["id"] for x in api_queue()["queue"]]}
 
@@ -1146,6 +1177,16 @@ def _remove_task(tid: str, purge_media: bool = False):
     if not t:
         return False
     TASKS.pop(tid, None)
+    # 【新增 v2.7】把任务从队列里一并摘掉。已取消的任务仍留在 deque 里，
+    # 删记录后 api_queue 会显示一条「名字是 id、状态空白」的幽灵条目，
+    # 直到 worker 轮到它才消失。
+    try:
+        if hasattr(JOB_Q, "remove"):
+            JOB_Q.remove(tid)
+        else:
+            JOB_Q.queue.remove(tid)      # 兼容测试里替换成标准 queue.Queue
+    except (ValueError, AttributeError):
+        pass
     try:
         _job_path(tid).unlink(missing_ok=True)
     except OSError:
@@ -1250,10 +1291,22 @@ def api_glossary_save(payload: dict):
         return JSONResponse({"error": str(exc)}, status_code=400)
     except OSError as exc:
         return JSONResponse({"error": f"写入失败：{exc}"}, status_code=500)
-    GLOSS.reload_caches()
-    r["note"] = ("热词只影响新任务；错词与简称立即生效，"
-                 "老任务点一次「重新清理」即可应用")
+    fresh = GLOSS.reload_caches()
+    r["note"] = ("热词只影响新任务的识别；错词、简称、术语补全"
+                 "同时作用于字幕清理与讲稿清理，老任务点一次「重新清理」即可应用"
+                 + ("" if fresh else "（本次缓存刷新失败，重启服务后生效）"))
     return r
+
+
+@app.post("/api/glossary/preview")
+def api_glossary_preview(payload: dict):
+    """【新增 v2.7】术语表「试一句」：证明它真的参与字幕清理。"""
+    try:
+        return GLOSS.preview(payload.get("text") or "")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        return JSONResponse({"error": f"试改失败：{exc}"}, status_code=500)
 
 
 # ─────────── 【新增 v2.5】配置与词库备份 / 迁移 ───────────
@@ -1589,7 +1642,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.4",       # modified(v2.4): 首页说明书/源文件禁删/进度可见
+    return {"ok": True, "version": "2.7",       # modified(v2.7): 术语表扩充 / 默认 4 路并行 / DeepSeek 不思考
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1848,7 +1901,10 @@ def api_llm_status():
     return {"available": ok, "detail": detail,
             "backend": "cloud" if cfg.get("enabled") else "local",
             "model_dir": str(LP.MODEL_DIR),
-            "max_input": LP.MAX_INPUT, "chunk_chars": LP.CHUNK_CHARS}
+            "max_input": LP.MAX_INPUT, "chunk_chars": LP.CHUNK_CHARS,
+            "cloud_chunk_chars": LP.CLOUD_CHUNK_CHARS,
+            "thinking": cfg.get("thinking") or "auto",
+            "thinking_supported": CL.supports_thinking(cfg)}
 
 
 # ─────────── 【新增 v2.2】云端润色模型设置 ───────────
@@ -1910,7 +1966,9 @@ def api_llm_polish(payload: dict):
     # 正常占用 → 409（等一下就好）；超时占用 → 503（明说卡住了、要重启）。
     # 【修改 v2.4】长稿要按块数放宽卡死判定：3 万字约 43 块，本地模型
     # 可能跑 20 分钟，固定 600 秒会把正常运行的上一稿误判成「卡死」。
-    est_chunks = max(1, len(text) // LP.CHUNK_CHARS + 1)
+    # 【修改 v2.7】按后端估算块数：云端 3000 字/块、本地 700 字/块，
+    # 再用固定 CHUNK_CHARS 会把云端长稿的正常耗时误判成「卡死」。
+    est_chunks = LP.estimate_chunks(text)
     max_wait = max(LLM_MAX_SECONDS, est_chunks * 90)
     if not _LLM_BUSY.acquire(blocking=False):
         stuck = time.monotonic() - (_LLM_START[0] or time.monotonic())

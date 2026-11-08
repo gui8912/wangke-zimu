@@ -78,7 +78,9 @@ def parallel_unit(tmp):
     finally:
         T.FUNASR_WORKERS, T.FUNASR_CHUNK_SEC = old_workers, old_chunk
 
-    ok("默认 2 路并行", T.FUNASR_WORKERS == 2, T.FUNASR_WORKERS)
+    # 【修改 v2.7】默认并行度改为按核数/内存自适应（上限 4），不再固定 2
+    ok("默认并行度自适应", T.FUNASR_WORKERS == T._default_funasr_workers()
+       and 1 <= T.FUNASR_WORKERS <= 4, T.FUNASR_WORKERS)
     ok("默认片长 600s", T.FUNASR_CHUNK_SEC == 600.0, T.FUNASR_CHUNK_SEC)
     src = (BASE / "transcribe.py").read_text(encoding="utf-8")
     ok("workers=1 可回退整段", "if FUNASR_WORKERS > 1:" in src)
@@ -167,7 +169,7 @@ def guards():
     manual = BASE / "web" / "说明书.html"
     ok("顶栏有使用说明按钮", 'id="btnManual"' in web)
     ok("说明书静态页存在", manual.exists())
-    ok("说明书已更新到 2.4", manual.exists() and "版本 2.4" in manual.read_text(encoding="utf-8"))
+    ok("说明书已更新到 2.7", manual.exists() and "版本 2.7" in manual.read_text(encoding="utf-8"))
     ok("说明书无旧删源表述", manual.exists() and "连源文件一起删" not in manual.read_text(encoding="utf-8"))
     ok("前端无删源复选框", 'id="purgeMedia"' not in web)
     ok("后端强制不删源", "purge = False" in srv)

@@ -29,6 +29,7 @@ import json
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -71,9 +72,14 @@ def _load() -> dict:
 
 def _save(d: dict) -> None:
     LEARN_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = STATS.with_name(STATS.name + ".tmp")
-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, STATS)
+    # 【修改 v2.7】临时名加随机后缀：两个请求同时保存时不再互相覆盖
+    tmp = STATS.with_name(f"{STATS.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, STATS)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # ────────────────────── 差异提炼 ──────────────────────

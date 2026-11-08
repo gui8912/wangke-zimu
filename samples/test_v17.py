@@ -124,8 +124,8 @@ def unit():
 
     # 13. 术语表驱动：术语来自 terms/，不是硬编码
     terms = LP.must_keep_terms(SRC)
-    assert "两品一械" in terms, terms
-    assert all(len(t) >= 4 for t in terms)
+    assert ("两品一械",) in terms, terms   # v2.7 起返回元组：简称/全称命中任一即可
+    assert all(all(len(x) >= 4 for x in g) for g in terms), terms
     assert LP.must_keep_terms("完全不相关的一句话") == []
     ok(f"术语清单来自 terms/（本稿命中 {len(terms)} 条）")
 

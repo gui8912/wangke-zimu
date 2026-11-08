@@ -41,6 +41,11 @@ AUTO_CHUNK_AT = 8000       # 超过这个字数写一行日志，说明已自动
 # 每块送给模型的字数。Qwen3-4B 的 n_ctx=4096，中文 1 字约 1.5 token，
 # 700 字输入 + 提示词 + 输出，留有余量；再大就有截断风险。
 CHUNK_CHARS = 700
+# 【新增 v2.7】云端模型上下文 128K–1M，700 字一块纯属浪费：
+# 3 万字要发 43 次请求，每次都要重复 600 余字系统提示，慢且贵。
+# 3000 字一块 → 10 次请求，提示词开销降到 1/4，长稿墙钟时间约 1/4。
+# 输出约 3000–4500 token，云端 max_tokens=8192 足够；真截断还有对半自愈。
+CLOUD_CHUNK_CHARS = int(os.environ.get("ASR_LLM_CLOUD_CHUNK") or 3000)
 N_CTX = 4096
 MAX_TOKENS = 2400
 THREADS = max(4, min(12, (os.cpu_count() or 8) - 4))
@@ -99,21 +104,30 @@ SYSTEM = (
 # 正文单独成段，与指令彻底分离：模型再糊涂也不会把 system 当正文整理
 PROMPT = "<transcript>\n{text}\n</transcript>"
 
-# 复述提示词的指纹：出现在输出开头即判定这次生成跑偏
-_ECHO_MARKS = (
+# 复述提示词的指纹：出现在输出开头即判定这次生成跑偏。
+# 【修改 v2.7】分成强弱两级：像「技术约定」这种词，网课里本身就可能讲到
+# （"我们技术约定一下"），单独命中不能判废，否则正常稿子会被拦下重试。
+_ECHO_STRONG = (
     "硬性要求", "不得增加原文", "不得添加原文", "仅输出整理后的正文",
     "必须删除：语气词", "每一句的信息都必须保留",
     "专业术语、法规名称、条款号、数字必须原样保留",
     # 用户指定提示词的指纹（换词后仍能识别复述）
     "熟悉药品、医疗器械、化妆品监管工作的文字编辑", "任务是将网课口语",
-    "不得拔高或弱化原文观点", "模态词力度是否改变", "技术约定",
+    "不得拔高或弱化原文观点", "模态词力度是否改变",
     "<transcript>", "</transcript>", "<out>", "</out>",
 )
+_ECHO_WEAK = ("技术约定", "输出前逐条自检", "不得写成提纲")
+
+# 兼容旧代码里对 _ECHO_MARKS 的引用（诊断 / 剔除行）
+_ECHO_MARKS = _ECHO_STRONG + _ECHO_WEAK
 
 
 def _looks_echoed(text: str) -> bool:
     head = (text or "")[:600]
-    return any(m in head for m in _ECHO_MARKS)
+    if any(m in head for m in _ECHO_STRONG):
+        return True
+    # 弱指纹至少命中两条才判废：单条可能只是正文恰好提到
+    return sum(1 for m in _ECHO_WEAK if m in head) >= 2
 
 
 def _strip_echo(text: str):
@@ -162,6 +176,28 @@ NUM_RE = re.compile(
     r"|百分之[〇零一二三四五六七八九十百千两]+(?:点[〇零一二三四五六七八九十百千两]+)?"
 )
 FILLERS = ("呃", "嗯", "那个", "这个", "就是说", "然后呢", "好吧")
+
+
+def _partial_ratio(s: str, out: str) -> float:
+    """片段相似度 0–100。
+
+    【新增 v2.7】rapidfuzz 未安装时不再让整次润色崩掉：原来 audit 里
+    直接 `from rapidfuzz import fuzz`，缺包时润色已跑完却在校验阶段抛
+    ImportError，十几分钟的结果整份丢掉。这里用 3-gram 覆盖率兜底，
+    精度略低但方向一致（只用于「是否漏句」的粗判，不参与改写）。
+    """
+    try:
+        from rapidfuzz import fuzz
+        return float(fuzz.partial_ratio(s, out))
+    except Exception:
+        s = s or ""
+        out = out or ""
+        if not s:
+            return 0.0
+        n = 3
+        grams = [s[i:i + n] for i in range(max(1, len(s) - n + 1))]
+        hit = sum(1 for g in grams if g in out)
+        return 100.0 * hit / max(1, len(grams))
 
 _LLM = None
 _LOAD_LOCK = threading.Lock()
@@ -273,8 +309,15 @@ def _units(text, limit=None):
             continue
         for seg in _SENT_SPLIT.split(ln):
             seg = seg.strip()
-            if seg:
+            if not seg:
+                continue
+            # 【新增 v2.7】整段粘贴、没有句末标点的稿子：单句超长时按字数硬切，
+            # 否则一个 3 万字的「句子」会整块塞进模型，直接超上下文。
+            if len(seg) <= limit:
                 units.append(seg)
+            else:
+                units.extend(seg[i:i + limit]
+                             for i in range(0, len(seg), limit))
     return units
 
 
@@ -291,6 +334,21 @@ def chunk_text(text, limit=None):
     if cur:
         chunks.append("\n".join(cur))
     return chunks
+
+
+def estimate_chunks(text) -> int:
+    """【新增 v2.7】按当前后端估算块数，供服务端算「卡死」预算。
+
+    云端 3000 字一块、本地 700 字一块，服务端不能再用固定 CHUNK_CHARS
+    估——会把云端长稿的合理耗时误判成卡死。
+    """
+    try:
+        import cloud_llm as CL
+        limit = (CLOUD_CHUNK_CHARS if CL.load_config().get("enabled")
+                 else CHUNK_CHARS)
+    except Exception:
+        limit = CHUNK_CHARS
+    return max(1, len(chunk_text(text or "", limit=limit)))
 
 
 # ---------------------------------------------------------------- 推理
@@ -367,6 +425,25 @@ def last_sentence(text):
     return parts[-1] if parts else ""
 
 
+def _tail_present(part: str, tail: str) -> bool:
+    """块尾句是否已经出现在这一块里（允许模型只去掉了句末标点）。
+
+    【新增 v2.7】原来只做严格 `tail in part`，模型把句号改成逗号或删掉标点
+    就会误判成「缺失」，于是同一句被追加两遍。
+    这里只放宽到「去掉句末标点后原样出现」，不做模糊匹配——实测课程里
+    相邻句子高度相似（"这是第98句…" / "这是第99句…"），模糊匹配会把
+    真的被删掉的末句误判成已保留，那才是更严重的内容丢失。
+    """
+    if not tail:
+        return True
+    if tail in part:
+        return True
+    core = tail.rstrip("。！？!?…；;，, ")
+    if len(core) < 4:
+        return False
+    return part.rstrip("。！？!?…；;，, ").endswith(core)
+
+
 def polish(text, log=print, progress=None):
     """润色整段讲稿。返回 {source, polished, tail, audit, diff, chunks, elapsed, model}。
 
@@ -389,9 +466,13 @@ def polish(text, log=print, progress=None):
         raise ValueError(f"文本 {len(text)} 字，超过硬上限 {MAX_INPUT} 字，"
                          f"可用 ASR_LLM_MAX_CHARS 调整")
     llm = _ensure(log)
-    chunks = chunk_text(text)
+    # 【新增 v2.7】云端用大块（3000 字），本地小模型仍用 700 字。
+    is_cloud = hasattr(llm, "estimate")
+    limit = CLOUD_CHUNK_CHARS if is_cloud else CHUNK_CHARS
+    chunks = chunk_text(text, limit=limit)
     if len(text) > AUTO_CHUNK_AT:
-        log(f"长稿 {len(text)} 字，自动分 {len(chunks)} 块逐块润色后合并")
+        log(f"长稿 {len(text)} 字，自动分 {len(chunks)} 块"
+            f"（每块约 {limit} 字）逐块润色后合并")
     parts, t0, restored = [], time.time(), 0
     total = len(chunks)
     emit(0, total, "开始分块润色")
@@ -425,7 +506,7 @@ def polish(text, log=print, progress=None):
             # 不该让用户逐块去找；原文真正的末句仍交给界面「补回原末句」，
             # 不静默补，红线闸门保持有效。
             tail = last_sentence(ck)
-            if i < len(chunks) and tail and tail not in part:
+            if (i < len(chunks) and tail and not _tail_present(part, tail)):
                 part = (part.rstrip() + "\n" + tail).strip()
                 restored += 1
             parts.append(part)
@@ -444,7 +525,7 @@ def polish(text, log=print, progress=None):
         "audit": audit(text, out),
         "diff": diff_ops(text, out),
         "chunks": len(chunks),
-        "chunk_chars": CHUNK_CHARS,
+        "chunk_chars": limit,
         "tail_restored": restored,     # 【新增 v2.4】自动补回的块尾句数量
         "fallback_chunks": fallback,   # 【新增 v2.5】保留原文、未润色的块数
         "elapsed": round(time.time() - t0, 1),
@@ -460,24 +541,44 @@ def must_keep_terms(src):
     """从项目术语表里取「原文中真的出现了」的术语当检查项。
 
     不硬编码清单：硬编码只对一份稿子有效，术语表才是项目里真正的真相源。
-    hotwords.txt 是「词|权重」或纯词；aliases.txt 是「简称=>全称」，
-    两侧都算——原文写的是哪一侧，润色后就该还是哪一侧。
+
+    【修复 v2.7】返回「可接受形式组」而不是扁平词表：
+      · 热词 → ("药品经营质量管理规范",)，必须原样出现；
+      · 简称 → ("医疗器械GMP", "医疗器械生产质量管理规范")，
+        保留简称或展开成全称都算通过。
+    原来两侧都当独立硬项，`医疗器械GMP=>…` 会把简称本身判成「丢失」，
+    可模型按规则保留简称、根本不展开，硬红线永远不过、「采用」永远是灰的。
     """
-    out = set()
-    for name in ("hotwords.txt", "aliases.txt"):
-        p = TERMS / name
-        if not p.exists():
-            continue
-        for ln in p.read_text(encoding="utf-8").splitlines():
+    groups = []
+    p = TERMS / "hotwords.txt"
+    if p.exists():
+        for ln in p.read_text(encoding="utf-8-sig").splitlines():
             ln = ln.strip()
             if not ln or ln.startswith("#"):
                 continue
-            for part in re.split(r"[|=>]", ln):
-                t = part.strip()
-                # 4 字以上才检查：「药品」「企业」这类太泛，留着是常识，不用盯
-                if len(t) >= 4 and t in src:
-                    out.add(t)
-    return sorted(out)
+            t = ln.split("|", 1)[0].strip()
+            # 4 字以上才检查：「药品」「企业」这类太泛，留着是常识，不用盯
+            if len(t) >= 4 and t in src:
+                groups.append((t,))
+
+    p = TERMS / "aliases.txt"
+    if p.exists():
+        for ln in p.read_text(encoding="utf-8-sig").splitlines():
+            ln = ln.strip()
+            if not ln or ln.startswith("#") or "=>" not in ln:
+                continue
+            short, _, full = ln.partition("=>")
+            short, full = short.strip(), full.strip()
+            forms = tuple(x for x in (short, full) if len(x) >= 4)
+            if forms and any(x in src for x in forms):
+                groups.append(forms)
+    # 去重但保持稳定顺序
+    seen, out = set(), []
+    for g in groups:
+        if g not in seen:
+            seen.add(g)
+            out.append(g)
+    return out
 
 
 def coverage(src, out):
@@ -486,11 +587,10 @@ def coverage(src, out):
     LLM 顺滑最危险的失败不是改错字，而是**整句漏掉**——PoC 里就丢了结尾，
     而术语/数字/长度四项全过，完全查不出来。这条是专门为它加的。
     """
-    from rapidfuzz import fuzz
     sents = [s.strip() for s in re.split(r"[。！？\n]", src) if len(s.strip()) >= 6]
     if not sents:
         return 1.0, []
-    miss = [s for s in sents if fuzz.partial_ratio(s, out) < 70]
+    miss = [s for s in sents if _partial_ratio(s, out) < 70]
     return round(1 - len(miss) / len(sents), 2), miss
 
 
@@ -503,7 +603,8 @@ def audit(src, out):
     res = {}
 
     terms = must_keep_terms(src)
-    lost = [t for t in terms if t not in out]
+    # 【修改 v2.7】每组允许多种可接受写法（简称 / 全称），命中任一即算保留
+    lost = ["／".join(g) for g in terms if not any(x in out for x in g)]
     res["术语保留"] = {
         "pass": not lost, "hard": True,
         "note": f"{len(terms)} 条全部保留" if not lost
@@ -529,9 +630,8 @@ def audit(src, out):
     cov, miss = coverage(src, out)
     sents = [s.strip() for s in re.split(r"[。！？\n]", src) if len(s.strip()) >= 6]
     if sents:
-        from rapidfuzz import fuzz
         last = sents[-1]
-        keep = fuzz.partial_ratio(last, out) >= 60
+        keep = _partial_ratio(last, out) >= 60
         res["末句保留"] = {
             "pass": keep, "hard": True,
             "note": "保留" if keep else f"疑似被删：{last[:18]}",

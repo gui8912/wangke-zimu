@@ -83,7 +83,10 @@ def _is_16k_mono(path: Path) -> bool:
     try:
         import wave
         with wave.open(str(path), "rb") as w:
-            return w.getframerate() == 16000 and w.getnchannels() == 1
+            # 【修改 v2.7】补上 16bit 判定：24bit / 32bit wav 也满足「16k 单声道」，
+            # 旧判断会直接放行，后面按 <i2 读取就整段变成噪声。
+            return (w.getframerate() == 16000 and w.getnchannels() == 1
+                    and w.getsampwidth() == 2)
     except Exception:
         return False
 
@@ -148,20 +151,28 @@ def unique_stem(src: Path, outdir: Path) -> str:
 # ────────────────────────── 热词 ──────────────────────────
 
 def load_hotwords(path: Path, default_weight: int = 20) -> str:
-    """读取热词表，返回 FunASR 要求的 '词 权重 词 权重' 格式"""
+    """读取热词表，返回 FunASR 要求的 '词 权重 词 权重' 格式。
+
+    【修改 v2.7】权重只接受 1–100 的整数；`词|abc` 这种写错的条目按
+    「整行是一个词」处理，与术语表界面的解析口径保持一致。
+    旧实现会把 abc 原样拼进热词串，FunASR 解析失败后整张热词表静默失效。
+    """
     if not path.exists():
         return ""
     parts = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        word, weight = line, default_weight
         if "|" in line:
-            w, _, wt = line.partition("|")
-            w, wt = w.strip(), wt.strip()
-            parts.append(f"{w} {wt or default_weight}")
-        else:
-            parts.append(f"{line} {default_weight}")
+            head, tail = line.split("|", 1)
+            head, tail = head.strip(), tail.strip()
+            if head and tail.isdigit() and 1 <= int(tail) <= 100:
+                word, weight = head, int(tail)
+            # 后缀不是合法权重：整行当词，不乱解释（与 glossary.parse_items 一致）
+        if word:
+            parts.append(f"{word} {weight}")
     return " ".join(parts)
 
 
@@ -322,6 +333,7 @@ def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str,
     # ASR_FUNASR_WORKERS=1：整段推理，零回归路径。
     # 【新增 v2.4】generate() 是阻塞调用，长课期间进度条会一直停在 12%，
     # 用守护心跳把「已用时长」写进阶段文案；pct 不动，前端不算假 ETA。
+    _set_torch_threads(max(4, min(8, os.cpu_count() or 8)))
     gen["input"] = str(wav)
     stop = threading.Event()
     t0 = time.time()
@@ -354,18 +366,17 @@ def _run_funasr_parallel(wav: Path, model, gen: dict, log, progress) -> dict:
     import tempfile
     import wave as _wave
     import numpy as np
-    import torch
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
 
-    pcm = normalize_audio_input(str(wav))
-    parts = split_audio_into_chunks(
-        wav=pcm, sr=16000, max_chunk_sec=FUNASR_CHUNK_SEC,
-        search_expand_sec=min(30.0, FUNASR_CHUNK_SEC / 6))
+    pcm = _read_pcm16k(wav)
+    parts = _split_pcm(pcm, 16000, FUNASR_CHUNK_SEC,
+                       min(30.0, FUNASR_CHUNK_SEC / 6))
     total = len(parts)
     workers = min(FUNASR_WORKERS, total)
-    # 2 路各 8 线程 / 4 路各 4 线程，与基准一致；核多了只会互相抢。
-    torch.set_num_threads(max(2, min(8, 16 // workers)))
+    # 2 路各 8 线程 / 4 路各 4–5 线程，与基准一致；核多了只会互相抢。
+    # 【修改 v2.7】按实际核数分配，不再写死 16：4 核机器 2 路各 8 线程
+    # 会把 4 个核塞进 16 个线程，上下文切换反而更慢。
+    _set_torch_threads(max(2, min(8, (os.cpu_count() or 8) // workers)))
     log(f"Paraformer：{len(pcm) / 16000 / 60:.1f} 分钟切 {total} 片，{workers} 路并行")
 
     def write_part(chunk, path):
@@ -448,10 +459,47 @@ QWEN3_WORKERS = min(4, max(1, int(os.environ.get("ASR_QWEN3_WORKERS") or 2)))
 # + 多线程并发调用 generate()；片在低能量处切，时间戳按片偏移拼回。
 # 代价：切点附近有约 1%~3% 的字差异；追求逐字精确设 ASR_FUNASR_WORKERS=1
 # 即可回到「整段推理」的零回归路径。
-FUNASR_WORKERS = min(4, max(1, int(os.environ.get("ASR_FUNASR_WORKERS") or 2)))
+#
+# 【修改 v2.7】默认并行度由固定 2 改为按本机核数/内存自适应，上限 4。
+# 2026-11-09 复测（600 秒真实课程切 4 片，20 核 Ultra 7 265K / 63GB）：
+#   2 路各 8 线程 26.4s / CPU 75%
+#   3 路各 5 线程 22.9s / CPU 74%（1.15×）
+#   4 路各 4 线程 16.9s / CPU 92%（1.56×，文本逐字一致）
+# 固定 2 路会空着 4 个核，79 分钟课白等一倍时间，故按机器能力取 4。
+# 内存按每路约 4GB 估算，内存小或想完全复刻旧行为时设 ASR_FUNASR_WORKERS=2。
+def _default_funasr_workers() -> int:
+    try:
+        cores = os.cpu_count() or 4
+        try:
+            import psutil
+            ram_gb = psutil.virtual_memory().total / 1073741824
+        except Exception:
+            ram_gb = 16.0
+        return max(1, min(4, cores // 4, int(ram_gb // 4)))
+    except Exception:
+        return 2
+
+
+FUNASR_WORKERS = min(4, max(1, int(os.environ.get("ASR_FUNASR_WORKERS")
+                                   or _default_funasr_workers())))
 FUNASR_CHUNK_SEC = min(1800.0, max(120.0,
                                   float(os.environ.get("ASR_FUNASR_CHUNK") or 600)))
 QWEN3_THREADS = max(4, min(8, (os.cpu_count() or 8) // 2))
+
+
+def _set_torch_threads(n: int) -> None:
+    """【新增 v2.7】统一设置 torch 线程数。
+
+    原来是「谁先跑谁设置、跑完不还原」：Paraformer 4 路把线程压到 4 之后，
+    再跑单路 Qwen3 就只有 4 个线程（实测单路 20 线程 125s / 10 线程 134s，
+    压到 4 线程更慢），表现为「换了个模型突然变慢」。
+    每个识别入口现在都显式设一次，互不污染。
+    """
+    try:
+        import torch
+        torch.set_num_threads(max(1, int(n)))
+    except Exception:
+        pass
 
 
 def _resolve_ms_dir(model_id: str) -> str:
@@ -463,10 +511,70 @@ def _resolve_ms_dir(model_id: str) -> str:
         return model_id
 
 
+def _read_pcm16k(wav: Path):
+    """【新增 v2.7】读 16kHz / 单声道 / 16bit wav 为 float32 PCM。
+
+    调用前 run_pipeline 已经过 ensure_wav，格式是保证的；这里再校验一次，
+    宁可明确报错，也不要把 24bit 当 16bit 读成噪声。
+    """
+    import wave as _wave
+    import numpy as np
+    with _wave.open(str(wav), "rb") as f:
+        if (f.getframerate() != 16000 or f.getnchannels() != 1
+                or f.getsampwidth() != 2):
+            raise RuntimeError(
+                f"音频格式不支持：{wav.name}（需 16kHz 单声道 16bit）")
+        raw = f.readframes(f.getnframes())
+    return np.frombuffer(raw, dtype="<i2").astype("float32") / 32768.0
+
+
+def _split_pcm(pcm, sr: int = 16000, max_chunk_sec: float = 170.0,
+               search_expand_sec: float = 5.0) -> list:
+    """【新增 v2.7】在低能量处把 PCM 切片，返回 [(片段, 起始秒), ...]。
+
+    替代 `qwen_asr.inference.utils.split_audio_into_chunks`：
+      ① Paraformer 分片并行不再隐式依赖通义 qwen_asr 包——只装 funasr
+         的机器以前一开默认并行就 ImportError，属于隐藏依赖；
+      ② 能量包络改成按 20ms 分帧取均值，79 分钟音频 0.1 秒级算完；
+         旧实现整段 convolve（窗长 320）要几十秒。
+    切点仍取目标位置 ±search_expand 范围内的最低能量帧，避免把一句话劈开。
+    """
+    import numpy as np
+
+    total = len(pcm)
+    max_len = max(1, int(max_chunk_sec * sr))
+    if total <= max_len:
+        return [(pcm, 0.0)]
+
+    frame = max(1, int(sr * 0.02))            # 20ms 一帧
+    n = total // frame
+    env = (np.abs(pcm[:n * frame]).reshape(n, frame).mean(axis=1)
+           if n else np.zeros(1, dtype="float32"))
+    guard = max(1, int(1.0 * sr))             # 每片至少 1 秒，防切点不前进
+
+    parts, start = [], 0
+    while total - start > max_len:
+        target = start + max_len
+        lo = max(start + guard, target - int(search_expand_sec * sr))
+        hi = min(total - guard, target + int(search_expand_sec * sr))
+        if hi <= lo:
+            cut = target
+        else:
+            a, b = lo // frame, max(lo // frame + 1, hi // frame)
+            cut = int((a + int(np.argmin(env[a:b]))) * frame)
+        cut = max(cut, start + guard)
+        parts.append((pcm[start:cut], start / sr))
+        start = cut
+    parts.append((pcm[start:], start / sr))
+    return parts
+
+
 def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=None) -> dict:
     """Qwen3-ASR：LLM 架构精度高，字级时间戳由强制对齐模型给出"""
     import torch
     from qwen_asr import Qwen3ASRModel
+
+    _quiet_third_party()
 
     model = _QWEN3_CACHE.get(cfg["model"])
     if model is None:
@@ -493,18 +601,14 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=N
 
     # 【修改 v1.9】原来把整段音频一次性交给库：model.transcribe(audio=str(wav))。
     # 现在按低能量边界切成 QWEN3_WINDOW_SEC 的片，逐片识别后拼回，内存恒定在单片水平。
-    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
-
-    pcm = normalize_audio_input(str(wav))
-    parts = split_audio_into_chunks(wav=pcm, sr=16000, max_chunk_sec=QWEN3_WINDOW_SEC,
-                                    search_expand_sec=QWEN3_EXPAND_SEC)
+    # 【修改 v2.7】切片与读盘改用本模块实现，见 _read_pcm16k / _split_pcm。
+    pcm = _read_pcm16k(wav)
+    parts = _split_pcm(pcm, 16000, QWEN3_WINDOW_SEC, QWEN3_EXPAND_SEC)
     total = len(parts)
     workers = QWEN3_WORKERS if total > 1 else 1
-    if workers > 1:
-        # 并行时把每个算子的线程数压到 8：实测 2 路×8 线程比 2 路×20 线程快，
-        # 否则 40 个线程抢 20 个核，光上下文切换就把收益吃回去。
-        import torch
-        torch.set_num_threads(QWEN3_THREADS)
+    # 【修复 v2.7】单路也要显式设线程：否则会被上一次 Paraformer 并行
+    # 压到 4 线程，单路 Qwen3 白白慢一截。
+    _set_torch_threads(QWEN3_THREADS if workers > 1 else (os.cpu_count() or 8))
     log(f"音频 {len(pcm) / 16000 / 60:.1f} 分钟，切 {total} 片"
         + (f"，{workers} 路并行识别" if workers > 1 else "逐片识别"))
 
@@ -576,10 +680,30 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=N
 _MODEL_CACHE = {}
 
 
+def _quiet_third_party() -> None:
+    """【新增 v2.7】压掉 FunASR / ModelScope 的 INFO 噪声。
+
+    实测每切一片就把整张热词表（300 多条）以 INFO 打到 stdout 一次，
+    79 分钟课要刷几十屏；这些日志不进任务日志，只污染控制台，
+    还会让「看起来卡住了」更难判断。WARNING 级别保留真正的告警。
+    """
+    try:
+        import logging
+        # FunASR / ModelScope 用 root logger 打 INFO；只设具名 logger 压不住，
+        # 实测每片仍会把 300 多条热词整表刷到 stderr（79 分钟课 5MB 日志）。
+        # 本项目的运行日志一律走 print / 任务日志，压 root 到 WARNING 不影响排障。
+        logging.getLogger().setLevel(logging.WARNING)
+        for name in ("funasr", "modelscope", "qwen_asr"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+    except Exception:
+        pass
+
+
 def get_model(cfg: dict, device: str):
     """模型只加载一次，批处理时省下每个文件 30 秒的加载时间"""
     from funasr import AutoModel
 
+    _quiet_third_party()
     key = (cfg["model"], device)
     if key in _MODEL_CACHE:
         return _MODEL_CACHE[key]

@@ -47,6 +47,7 @@ QUEUE_KEYS = ("auto_retry", "watch", "skip_done", "watch_interval")
 
 MAX_ZIP = 12 * 1024 * 1024
 MAX_ONE = 4 * 1024 * 1024
+MAX_TOTAL = 24 * 1024 * 1024      # 【新增 v2.7】解压总量上限，防 zip 炸弹
 
 
 def _digest(data: bytes) -> str:
@@ -128,10 +129,16 @@ def import_zip(data: bytes) -> dict:
         raise ValueError("备份包里没有可导入的配置或词表")
 
     payload = {}
+    declared = {it.get("path"): it.get("sha256")
+                for it in (manifest.get("items") or []) if isinstance(it, dict)}
+    total_size = 0
     for rel in todo:
         info = z.getinfo(rel)
         if info.file_size > MAX_ONE:
             raise ValueError(f"{rel} 太大（{info.file_size / 1048576:.1f} MB）")
+        total_size += info.file_size
+        if total_size > MAX_TOTAL:
+            raise ValueError("备份包解压后总量过大，已拒绝")
         raw = z.read(rel)
         if rel.endswith(".json"):
             try:
@@ -143,10 +150,19 @@ def import_zip(data: bytes) -> dict:
                 raw.decode("utf-8")
             except UnicodeDecodeError:
                 raise ValueError(f"{rel} 不是 UTF-8 文本，可能是别的工具的文件")
+        # 【新增 v2.7】校验 manifest 里的 sha256：下载不完整 / 被改过的包
+        # 在写入前就拒绝，避免把半份词表导进去覆盖掉现有配置。
+        want = declared.get(rel)
+        if want and _digest(raw) != want:
+            raise ValueError(f"{rel} 校验失败（sha256 不一致），备份包可能已损坏")
         payload[rel] = raw
 
-    # 写前快照：导错了还能原样退回
-    snap = BACKUP_DIR / f"import_{time.strftime('%Y%m%d_%H%M%S')}"
+    # 写前快照：导错了还能原样退回。同一秒内连续导入时目录加序号，避免互相覆盖。
+    base = BACKUP_DIR / f"import_{time.strftime('%Y%m%d_%H%M%S')}"
+    snap, i = base, 1
+    while snap.exists():
+        i += 1
+        snap = base.with_name(f"{base.name}_{i}")
     snap.mkdir(parents=True, exist_ok=True)
     for rel in todo:
         p = BASE / rel

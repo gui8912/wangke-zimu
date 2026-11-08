@@ -144,7 +144,13 @@ class FakeLLM:
 
     def create_chat_completion(self, messages, **kw):
         body = messages[-1]["content"]
-        text = body.split("原文：")[-1].split("\n/no_think")[0].strip("\n")
+        # 【修改 v2.7】兼容 v2.5 起的 <transcript> 包裹；旧格式仍保留
+        import re as _re
+        hit = _re.search(r"<transcript>\s*(.*?)\s*</transcript>", body, _re.S)
+        if hit:
+            text = hit.group(1)
+        else:
+            text = body.split("原文：")[-1].split("\n/no_think")[0].strip("\n")
         self.calls.append(len(text))
         if len(text) > self.cap:
             return {"choices": [{"finish_reason": "length",
