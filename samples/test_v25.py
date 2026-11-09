@@ -112,11 +112,11 @@ def crlf_flow(tmp: Path):
     print("[换行] CRLF 文件保存后仍是 CRLF")
     d = setup(tmp / "crlf", nl=b"\r\n")
     p = d / "aliases.txt"
-    G.apply_changes({"kind": "aliases", "adds": [{"from": "SOP", "to": "标准操作规程"}]})
+    G.apply_changes({"kind": "aliases", "adds": [{"from": "BPR", "to": "批生产记录"}]})
     raw = p.read_bytes()
     ok("仍为 CRLF", b"\r\n" in raw and raw.count(b"\r\n") >= raw.count(b"\n") - 2)
     ok("未混入裸 LF", raw.replace(b"\r\n", b"").count(b"\n") == 0)
-    ok("内容写入", "SOP=>标准操作规程".encode() in raw)
+    ok("内容写入", "BPR=>批生产记录".encode() in raw)
 
 
 def guards(tmp: Path):

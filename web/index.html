@@ -219,6 +219,11 @@
   .llm-block b{display:block;margin-bottom:4px;font-size:var(--fs-13)}
   .llm-block .row{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap}
   .llm-block .row button{background:var(--soft2);border:1px solid var(--line);color:var(--text)}
+  /* 【新增 v2.8】「待复核」不是否决：琥珀色提示，可确认后采用 */
+  .llm-block.warn{border-color:var(--note-line);background:var(--note-bg);color:var(--warn-fg)}
+  .llm-block .li{margin:2px 0 0 2px}
+  .llm-row.warn{border-left-color:var(--warn);background:var(--note-bg)}
+  .llm-row.warn .t{background:var(--b-mid);color:var(--warn-fg)}
   /* 【新增 v2.5】备份与迁移 */
   .bksum{display:grid;grid-template-columns:1fr auto;gap:5px 14px;font-size:var(--fs-12);
          padding:10px 12px;margin-top:10px;border:1px solid var(--line);
@@ -1049,8 +1054,9 @@
     <div class="body">
       <div class="note" style="margin-bottom:12px">
         用本地模型把口语转成书面讲稿，<b>只改讲稿，字幕与时间轴一个字都不动</b>。
-        下面是五项硬红线：任何一项不过都不允许采用——漏句、改条款号这类问题，
-        在几千字的稿子里肉眼是发现不了的。
+        检查分三级：<b>阻断</b>只在「严重截断 / 整篇复述」时出现；
+        <b>待复核</b>（术语、数字、条款号、末句、长度）可二次确认后照样采用；
+        其余为参考项。稿子长、跑得久，<b>结果一律自动存盘</b>，不采用也不会丢。
       </div>
       <!-- 【新增 v2.5】未通过时给醒目横幅 + 下一步动作，别只留一个灰按钮 -->
       <div id="llmBlockTip" class="llm-block" hidden></div>
@@ -1952,12 +1958,13 @@ $('#cleanDiffMask').onclick = e=>{
 
 /* ---------- LLM 润色（v1.7，讲稿层的「第 0 遍」底稿）----------
    三条闸门：
-     1. 五项硬红线任一不过 → 「采用」禁用（漏句/改数字在长稿里肉眼查不出来）
+     1. 红线分级（v2.8）：只有「严重截断/整篇复述」禁用采用；
+        术语、数字、条款号、末句、长度属「待复核」，可二次确认后采用
      2. 必须看过 diff 预览才能采用（采用只在弹窗里，没有直接写入的入口）
      3. 采用后另起 stem（_润色），原稿 v0 不动，随时可回溯
    字幕层完全不受影响：这里只读写讲稿（rv.versions），从不碰 state.cues。 */
 const llmState = {src:'', out:'', tail:'', audit:{}, diff:[], model:'', elapsed:0,
-                  busy:false, blocked:[]};
+                  busy:false, blocked:[], blocking:[], warnItems:[], armed:false};
 let llmStatus = null;
 
 async function llmEnsureStatus(){
@@ -2152,12 +2159,21 @@ $('#btnRevLlm').onclick = async ()=>{
   }
 };
 
+function llmLevel(v){
+  // 兼容 v2.7 及更早落盘的旧结果（没有 level 字段）：hard 未过一律按「待复核」，
+  // 不再当否决项——旧判定太严，不该让人对着一份能用的稿子干瞪眼。
+  return v.level || (v.hard ? (v.pass ? 'info' : 'warn') : 'info');
+}
+
 function renderLlmPreview(){
-  // 红线：硬项不过标红；参考项一律灰（LLM 必然删口语，那不是失败）
+  // 三级：block 红（阻断）、warn 琥珀（待复核）、info 灰（参考）
   const box = $('#llmAudit'); box.innerHTML = '';
   for(const [k, v] of Object.entries(llmState.audit || {})){
-    const cls = v.hard ? (v.pass ? 'ok' : 'bad') : 'soft';
-    const tag = v.hard ? (v.pass ? '通过' : '不通过') : '参考';
+    const lvl = llmLevel(v);
+    const cls = v.pass ? (lvl === 'info' ? 'soft' : 'ok')
+                       : (lvl === 'block' ? 'bad' : (lvl === 'warn' ? 'warn' : 'soft'));
+    const tag = v.pass ? (lvl === 'info' ? '参考' : '通过')
+                       : (lvl === 'block' ? '阻断' : (lvl === 'warn' ? '待复核' : '参考'));
     const row = document.createElement('div');
     row.className = 'llm-row ' + cls;
     row.innerHTML = `<span class="k">${esc(k)}</span>`
@@ -2199,50 +2215,90 @@ function renderLlmPreview(){
 
   // 从 audit 实时重算，而不是用后端给的 blocked：
   // 「补回末句」会在前端改 audit，后端那份就过期了
+  llmState.armed = false;      // 每次重绘都要重新确认，避免旧确认状态被带过去
   llmRecomputeBlocked();
-  const bad = llmState.blocked;
-  $('#llmAdopt').disabled = bad.length > 0;
-  $('#llmAdopt').title = bad.length
-    ? `不能采用：${bad.join('；')}`
-    : '把润色稿设为第 0 遍底稿（原稿仍保留，可回溯）';
-  // 【新增 v2.5】灰按钮必须自己解释原因，并给出下一步，而不是让人反复点
-  const tip = $('#llmBlockTip');
-  if(tip){
-    if(!bad.length){
-      tip.hidden = true;
-    }else{
-      tip.hidden = false;
-      tip.innerHTML = '';
-      const h = document.createElement('b');
-      h.textContent = `本稿有 ${bad.length} 项硬红线未通过，不能采用`;
-      const p = document.createElement('div');
-      p.textContent = `${bad.join('；')}。常见原因：模型把提示词规则当正文复述，`
-        + '或改写了数字 / 条款号 / 末句。建议重跑一次；急着用可先复制文本人工核对。';
-      const row = document.createElement('div');
-      row.className = 'row';
-      const again = document.createElement('button');
-      again.textContent = '关掉并重新润色';
-      again.onclick = ()=>{ $('#llmMask').classList.remove('show'); $('#btnRevLlm').click(); };
-      const copy = document.createElement('button');
-      copy.textContent = '先复制文本自行核对';
-      copy.onclick = ()=>$('#llmCopy').click();
-      row.append(again, copy);
-      tip.append(h, p, row);
-    }
-  }
-  $('#llmFoot').textContent = bad.length
-    ? `硬红线未通过，不能采用：${bad.join('；')}`
-    : '硬红线全部通过，可以采用为第 0 遍底稿';
-  $('#llmFoot').style.color = bad.length ? 'var(--danger)' : 'var(--muted)';
-  // 只是末句丢了的话，给一个明确的一键修复入口，不用整段重跑
-  const tailLost = bad.some(x=>x.startsWith('末句保留'));
-  $('#llmRetail').hidden = !(tailLost && llmState.tail);
+  llmAdoptUI();
 }
 
 function llmRecomputeBlocked(){
-  llmState.blocked = Object.entries(llmState.audit || {})
-    .filter(([, v]) => v.hard && !v.pass)
-    .map(([k, v]) => `${k}：${v.note}`);
+  const items = Object.entries(llmState.audit || {});
+  const fmt = ([k, v]) => `${k}：${v.note}`;
+  llmState.blocking = items.filter(([, v]) => !v.pass && llmLevel(v) === 'block').map(fmt);
+  llmState.warnItems = items.filter(([, v]) => !v.pass && llmLevel(v) === 'warn').map(fmt);
+  // blocked 保留全部未过项，给「复制前自查」与旧逻辑用
+  llmState.blocked = llmState.blocking.concat(llmState.warnItems);
+}
+
+/* 【新增 v2.8】采用按钮与提示条。
+   关键变化：只有「阻断」才禁用按钮；「待复核」改为两次点击确认，
+   并把「结果已存盘、不采用也不会丢」写在明面上。 */
+function llmAdoptUI(){
+  const btn = $('#llmAdopt');
+  const blocking = llmState.blocking || [], warn = llmState.warnItems || [];
+  btn.disabled = blocking.length > 0;
+  btn.textContent = blocking.length ? '采用为新起点'
+    : (warn.length ? (llmState.armed ? '确认采用（风险自担）'
+                                     : `采用（${warn.length} 项待复核）`)
+                   : '采用为新起点');
+  btn.title = blocking.length ? `无法采用：${blocking.join('；')}`
+    : (warn.length ? `可以采用，但有 ${warn.length} 项待复核，需再点一次确认`
+                   : '把润色稿设为第 0 遍底稿（原稿仍保留，可回溯）');
+
+  const tip = $('#llmBlockTip');
+  if(!tip){ /* 老页面结构缺失时不影响主流程 */ }
+  else if(!blocking.length && !warn.length){
+    tip.hidden = true; tip.className = 'llm-block'; tip.innerHTML = '';
+  }else{
+    tip.hidden = false;
+    tip.className = 'llm-block' + (blocking.length ? '' : ' warn');
+    tip.innerHTML = '';
+    const h = document.createElement('b');
+    h.textContent = blocking.length
+      ? `本稿无法采用：${blocking.length} 项阻断`
+      : `有 ${warn.length} 项待复核，但仍可采用`;
+    const p = document.createElement('div');
+    p.textContent = blocking.length
+      ? `${blocking.join('；')}。这通常意味着输出被截断或模型复述了提示词，`
+        + '结果本身不可用，建议重跑一次。'
+      : `${warn.join('；')}。这些只是提示：可能是一处术语换了写法、一个数字表述不同，`
+        + '扫一眼下面的 diff 就能确认。';
+    const p2 = document.createElement('div');
+    p2.className = 'li';
+    p2.textContent = '润色结果已自动存盘：关掉窗口也能在改稿页「上次润色」找回，'
+      + '不采用、误点关闭都不会白跑。';
+    const row = document.createElement('div');
+    row.className = 'row';
+    const copy = document.createElement('button');
+    copy.textContent = '复制润色稿核对';
+    copy.onclick = ()=>$('#llmCopy').click();
+    row.append(copy);
+    if(blocking.length){
+      const again = document.createElement('button');
+      again.textContent = '关掉并重新润色';
+      again.onclick = ()=>{ $('#llmMask').classList.remove('show'); $('#btnRevLlm').click(); };
+      row.insertBefore(again, copy);
+    }else{
+      const ok = document.createElement('button');
+      ok.textContent = '确认采用，风险自担';
+      ok.onclick = ()=>{ llmState.armed = true; llmAdoptUI(); $('#llmAdopt').click(); };
+      row.insertBefore(ok, copy);
+    }
+    tip.append(h, p, p2, row);
+  }
+
+  const foot = $('#llmFoot');
+  // 原因写在上方横幅里，这里只留一句结论，避免长文案挤到按钮
+  foot.textContent = blocking.length
+    ? `有 ${blocking.length} 项阻断，无法采用（详见上方）`
+    : (warn.length
+        ? `有 ${warn.length} 项待复核：再点一次按钮即确认写入`
+        : '全部检查通过，可以采用为第 0 遍底稿');
+  foot.style.color = blocking.length ? 'var(--danger)'
+    : (warn.length ? 'var(--warn-fg)' : 'var(--muted)');
+
+  // 只是末句丢了的话，给一个明确的一键修复入口，不用整段重跑
+  const tailLost = (llmState.blocked || []).some(x=>x.startsWith('末句保留'));
+  $('#llmRetail').hidden = !(tailLost && llmState.tail);
 }
 
 $('#llmRetail').onclick = ()=>{
@@ -2389,7 +2445,16 @@ $('#llmCopy').onclick = async ()=>{
 };
 
 $('#llmAdopt').onclick = async ()=>{
-  if((llmState.blocked || []).length){ toast('硬红线未通过，不能采用'); return; }
+  const blocking = llmState.blocking || [];
+  const warn = llmState.warnItems || [];
+  if(blocking.length){ toast('有阻断项，无法采用；建议重跑一次'); return; }
+  // 【新增 v2.8】待复核不等于不能用：第一次点击只是「解锁」，第二次才真正写入。
+  if(warn.length && !llmState.armed){
+    llmState.armed = true;
+    llmAdoptUI();
+    toast(`再点一次「确认采用（风险自担）」即写入；${warn.length} 项待复核不影响已生成的内容`);
+    return;
+  }
   const base = (rv.stem || state.stem || '未命名').replace(/_润色\d*$/, '');
   const btn = $('#llmAdopt');
   btn.disabled = true; btn.textContent = '保存中…';
@@ -2417,11 +2482,14 @@ $('#llmAdopt').onclick = async ()=>{
     rv.issues = {}; rv.notes = {}; rv.keep = {}; rv.checked = {};
     rvRender(); rvStore();
     $('#llmMask').classList.remove('show');
-    toast(`已用润色稿起稿（${stem}），原稿仍在「${base}」里可追溯`);
+    toast(`已用润色稿起稿（${stem}），原稿仍在「${base}」里可追溯`
+          + (warn.length ? `；另有 ${warn.length} 项待复核，已记在预览里` : ''));
+    llmState.armed = false;
   }catch(e){
     toast('采用失败：' + e.message);
   }finally{
-    btn.disabled = false; btn.textContent = '采用为新起点';
+    btn.disabled = false;
+    llmAdoptUI();          // 按当前阻断/待复核状态恢复按钮文案
   }
 };
 
@@ -4559,7 +4627,8 @@ if(location.search.includes('export=1')){
 }
 if(location.search.includes('llm=demo')){
   setTimeout(async ()=>{
-    await switchWs('revise');
+    // 【修改 v2.8】没有任务时 switchWs 会抛错，演示不该因此整段不执行
+    try{ await switchWs('revise'); }catch(e){}
     llmState.src = '那么我们说，嗯，这个两品一械的监管，啊，主要依据是药品管理法第一百二十条。\n'
       + '就是说，二零二六年我们检查了三百五十家零售药店，合格率百分之九十八点五。\n'
       + '那今天就到这里，谢谢大家。';
@@ -4573,17 +4642,17 @@ if(location.search.includes('llm=demo')){
       {op:'replace', before: llmState.src.split('\n')[1], after: llmState.out.split('\n')[1]},
       {op:'equal', before: llmState.src.split('\n')[2], after: llmState.out.split('\n')[2]},
     ];
-    llmState.blocked = location.search.includes('bad=1')
-      ? ['末句保留：疑似被删：那今天就到这里，谢谢大家'] : [];
+    const bad = location.search.includes('bad=1');
+    llmState.blocked = bad ? ['末句保留：疑似被删：那今天就到这里，谢谢大家'] : [];
     llmState.audit = {
-      '术语保留':   {pass:true, hard:true,  note:'7 条全部保留'},
-      '条款号保留': {pass:true, hard:true,  note:'1 处一致'},
-      '数字保留':   {pass:true, hard:true,  note:'4 处一致'},
-      '末句保留':   {pass:!llmState.blocked.length, hard:true,
-                     note: llmState.blocked.length ? '疑似被删：那今天就到这里，谢谢大家' : '保留'},
-      '长度合理':   {pass:true, hard:true,  note:'78 → 63 字（0.81×）'},
-      '内容覆盖（参考）': {pass:true, hard:false, note:'100%'},
-      '残留口语（参考）': {pass:true, hard:false, note:'无'},
+      '术语保留':   {pass:true,  level:'warn', hard:true,  note:'7 条全部保留'},
+      '条款号保留': {pass:true,  level:'warn', hard:true,  note:'1 处一致'},
+      '数字保留':   {pass:true,  level:'warn', hard:true,  note:'4 处一致'},
+      '末句保留':   {pass:!bad,  level:'warn', hard:true,
+                     note: bad ? '疑似被删：那今天就到这里，谢谢大家' : '保留'},
+      '长度合理':   {pass:true,  level:'info', hard:true,  note:'78 → 63 字（0.81×）'},
+      '内容覆盖（参考）': {pass:true, level:'info', hard:false, note:'100%'},
+      '残留口语（参考）': {pass:true, level:'info', hard:false, note:'无'},
     };
     renderLlmPreview();
     $('#llmMask').classList.add('show');

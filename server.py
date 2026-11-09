@@ -1642,7 +1642,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.7",       # modified(v2.7): 术语表扩充 / 默认 4 路并行 / DeepSeek 不思考
+    return {"ok": True, "version": "2.8",       # modified(v2.8): 红线分级可确认采用 / 术语表二轮补遗 / 错词按域内概率恢复
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -1995,7 +1995,11 @@ def api_llm_polish(payload: dict):
             _LLM_PROGRESS.update(done=done, total=total, stage=stage)
 
         r = LP.polish(text, log=lambda m: logs.append(m), progress=on_progress)
-        r["blocked"] = LP.blocked(r["audit"])   # 硬红线未过的项，前端据此禁用「采用」
+        # 【修改 v2.8】blocked 仍保留全部未过项（兼容旧前端/旧测试），
+        # 新增 blocking = 真正禁用「采用」的项，warnings = 提示待复核但可确认采用。
+        r["blocked"] = LP.blocked(r["audit"])
+        r["blocking"] = LP.blocking(r["audit"])
+        r["warnings"] = LP.warnings(r["audit"])
         r["logs"] = logs
         r["total_elapsed"] = round(time.time() - t0, 1)
         # 【新增 v2.4-p2】先落盘再返回：哪怕响应在半路丢失，结果也找得回来。

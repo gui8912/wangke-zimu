@@ -170,7 +170,7 @@ def _sanity(src: str, out: str):
 
 # 句末标点，用于切分「句子单元」做分块
 _SENT_SPLIT = re.compile(r"(?<=[。！？；!?;])")
-CLAUSE_RE = re.compile(r"第[〇零一二三四五六七八九十百千两]+(?:条|款|项|章|节|编)")
+CLAUSE_RE = re.compile(r"第[〇零一二三四五六七八九十百千两\d]+(?:条|款|项|章|节|编)")
 NUM_RE = re.compile(
     r"\d+(?:\.\d+)?%?"
     r"|百分之[〇零一二三四五六七八九十百千两]+(?:点[〇零一二三四五六七八九十百千两]+)?"
@@ -586,88 +586,192 @@ def coverage(src, out):
 
     LLM 顺滑最危险的失败不是改错字，而是**整句漏掉**——PoC 里就丢了结尾，
     而术语/数字/长度四项全过，完全查不出来。这条是专门为它加的。
+
+    【修改 v2.8】比对前先做数字/条款号归一化：模型把「第一百二十条」
+    写成「第120条」时，逐字相似的句子会被判成 0% 覆盖，属于纯误报。
     """
-    sents = [s.strip() for s in re.split(r"[。！？\n]", src) if len(s.strip()) >= 6]
+    src_n, out_n = _norm_text(src), _norm_text(out)
+    sents = [s.strip() for s in re.split(r"[。！？\n]", src_n) if len(s.strip()) >= 6]
     if not sents:
         return 1.0, []
-    miss = [s for s in sents if _partial_ratio(s, out) < 70]
+    miss = [s for s in sents if _partial_ratio(s, out_n) < 70]
     return round(1 - len(miss) / len(sents), 2), miss
 
 
-def audit(src, out):
-    """红线检查。返回 {项: {pass, note, hard}}，保持插入顺序供前端直接渲染。
+# ---------------------------------------------------------------- 红线
+# 【新增 v2.8】数字 / 条款号的归一化比对。
+# 模型常把「第一百二十条」写成「第120条」、「百分之九十八点五」写成「98.5%」、
+# 「二零二六年」写成「2026年」——语义完全没变，旧实现按字符串比对必然判成
+# 「改动了数字」，于是好稿子被挡在采用门外。这里先归一化再比集合。
+_CN_DIGIT = {"〇": 0, "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000}
+YEAR_CN_RE = re.compile(r"[〇零一二三四五六七八九]{4}年")
 
-    hard=True 的项目任一不过，前端就禁用「采用」——这是硬闸门，
-    不是给个警告让人自己判断，因为漏句和改数字在几万字的稿子里肉眼发现不了。
+
+def _cn_int(s):
+    """中文数字转整数（支持 十/百/千）；无法解析返回 None。"""
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    total = num = 0
+    for ch in s:
+        if ch in _CN_DIGIT:
+            num = _CN_DIGIT[ch]
+        elif ch in _CN_UNIT:
+            total += (num or 1) * _CN_UNIT[ch]
+            num = 0
+        else:
+            return None
+    return total + num
+
+
+def _prep_numbers(text):
+    """把「二零二六年」这类中文年份先换成阿拉伯数字，便于统一比对。"""
+    def rep(m):
+        return "".join(str(_CN_DIGIT[c]) for c in m.group(0)[:4]) + "年"
+    return YEAR_CN_RE.sub(rep, text or "")
+
+
+def _norm_num(tok):
+    tok = (tok or "").strip().replace("％", "%")
+    if tok.startswith("百分之"):
+        body = tok[3:].rstrip("%")
+        if "点" in body:
+            a, _, b = body.partition("点")
+            iv, fv = _cn_int(a), _cn_int(b)
+            return f"{iv}.{fv}%" if iv is not None and fv is not None else tok
+        iv = _cn_int(body)
+        return f"{iv}%" if iv is not None else tok
+    if tok.endswith("%"):
+        try:
+            return f"{float(tok[:-1]):g}%"
+        except ValueError:
+            return tok
+    try:
+        return f"{float(tok):g}"
+    except ValueError:
+        return tok
+
+
+def _norm_clause(tok):
+    m = re.match(r"第(.+?)([条款项章节编])$", tok or "")
+    if not m:
+        return tok
+    n = _cn_int(m.group(1))
+    return f"第{n}{m.group(2)}" if n is not None else tok
+
+
+def _norm_text(text):
+    """整段文本的数字归一化，用于「是否漏句」这类相似度比对。
+
+    只做三种确定等价的替换：中文年份→阿拉伯、条款号→阿拉伯、百分比→小数。
+    不做通用中文数字转换（「三百五十家」这种没有可靠边界，宁可不转）。
+    """
+    t = _prep_numbers(text)
+    t = CLAUSE_RE.sub(lambda m: _norm_clause(m.group(0)), t)
+    t = NUM_RE.sub(lambda m: _norm_num(m.group(0)), t)
+    return t
+
+
+def _item(pass_, level, note, hard=None):
+    """一条检查结果。level：block=拦住不让采用 / warn=可确认后采用 / info=参考。"""
+    return {"pass": bool(pass_), "level": level,
+            "hard": bool(level != "info" if hard is None else hard),
+            "note": note}
+
+
+def audit(src, out):
+    """红线检查。返回 {项: {pass, level, hard, note}}，保持顺序供前端直接渲染。
+
+    【v2.8 放宽】原来五项全部 hard，任一不过就禁用「采用」——用户实测
+    「跑了二十分钟，最后不给采用」，等于白做。现在分三级：
+      block：只有「输出严重截断 / 整段复述」这类真的不能用的稿子才拦；
+      warn ：术语、条款号、数字、末句、长度——提示待复核，可二次确认后采用；
+      info ：覆盖率、残留口语，只作参考。
+    不放弃检查，只把「否决权」收窄到真·废稿，判断权还给使用者。
     """
     res = {}
 
     terms = must_keep_terms(src)
     # 【修改 v2.7】每组允许多种可接受写法（简称 / 全称），命中任一即算保留
     lost = ["／".join(g) for g in terms if not any(x in out for x in g)]
-    res["术语保留"] = {
-        "pass": not lost, "hard": True,
-        "note": f"{len(terms)} 条全部保留" if not lost
-                else "丢失/改写：" + "、".join(lost[:6]),
-    }
+    miss_ratio = len(lost) / max(1, len(terms))
+    res["术语保留"] = _item(
+        not lost, "block" if miss_ratio > 0.5 else "warn",
+        ("原文未命中术语表词条，跳过" if not terms else
+         f"{len(terms)} 条全部保留") if not lost
+        else f"{len(terms)} 条里丢了 {len(lost)} 条：" + "、".join(lost[:6]))
 
-    sc, oc = CLAUSE_RE.findall(src), CLAUSE_RE.findall(out)
-    res["条款号保留"] = {
-        "pass": sorted(sc) == sorted(oc), "hard": True,
-        "note": ("原文没有条款号，跳过" if not sc else f"{len(sc)} 处一致")
-                if sorted(sc) == sorted(oc)
-                else f"{len(sc)} → {len(oc)}：" + "、".join(sorted(set(sc) - set(oc))[:4]),
-    }
+    sc = [_norm_clause(t) for t in CLAUSE_RE.findall(_prep_numbers(src))]
+    oc = [_norm_clause(t) for t in CLAUSE_RE.findall(_prep_numbers(out))]
+    same = sorted(sc) == sorted(oc)
+    res["条款号保留"] = _item(
+        same, "warn",
+        ("原文没有条款号，跳过" if not sc else f"{len(sc)} 处一致") if same
+        else f"{len(sc)} → {len(oc)}：" + "、".join(sorted(set(sc) - set(oc))[:4]))
 
-    sn, on = NUM_RE.findall(src), NUM_RE.findall(out)
-    res["数字保留"] = {
-        "pass": sorted(sn) == sorted(on), "hard": True,
-        "note": ("原文没有数字，跳过" if not sn else f"{len(sn)} 处一致")
-                if sorted(sn) == sorted(on)
-                else f"原文 {sn[:5]} → 结果 {on[:5]}",
-    }
+    sn = [_norm_num(t) for t in NUM_RE.findall(_prep_numbers(src))]
+    on = set(_norm_num(t) for t in NUM_RE.findall(_prep_numbers(out)))
+    # 【v2.8】只查「原文的数字有没有被打丢/改掉」：模型把中文数字写成阿拉伯
+    # 数字会凭空多出 token（第一百二十条 → 第120条），多出来的不算错。
+    missing = [t for t in dict.fromkeys(sn) if t not in on]
+    res["数字保留"] = _item(
+        not missing, "warn",
+        ("原文没有数字，跳过" if not sn else f"{len(sn)} 处一致") if not missing
+        else f"原文 {len(sn)} 处，结果缺：" + "、".join(missing[:4]))
 
     cov, miss = coverage(src, out)
-    sents = [s.strip() for s in re.split(r"[。！？\n]", src) if len(s.strip()) >= 6]
+    sents = [s.strip() for s in re.split(r"[。！？\n]", _norm_text(src)) if len(s.strip()) >= 6]
     if sents:
         last = sents[-1]
-        keep = _partial_ratio(last, out) >= 60
-        res["末句保留"] = {
-            "pass": keep, "hard": True,
-            "note": "保留" if keep else f"疑似被删：{last[:18]}",
-        }
+        keep = _partial_ratio(last, _norm_text(out)) >= 60
+        res["末句保留"] = _item(keep, "warn",
+                               "保留" if keep else f"疑似被删：{last[:18]}")
     else:
         # modified(v1.8) 新增:原文过短（一句话不到 6 字）时也要给出这一项。
-        # 原来直接跳过，界面上说的「五项硬红线」只剩四项，看起来像漏检。
-        res["末句保留"] = {"pass": True, "hard": True,
-                           "note": "原文过短，跳过"}
+        res["末句保留"] = _item(True, "warn", "原文过短，跳过")
 
     ratio = len(out) / max(1, len(src))
-    res["长度合理"] = {
-        "pass": 0.6 <= ratio <= 1.25, "hard": True,
-        "note": f"{len(src)} → {len(out)} 字（{ratio:.2f}×）",
-    }
+    if ratio < 0.4 or ratio > 1.8:
+        res["长度合理"] = _item(False, "block",
+                               f"{len(src)} → {len(out)} 字（{ratio:.2f}×），"
+                               "疑似严重截断或复述提示词", hard=True)
+    else:
+        res["长度合理"] = _item(
+            0.6 <= ratio <= 1.25, "warn" if ratio < 0.6 or ratio > 1.25 else "info",
+            f"{len(src)} → {len(out)} 字（{ratio:.2f}×）", hard=True)
 
     # 以下两项只作参考：LLM 会重组句子，覆盖率低不必然等于丢内容；
     # 残留口语是规则层删不掉的（「这个/那个」后面跟名词，删了不通），
     # 正是 LLM 的增量所在，不该反过来当失败。
-    res["内容覆盖（参考）"] = {
-        "pass": cov >= 0.6, "hard": False,
-        "note": f"{cov * 100:.0f}%" + (
-            "；改写较大：" + "；".join(m[:12] for m in miss[:2]) if miss else ""),
-    }
+    res["内容覆盖（参考）"] = _item(
+        cov >= 0.6, "info",
+        f"{cov * 100:.0f}%" + (
+            "；改写较大：" + "；".join(m[:12] for m in miss[:2]) if miss else ""))
     left = [f for f in FILLERS if f in out]
-    res["残留口语（参考）"] = {
-        "pass": not left, "hard": False,
-        "note": "无" if not left else "仍有：" + "、".join(left),
-    }
+    res["残留口语（参考）"] = _item(
+        not left, "info", "无" if not left else "仍有：" + "、".join(left))
     return res
 
 
 def blocked(audit_result):
-    """任一硬红线不过就返回原因列表，供前端直接展示。"""
+    """所有「非参考项」里没过关的原因，供前端逐条展示。"""
     return [f"{k}：{v['note']}" for k, v in audit_result.items()
             if v.get("hard") and not v.get("pass")]
+
+
+def blocking(audit_result):
+    """真正的否决项（会禁用「采用」）。只有严重截断 / 整篇复述会进来。"""
+    return [f"{k}：{v['note']}" for k, v in audit_result.items()
+            if v.get("level") == "block" and not v.get("pass")]
+
+
+def warnings(audit_result):
+    """待复核项：允许采用，但需要用户再确认一次。"""
+    return [f"{k}：{v['note']}" for k, v in audit_result.items()
+            if v.get("level") == "warn" and not v.get("pass")]
 
 
 # ---------------------------------------------------------------- diff

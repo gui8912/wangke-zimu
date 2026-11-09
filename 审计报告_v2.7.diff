@@ -1,0 +1,3931 @@
+diff --git a/README.md b/README.md
+index 4fde2cc..2f5a133 100644
+--- a/README.md
++++ b/README.md
+@@ -3,6 +3,92 @@
+ **默认纯本地**（音视频不出本机）；自 1.3 起可选云端识别源，内容不涉密时可用。
+ 适配药品、医疗器械监督管理专业术语。自 1.7 起可选**本地 LLM 润色讲稿**（模型也在本机）。
+ 
++## 2.7 术语表扩充 · 4 路并行 · DeepSeek 不思考 · 源码审计（2026-11-09）
++
++### 术语表（331 条，字幕与讲稿共用）
++
++- **热词从 151 条扩到 331 条**：按 NMPA 现行法规目录补齐药品 / 医疗器械 / 化妆品
++  三条线，并单独收录 **2026-11-01 施行的新版《医疗器械生产质量管理规范》及 4 个
++  检查指导原则**（无菌 / 植入 / 体外诊断试剂 / 定制式义齿）、关键 / 主要 / 一般项目、
++  GSP 经营检查（首营企业、冷链、处方审核、远程审方）、化妆品新原料 / 儿童化妆品。
++  这张表同时是 termfix「漏字补全」的术语基准，所以写全称、缩写放简称表。
++- **术语表在字幕清理中确实生效**：`/api/reclean`（重新清理字幕）与识别后清理走
++  同一套 `Cleaner`；实测「依据药品经营质量规范，管代负责…」→「依据药品经营
++  质量管理规范，管理者代表负责…」，逐条 diff 可见。
++  新增 **「试改」输入框**（术语表弹窗内）+ `POST /api/glossary/preview`：
++  输入一句话，直接显示「错词校正 → 简称膨胀 → 术语补全」三步各改了什么。
++- **外部编辑不再需要重启**：`Cleaner` 构造时按文件 mtime 取词表（`load_glossary`），
++  用记事本改完 `terms/*.txt`，下一次「重新清理」立即生效。
++- **词表编码兼容**：UTF-8（含 BOM）与 GBK 都能读，保存时按原编码 / 原 BOM 写回；
++  UTF-8 BOM 不再把第一条词条顶歪（以前表现为「这条在表里却不生效」）。
++- **错词表做了一轮安全清理**：把 11 条会误伤正常表达的全局替换移入「待人工确认」，
++  并写明原因——`影片=>饮片`（教学影片）、`驻藏=>贮藏`（驻藏部队）、
++  `备安=>备案`（准备安全）、`处于药品=>储运药品`、`泡制=>炮制`、`双剂=>栓剂` 等。
++- **带语境的 GMP**：新增 `医疗器械GMP => 医疗器械生产质量管理规范`，
++  长词优先，避免被裸 `GMP` 展开成「医疗器械**药品**生产质量管理规范」。
++  同时补 `管代=>管理者代表`、`UDI`、`MAH`、`IVD`、`CAPA`、`QMS`。
++
++### 用满 CPU：Paraformer 默认 4 路
++
++2026-11-09 复测（600 秒真实课程切 4 片，20 核 Ultra 7 265K / 63GB）：
++
++| 并行 | 每路线程 | 墙钟 | 整机 CPU | 相对 2 路 |
++|---|---|---|---|---|
++| 2 路 | 8 | 26.4s | 75% | 1.00× |
++| 3 路 | 5 | 22.9s | 74% | 1.15× |
++| **4 路** | **4** | **16.9s** | **92%** | **1.56×** |
++
++- 默认并行度改为按 `核数//4` 与 `内存GB//4` 自适应，上限 4；20 核 / 63GB → 4 路。
++  内存小或要复刻旧行为：`ASR_FUNASR_WORKERS=2`；要逐字精确：设 `1`。
++- 79 分钟整课实测 **185.6s（含 31.6s 模型加载）**，基线 222.7s；扣加载约 154s，
++  折合约 **1.45×**，CPU 92%。
++- **每路线程按实际核数分配**（原来是写死 16//workers，4 核机器会过度订阅），
++  并在每个识别入口显式设置、互不污染（Paraformer 4 路后再跑单路 Qwen3 不再被
++  压到 4 线程）。
++- **去掉隐藏依赖**：Paraformer 分片不再 import `qwen_asr` 的切片工具，改用本地
++  `_read_pcm16k` / `_split_pcm`（20ms 能量包络，79 分钟切片 0.14s）。
++  只装 FunASR 的机器不会再因为默认并行而 ImportError。
++- **压掉第三方日志**：FunASR 每片都把 300 多条热词整表打到 stderr，79 分钟课
++  产生约 5MB 噪声；现在 root logger 压到 WARNING，实测 12 行。
++
++### DeepSeek：默认不推理
++
++- 官方文档（2026-11 核对）：V4 系列**默认开启思考**，`reasoning_effort` 默认 high；
++  关闭方式是请求体传 `thinking: {"type": "disabled"}`（OpenAI SDK 放 `extra_body`）。
++- 云端设置新增 **「关闭思考」勾选框**，DeepSeek 预设默认勾选；请求体只在
++  DeepSeek 端点发送该字段（GLM / Ollama 不认识，发了可能 400）。
++- 实测：连接测试 1.1s；210 字短稿润色 0.8s，`completion_tokens=29`——
++  确认未产生思维链，费用 ¥0.0007。
++- **模型名迁移**：`deepseek-v4-flash` / `deepseek-chat` 自动升级为 `deepseek-flash`
++  （旧名仍可用，官方已路由到 V4.1-Flash）；旧价格 0.14/0.28 与旧额度 2400
++  只在「仍是程序默认值」时迁移到 0.15/0.60 与 8192，用户自定义值不动。
++- **云端长稿改 3000 字一块**（本地仍 700 字）：3 万字从 43 次请求降到约 10 次，
++  提示词重复开销减少约 3/4；关闭思考后 8192 输出额度足够，真截断仍有对半自愈。
++
++### 本轮审计修复（挑影响使用的）
++
++- **重启落盘失效**：`_load_jobs` 先把 running 改成 interrupted 再 `_persist`，
++  但此时任务还没登记进 `TASKS`，`_persist` 直接 return——磁盘上的假 running
++  永远清不掉。改为先登记再落盘。
++- **删任务留下队列幽灵**：已取消任务仍在 deque 里，删记录后队列显示「名字是 id、
++  状态空白」的条目。`_remove_task` 现在同步 `JOB_Q.remove`。
++- **结果载荷无界**：300 个任务的 cues 全留在内存（长课几百 MB）。现在只保留
++  最近 20 份，更早的置空，打开时由磁盘产物重建。
++- **硬红线误杀简称**：`must_keep_terms` 把「医疗器械GMP」当独立硬项，润色保留
++  简称就永远不过。改成「简称 / 全称命中任一即可」的分组判断。
++- **回显误判**：`技术约定` 这种正文可能出现的词单独命中就判「复述提示词」，
++  正常稿会被反复重试。改为强指纹任一命中、弱指纹需≥2 条。
++- **`我们` 被无条件删**：`语气词` 组里有无条件删除的「我们/咱们」，抢在
++  `guards.自称` 之前执行，导致「我们要注意」被删成「要注意」、单位自称也无法
++  保留。现已从语气词组移除，交给自称判别（单位自称只建议改「我局」）。
++- 其余：上传超长文件名丢扩展名、`/api/queue` 非数字参数 500、备份包不校验
++  sha256、learn 临时文件固定名并发覆盖、热词权重写错导致整表静默失效、
++  rapidfuzz 缺失时润色结果整份丢失、无标点长稿整块超上下文等。
++
++回归：新增 `samples/test_v27.py` **55/55**；其余 22 个测试脚本退出码全为 0
++（`test_qwen3` 需加载大模型，未纳入本轮批量）。`test_api` 改为按最近完成任务
++取 ID、上传用带时间戳文件名，避免被「跳过已转录」误挡。
++
+ ## 2.6 备份迁移 · 术语表界面 · 固定提示词（2026-11-09 凌晨）
+ 
+ - **备份与迁移**：顶栏「备份」→ 导出一个 zip（三张术语表 + 口语词规则 +
+diff --git a/backup.py b/backup.py
+index 3efbfa5..0b2bca8 100644
+--- a/backup.py
++++ b/backup.py
+@@ -47,6 +47,7 @@ QUEUE_KEYS = ("auto_retry", "watch", "skip_done", "watch_interval")
+ 
+ MAX_ZIP = 12 * 1024 * 1024
+ MAX_ONE = 4 * 1024 * 1024
++MAX_TOTAL = 24 * 1024 * 1024      # 【新增 v2.7】解压总量上限，防 zip 炸弹
+ 
+ 
+ def _digest(data: bytes) -> str:
+@@ -128,10 +129,16 @@ def import_zip(data: bytes) -> dict:
+         raise ValueError("备份包里没有可导入的配置或词表")
+ 
+     payload = {}
++    declared = {it.get("path"): it.get("sha256")
++                for it in (manifest.get("items") or []) if isinstance(it, dict)}
++    total_size = 0
+     for rel in todo:
+         info = z.getinfo(rel)
+         if info.file_size > MAX_ONE:
+             raise ValueError(f"{rel} 太大（{info.file_size / 1048576:.1f} MB）")
++        total_size += info.file_size
++        if total_size > MAX_TOTAL:
++            raise ValueError("备份包解压后总量过大，已拒绝")
+         raw = z.read(rel)
+         if rel.endswith(".json"):
+             try:
+@@ -143,10 +150,19 @@ def import_zip(data: bytes) -> dict:
+                 raw.decode("utf-8")
+             except UnicodeDecodeError:
+                 raise ValueError(f"{rel} 不是 UTF-8 文本，可能是别的工具的文件")
++        # 【新增 v2.7】校验 manifest 里的 sha256：下载不完整 / 被改过的包
++        # 在写入前就拒绝，避免把半份词表导进去覆盖掉现有配置。
++        want = declared.get(rel)
++        if want and _digest(raw) != want:
++            raise ValueError(f"{rel} 校验失败（sha256 不一致），备份包可能已损坏")
+         payload[rel] = raw
+ 
+-    # 写前快照：导错了还能原样退回
+-    snap = BACKUP_DIR / f"import_{time.strftime('%Y%m%d_%H%M%S')}"
++    # 写前快照：导错了还能原样退回。同一秒内连续导入时目录加序号，避免互相覆盖。
++    base = BACKUP_DIR / f"import_{time.strftime('%Y%m%d_%H%M%S')}"
++    snap, i = base, 1
++    while snap.exists():
++        i += 1
++        snap = base.with_name(f"{base.name}_{i}")
+     snap.mkdir(parents=True, exist_ok=True)
+     for rel in todo:
+         p = BASE / rel
+diff --git a/clean_transcript.py b/clean_transcript.py
+index a66cd63..011f1b8 100644
+--- a/clean_transcript.py
++++ b/clean_transcript.py
+@@ -35,7 +35,8 @@ except Exception:            # 缺模块时不影响原有清洗
+     ITN = None
+ 
+ # 【新增 v1.5】术语修复：简称膨胀 + 漏字补全
+-# 术语表与简称表在模块级加载一次，避免每句都读盘
++# 术语表与简称表按文件 mtime 缓存，避免每句都读盘，又能在用户
++# 直接编辑 terms/*.txt 后（不必重启服务）于下一次清理时自动生效。
+ try:
+     import termfix as TF
+     _TERMS = TF.load_terms(BASE / "terms" / "hotwords.txt")
+@@ -44,6 +45,36 @@ except Exception:            # 缺模块或缺文件时不影响原有清洗
+     TF = None
+     _TERMS, _ALIASES = [], []
+ 
++_GLOSSARY_CACHE = {"key": None, "terms": [], "aliases": []}
++
++
++def _file_key(path: Path):
++    """用于判断词表是否被改过；文件不存在也返回稳定值。"""
++    try:
++        st = path.stat()
++        return (str(path), st.st_mtime_ns, st.st_size)
++    except OSError:
++        return (str(path), 0, 0)
++
++
++def load_glossary(force: bool = False):
++    """【新增 v2.7】读取热词与简称，按 mtime 缓存。
++
++    为什么不再只靠模块级常量：用户多年来习惯直接用记事本改 terms/*.txt，
++    旧实现只在服务启动时读一次，改完必须重启（或走界面保存触发 reload），
++    表现就是「术语表改了、重新清理却没反应」。现在每次构造 Cleaner
++    都核对一次 mtime，外部编辑立即生效；文件没变时零读盘开销。
++    """
++    key = (_file_key(BASE / "terms" / "hotwords.txt"),
++           _file_key(BASE / "terms" / "aliases.txt"))
++    if not force and _GLOSSARY_CACHE["key"] == key:
++        return _GLOSSARY_CACHE["terms"], _GLOSSARY_CACHE["aliases"]
++    terms = TF.load_terms(BASE / "terms" / "hotwords.txt") if TF else []
++    aliases = TF.load_aliases(BASE / "terms" / "aliases.txt") if TF else []
++    _GLOSSARY_CACHE.update(key=key, terms=terms, aliases=aliases)
++    return terms, aliases
++
++
+ # 句首 / 句尾判定用的标点集合
+ _PUNCT = "，。！？；：、,.;:?!…"
+ _HEAD_RE = r"(^|[%s\s])" % re.escape(_PUNCT)
+@@ -62,7 +93,10 @@ def load_corrections(path: Path) -> list:
+     pairs = []
+     if not path.exists():
+         return pairs
+-    for line in path.read_text(encoding="utf-8").splitlines():
++    # 【修改 v2.7】兼容记事本另存的 GBK；UTF-8 仍是首选
++    text = (TF.read_text_any(path) if TF is not None
++            else path.read_text(encoding="utf-8-sig"))
++    for line in text.splitlines():
+         line = line.strip()
+         if not line or line.startswith("#") or "=>" not in line:
+             continue
+@@ -119,6 +153,9 @@ class Cleaner:
+         # 弱上下文只进建议；False 则全部只建议，一个字都不动
+         self.termfix = termfix
+         self.termfix_auto = termfix_auto
++        # 【新增 v2.7】构造时取一次术语/简称（按 mtime 缓存）。
++        # 这样「改完术语表 → 点重新清理」一定用的是新词，不依赖服务重启。
++        self.terms, self.aliases = load_glossary() if termfix else ([], [])
+         self.protect = [re.compile(p) for p in cfg.get("protect_patterns", [])]
+         self.warn_ratio = cfg.get("warn_shrink_ratio", 0.5)
+ 
+@@ -257,7 +294,7 @@ class Cleaner:
+         # 放在填充词与重复合并之后：此时句子已定型，补字的上下文判断才准。
+         # 强上下文自动改，弱上下文只进建议（last_suggestions）。
+         if self.termfix and TF is not None:
+-            text, tch, tsg = TF.fix(text, _TERMS, _ALIASES,
++            text, tch, tsg = TF.fix(text, self.terms, self.aliases,
+                                     auto=self.termfix_auto)
+             if tch:
+                 changes.extend(tch)
+diff --git a/cloud_llm.py b/cloud_llm.py
+index 170042e..9bfb574 100644
+--- a/cloud_llm.py
++++ b/cloud_llm.py
+@@ -37,12 +37,16 @@ PRESETS = {
+                 "1 小时课件的讲稿整理约 2 万 token，完全够用。国内直连。",
+     },
+     "deepseek-v4-flash": {
+-        "label": "DeepSeek V4-Flash（低价）",
++        "label": "DeepSeek V4.1-Flash（低价 · 默认不思考）",
++        # 【修改 v2.7】2026-11-09 查官方文档：旧名 deepseek-v4-flash 仍可用，
++        # 但已统一路由到 DeepSeek-V4.1-Flash；现行模型名是 deepseek-flash。
+         "base_url": "https://api.deepseek.com",
+-        "model": "deepseek-v4-flash",
+-        "price_in": 0.14, "price_out": 0.28, "currency": "USD",
+-        "note": "缓存命中输入 $0.0028/M、未命中 $0.14/M、输出 $0.28/M。"
+-                "北京时段 18:00–次日 09:00 属低谷，约为半价。",
++        "model": "deepseek-flash",
++        "price_in": 0.15, "price_out": 0.60, "currency": "USD",
++        "note": "输入 $0.15/M、输出 $0.60/M（缓存命中输入 $0.003/M）；"
++                "高峰时段（北京时间 09:00–17:00 工作日）价格翻倍，其余为低谷价。"
++                "默认关闭思考：讲稿整理不需要思维链，关掉后更快、更省、"
++                "也不会把 max_tokens 吃在 reasoning 上。",
+     },
+     "custom": {
+         "label": "自定义（OpenAI 兼容）",
+@@ -67,7 +71,14 @@ DEFAULTS = {
+     "price_out": 0.0,
+     "currency": "CNY",
+     "timeout": 120,
+-    "max_tokens": 2400,
++    # 【修改 v2.7】云端按 3000 字一块，输出约 3000–4500 token；
++    # 8192 留足余量，且关闭思考后不会再有 reasoning 抢占额度。
++    "max_tokens": 8192,
++    # 【新增 v2.7】思考模式：off / auto。
++    # DeepSeek V4 默认开启且 effort=high，整理讲稿纯属浪费：
++    # 实测 746 字一块的 reasoning 吃掉 1033 token，2400 上限会把正文挤断。
++    # 关闭方式（官方文档）：请求体 thinking={"type":"disabled"}。
++    "thinking": "off",
+ }
+ 
+ 
+@@ -85,11 +96,39 @@ def mask(key):
+     return (key[:6] + "…" + key[-4:]) if len(key) > 12 else ("已填" if key else "")
+ 
+ 
++def _migrate(cfg):
++    """【新增 v2.7】把旧版 DeepSeek 配置无损升级到现行口径。
++
++    只改「当年由本程序写入的默认值」，用户自己改过的价格 / 额度不动：
++      · 模型名 deepseek-v4-flash / deepseek-chat → deepseek-flash
++        （旧名仍可用，但官方已路由到 V4.1-Flash，界面显示旧名会让人以为没升级）
++      · 价格 0.14 / 0.28 → 0.15 / 0.60（官方现行价）
++      · max_tokens 2400 → 8192（云端 3000 字一块，2400 会把正文截断）
++    """
++    try:
++        preset = str(cfg.get("preset") or "")
++        is_ds = preset.startswith("deepseek") or "deepseek" in str(cfg.get("base_url") or "")
++        if not is_ds:
++            return cfg
++        if str(cfg.get("model") or "") in ("deepseek-v4-flash", "deepseek-chat",
++                                           "deepseek-reasoner"):
++            cfg["model"] = "deepseek-flash"
++        if (float(cfg.get("price_in") or 0), float(cfg.get("price_out") or 0)) \
++                == (0.14, 0.28):
++            cfg["price_in"], cfg["price_out"] = 0.15, 0.60
++        if int(cfg.get("max_tokens") or 0) <= 2400:
++            cfg["max_tokens"] = 8192
++    except (TypeError, ValueError):
++        pass
++    return cfg
++
++
+ def load_config():
+     """读配置；文件不存在/损坏都回落默认值，绝不因为配置把服务带崩。
+ 
+     【新增 v2.4】旧版配置没有 keys 字段，这里做一次无损迁移：把已有的
+     api_key 归到它当时的 preset 名下，用户不必重新录入。
++    【新增 v2.7】DeepSeek 旧模型名 / 旧价格 / 旧额度按现行口径迁移。
+     """
+     cfg = _blank()
+     try:
+@@ -103,7 +142,7 @@ def load_config():
+         cfg["keys"] = {}
+     if not cfg["keys"] and str(cfg.get("api_key") or "").strip():
+         cfg["keys"][str(cfg.get("preset") or "glm-4-flash")] = str(cfg["api_key"]).strip()
+-    return cfg
++    return _migrate(cfg)
+ 
+ 
+ def save_config(data):
+@@ -113,10 +152,15 @@ def save_config(data):
+     cur = load_config()
+     cfg = json.loads(json.dumps(cur))          # 深拷贝，别把 keys 改到缓存上
+     for k in ("enabled", "preset", "base_url", "model", "price_in",
+-              "price_out", "currency", "timeout", "max_tokens"):
++              "price_out", "currency", "timeout", "max_tokens", "thinking"):
+         if k in data:
+             cfg[k] = data[k]
+     preset = str(cfg.get("preset") or "glm-4-flash")
++    # 【新增 v2.7】未知预设一律归到 custom：否则会往 keys 里写一个
++    # 谁都不认识的槽位，界面上「已保存」但实际取不到 Key。
++    if preset not in PRESETS:
++        preset = "custom"
++    cfg["preset"] = preset
+     keys = cfg.setdefault("keys", {})
+     new_key = str(data.get("api_key") or "").strip()
+     if new_key:
+@@ -141,9 +185,13 @@ def save_config(data):
+         cfg["price_in"] = float(cfg["price_in"] or 0)
+         cfg["price_out"] = float(cfg["price_out"] or 0)
+         cfg["timeout"] = max(10, min(600, int(cfg["timeout"] or 120)))
+-        cfg["max_tokens"] = max(256, min(32768, int(cfg["max_tokens"] or 2400)))
++        cfg["max_tokens"] = max(256, min(32768, int(cfg["max_tokens"] or 8192)))
+     except (TypeError, ValueError) as exc:
+         raise ValueError(f"数值配置不合法：{exc}") from exc
++    # 只有明确写 off/disabled 才关；其余（含旧配置没有该字段）走 auto，
++    # 避免升级后把用户自己想要的思考模式悄悄改掉。
++    cfg["thinking"] = ("off" if str(cfg.get("thinking") or "").strip().lower()
++                       in ("off", "disabled", "false", "0") else "auto")
+     CONFIG.parent.mkdir(parents=True, exist_ok=True)
+     tmp = CONFIG.with_name(f"cloud_llm.{os.getpid()}.tmp")
+     tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+@@ -170,6 +218,8 @@ def apply_preset(key):
+         "price_in": p["price_in"], "price_out": p["price_out"],
+         "currency": p["currency"],
+         "enabled": bool(saved.get("enabled")),
++        # 【新增 v2.7】DeepSeek 预设默认不思考；其它预设不带这个字段
++        "thinking": "off" if key in ("deepseek-v4-flash", "deepseek-flash") else "auto",
+     })
+     own = str((saved.get("keys") or {}).get(key) or "")
+     if not own and saved.get("preset") == key:       # 旧配置无损迁移兜底
+@@ -180,6 +230,13 @@ def apply_preset(key):
+     return cfg
+ 
+ 
++def supports_thinking(cfg) -> bool:
++    """只有 DeepSeek 系端点认 `thinking` 参数；GLM / Ollama 发了可能 400。"""
++    base = str((cfg or {}).get("base_url") or "").lower()
++    preset = str((cfg or {}).get("preset") or "").lower()
++    return "deepseek" in base or preset.startswith("deepseek")
++
++
+ def status():
+     cfg = load_config()
+     keys = cfg.get("keys") or {}
+@@ -195,6 +252,10 @@ def status():
+         "keys_saved": [k for k in PRESETS if str(keys.get(k) or "").strip()],
+         "price_in": cfg.get("price_in"), "price_out": cfg.get("price_out"),
+         "currency": cfg.get("currency"), "usd_cny": USD_CNY,
++        "max_tokens": cfg.get("max_tokens"),
++        # 【新增 v2.7】界面据此显示「不思考」开关；非 DeepSeek 端点不显示
++        "thinking": cfg.get("thinking") or "auto",
++        "thinking_supported": supports_thinking(cfg),
+         "presets": [{"id": k, "label": v["label"]} for k, v in PRESETS.items()],
+     }
+ 
+@@ -246,9 +307,16 @@ class CloudChat:
+             "messages": msgs,
+             "temperature": float(temperature),
+             "top_p": float(top_p),
+-            "max_tokens": int(max_tokens or cfg.get("max_tokens") or 2400),
++            "max_tokens": int(max_tokens or cfg.get("max_tokens") or 8192),
+             "stream": False,
+         }
++        # 【新增 v2.7】按用户要求把 DeepSeek 设为「不推理」。
++        # 官方文档：请求体传 thinking={"type":"disabled"} 即关闭；
++        # 关闭后 temperature/top_p 才真正生效，max_tokens 也不会被
++        # reasoning_content 吃掉（实测 746 字一块 reasoning 占 1033 token）。
++        if supports_thinking(cfg) and str(cfg.get("thinking") or "auto") == "off":
++            payload["thinking"] = {"type": "disabled"}
++        self.thinking_off = payload.get("thinking", {}).get("type") == "disabled"
+         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+         headers = {"Content-Type": "application/json"}
+         if cfg.get("api_key"):
+@@ -308,7 +376,7 @@ def test_connection(data=None):
+     cfg = load_config()
+     if isinstance(data, dict):
+         for k in ("preset", "base_url", "model", "api_key", "price_in",
+-                  "price_out", "currency", "timeout"):
++                  "price_out", "currency", "timeout", "thinking"):
+             if k in data and data[k] not in (None, ""):
+                 cfg[k] = data[k]
+         # 【修改 v2.4】没填新 Key 时，用「当前预设自己」已存的 Key 去测，
+@@ -317,6 +385,10 @@ def test_connection(data=None):
+             preset = str(cfg.get("preset") or "glm-4-flash")
+             cfg["api_key"] = str((cfg.get("keys") or {}).get(preset) or "")
+     cfg["enabled"] = True
++    # 【新增 v2.7】测试连接固定不思考、只给 32 token：DeepSeek 默认思考，
++    # 「只回复两个字：正常」的思维链会把 16 token 全部吃光，返回空 content，
++    # 界面显示「连接成功但回复空」，看起来像 Key 坏了。
++    cfg["thinking"] = "off"
+     cfg["base_url"] = str(cfg.get("base_url") or "").rstrip("/")
+     if not cfg["base_url"].startswith(("http://", "https://")) or not cfg.get("model"):
+         return False, "请先填接口地址和模型名", 0.0
+@@ -325,7 +397,7 @@ def test_connection(data=None):
+     try:
+         r = chat.create_chat_completion(
+             messages=[{"role": "user", "content": "只回复两个字：正常"}],
+-            temperature=0, max_tokens=16)
++            temperature=0, max_tokens=32)
+         txt = (((r.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+         return True, f"连接成功：{cfg['model']} 回复「{txt[:20]}」", round(time.time() - t0, 1)
+     except Exception as exc:
+diff --git a/glossary.py b/glossary.py
+index b29cb61..19aaec9 100644
+--- a/glossary.py
++++ b/glossary.py
+@@ -13,6 +13,11 @@ from pathlib import Path
+ import os
+ import uuid
+ 
++try:                          # 【新增 v2.7】「试一句」要复现清洗链路
++    import termfix as TF
++except Exception:
++    TF = None
++
+ BASE = Path(__file__).resolve().parent
+ 
+ KINDS = {
+@@ -32,12 +37,30 @@ MAX_WEIGHT = 100
+ # ─────────────────────────── 读写 ───────────────────────────
+ 
+ def _read(path: Path):
+-    """返回 (统一成 LF 的文本, 原换行符, 是否有末尾换行)。"""
++    """返回 (统一成 LF 的文本, 原换行符, 是否有末尾换行, 是否带 BOM, 原编码)。
++
++    【修改 v2.7】用 utf-8-sig 解码并记住 BOM：用记事本另存过的词表常带 BOM，
++    旧实现会把 BOM 当成第一行的第一个字符，导致第一条词条永远匹配不上
++    （界面上看是「这条明明在表里却不生效」）。保存时按原样写回 BOM。
++
++    另外兼容 GBK：中文 Windows 上用记事本「另存为 ANSI」会把文件存成 GBK，
++    旧实现直接 UnicodeDecodeError，整个术语表弹窗打不开。这里按原编码读、
++    按原编码写，不改用户的文件格式。
++    """
+     if not path.exists():
+-        return "", "\n", False
+-    raw = path.read_bytes().decode("utf-8")
++        return "", "\n", False, False, "utf-8"
++    raw_bytes = path.read_bytes()
++    bom = raw_bytes.startswith(b"\xef\xbb\xbf")
++    try:
++        raw, enc = raw_bytes.decode("utf-8-sig"), "utf-8"
++    except UnicodeDecodeError:
++        try:
++            raw, enc = raw_bytes.decode("gbk"), "gbk"
++        except UnicodeDecodeError as exc:
++            raise ValueError(
++                f"{path.name} 既不是 UTF-8 也不是 GBK 编码，请用记事本另存为 UTF-8") from exc
+     nl = "\r\n" if "\r\n" in raw else "\n"
+-    return raw.replace("\r\n", "\n"), nl, raw.endswith("\n")
++    return raw.replace("\r\n", "\n"), nl, raw.endswith("\n"), bom, enc
+ 
+ 
+ def _split(text: str):
+@@ -50,7 +73,7 @@ def _split(text: str):
+ 
+ def parse_items(path: Path, mode: str) -> list:
+     """解析条目行。注释、空行、无法识别的行一律跳过（也绝不改动）。"""
+-    text, _, _ = _read(path)
++    text, _, _, _, _ = _read(path)
+     lines, _ = _split(text)
+     items = []
+     for i, raw in enumerate(lines):
+@@ -138,7 +161,7 @@ def apply_changes(payload: dict) -> dict:
+     meta = KINDS[kind]
+     path, mode = meta["path"], meta["mode"]
+ 
+-    text, nl, trailing = _read(path)
++    text, nl, trailing, bom, enc = _read(path)
+     lines, _ = _split(text)
+     current = {it["line"]: it for it in parse_items(path, mode)}
+ 
+@@ -222,7 +245,16 @@ def apply_changes(payload: dict) -> dict:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+     try:
+-        tmp.write_bytes(out.encode("utf-8"))
++        try:
++            data = out.encode(enc)    # 【新增 v2.7】按原编码写回（UTF-8 / GBK）
++        except UnicodeEncodeError as exc:
++            # GBK 装不下新加的罕见字：明确让用户转存 UTF-8，不要写半个文件
++            tmp.unlink(missing_ok=True)
++            raise ValueError(
++                f"该词含 {enc.upper()} 不支持的字符，请先把 {path.name} 另存为 UTF-8") from exc
++        if bom:                       # 原文件带 BOM，按原样写回
++            data = b"\xef\xbb\xbf" + data
++        tmp.write_bytes(data)
+         os.replace(tmp, path)
+     except OSError:
+         tmp.unlink(missing_ok=True)
+@@ -234,18 +266,69 @@ def apply_changes(payload: dict) -> dict:
+             "total": len(parse_items(path, mode))}
+ 
+ 
+-def reload_caches() -> None:
+-    """让改完的术语立即生效：清洗模块的术语/简称是模块级缓存，不刷新就要重启。
++# ─────────────────────────── 试改（字幕 / 讲稿共用同一套规则）───────────────────────────
+ 
+-    错词表不走缓存（run_pipeline 每次都读），所以只处理热词与简称。
++def preview(text: str) -> dict:
++    """【新增 v2.7】把一句话按「错词校正 → 简称膨胀 → 术语补全」跑一遍。
++
++    存在的理由：用户反复问「术语表改了，字幕清理到底用不用」。
++    与其解释，不如让他在弹窗里输入一句原文，直接看到三步各自改了什么。
++    这里刻意复用 clean_transcript 的加载函数与 termfix 的实现，
++    不复写一套规则——预览结果与真实清理结果必须一致。
++    """
++    text = str(text or "").strip()[:400]
++    if not text:
++        raise ValueError("请先输入一句要试的原文")
++
++    import clean_transcript as CT
++    corrections = CT.load_corrections(KINDS["corrections"]["path"])
++    terms, aliases = CT.load_glossary()
++
++    stage, steps = text, []
++    hits = []
++    for wrong, right in corrections:
++        if wrong in stage:
++            n = stage.count(wrong)
++            stage = stage.replace(wrong, right)
++            hits.append(f"{wrong} → {right}×{n}")
++    if hits:
++        steps.append({"name": "错词校正", "detail": "；".join(hits), "after": stage})
++
++    alog = []
++    if TF is not None:
++        stage, alog = TF.expand_aliases(stage, aliases)
++        if alog:
++            steps.append({"name": "简称膨胀", "detail": "；".join(alog), "after": stage})
++
++        stage, changes, suggestions = TF.complete(stage, terms, auto=True)
++        if changes:
++            steps.append({"name": "术语补全",
++                          "detail": "；".join(f"{a}：{b}" for a, b, _ in changes),
++                          "after": stage})
++    else:
++        suggestions = []
++
++    return {"before": text, "after": stage, "steps": steps,
++            "suggestions": suggestions[:8],
++            "note": "预览与「重新清理 / 识别后清理」走同一套规则；"
++                    "实际清理还会删语气词、合并重复，这里只演示术语表的部分。"}
++
++
++def reload_caches() -> bool:
++    """让改完的术语立即生效：清洗模块的术语/简称按 mtime 缓存，刷新一次即可。
++
++    【修改 v2.7】原来只改模块级 `_TERMS/_ALIASES`；现在 Cleaner 在构造时
++    自己取词表，必须让缓存失效才会读到新内容。返回是否刷新成功，
++    界面据此提示「已生效 / 下次清理生效」，不再含糊。
+     """
+     try:
+         import clean_transcript as CT
+-        tf = getattr(CT, "TF", None)
+-        if tf is None:
+-            return
+-        CT._TERMS = tf.load_terms(KINDS["hotwords"]["path"])
+-        CT._ALIASES = tf.load_aliases(KINDS["aliases"]["path"])
++        if getattr(CT, "TF", None) is None:
++            return False
++        terms, aliases = CT.load_glossary(force=True)
++        # 兼容仍直接读这两个名字的旧代码/测试
++        CT._TERMS, CT._ALIASES = terms, aliases
++        return True
+     except Exception:
+-        # 缓存刷新失败不影响保存本身；下次重启自然生效
+-        pass
++        # 刷新失败不影响保存本身；下次重启自然生效
++        return False
+diff --git a/learn.py b/learn.py
+index ef27bea..7561a46 100644
+--- a/learn.py
++++ b/learn.py
+@@ -29,6 +29,7 @@ import json
+ import os
+ import re
+ import time
++import uuid
+ from pathlib import Path
+ 
+ BASE = Path(__file__).resolve().parent
+@@ -71,9 +72,14 @@ def _load() -> dict:
+ 
+ def _save(d: dict) -> None:
+     LEARN_DIR.mkdir(parents=True, exist_ok=True)
+-    tmp = STATS.with_name(STATS.name + ".tmp")
+-    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+-    os.replace(tmp, STATS)
++    # 【修改 v2.7】临时名加随机后缀：两个请求同时保存时不再互相覆盖
++    tmp = STATS.with_name(f"{STATS.name}.{uuid.uuid4().hex[:8]}.tmp")
++    try:
++        tmp.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
++        os.replace(tmp, STATS)
++    except OSError:
++        tmp.unlink(missing_ok=True)
++        raise
+ 
+ 
+ # ────────────────────── 差异提炼 ──────────────────────
+diff --git a/llm_polish.py b/llm_polish.py
+index 2c6a58d..002c352 100644
+--- a/llm_polish.py
++++ b/llm_polish.py
+@@ -41,6 +41,11 @@ AUTO_CHUNK_AT = 8000       # 超过这个字数写一行日志，说明已自动
+ # 每块送给模型的字数。Qwen3-4B 的 n_ctx=4096，中文 1 字约 1.5 token，
+ # 700 字输入 + 提示词 + 输出，留有余量；再大就有截断风险。
+ CHUNK_CHARS = 700
++# 【新增 v2.7】云端模型上下文 128K–1M，700 字一块纯属浪费：
++# 3 万字要发 43 次请求，每次都要重复 600 余字系统提示，慢且贵。
++# 3000 字一块 → 10 次请求，提示词开销降到 1/4，长稿墙钟时间约 1/4。
++# 输出约 3000–4500 token，云端 max_tokens=8192 足够；真截断还有对半自愈。
++CLOUD_CHUNK_CHARS = int(os.environ.get("ASR_LLM_CLOUD_CHUNK") or 3000)
+ N_CTX = 4096
+ MAX_TOKENS = 2400
+ THREADS = max(4, min(12, (os.cpu_count() or 8) - 4))
+@@ -99,21 +104,30 @@ SYSTEM = (
+ # 正文单独成段，与指令彻底分离：模型再糊涂也不会把 system 当正文整理
+ PROMPT = "<transcript>\n{text}\n</transcript>"
+ 
+-# 复述提示词的指纹：出现在输出开头即判定这次生成跑偏
+-_ECHO_MARKS = (
++# 复述提示词的指纹：出现在输出开头即判定这次生成跑偏。
++# 【修改 v2.7】分成强弱两级：像「技术约定」这种词，网课里本身就可能讲到
++# （"我们技术约定一下"），单独命中不能判废，否则正常稿子会被拦下重试。
++_ECHO_STRONG = (
+     "硬性要求", "不得增加原文", "不得添加原文", "仅输出整理后的正文",
+     "必须删除：语气词", "每一句的信息都必须保留",
+     "专业术语、法规名称、条款号、数字必须原样保留",
+     # 用户指定提示词的指纹（换词后仍能识别复述）
+     "熟悉药品、医疗器械、化妆品监管工作的文字编辑", "任务是将网课口语",
+-    "不得拔高或弱化原文观点", "模态词力度是否改变", "技术约定",
++    "不得拔高或弱化原文观点", "模态词力度是否改变",
+     "<transcript>", "</transcript>", "<out>", "</out>",
+ )
++_ECHO_WEAK = ("技术约定", "输出前逐条自检", "不得写成提纲")
++
++# 兼容旧代码里对 _ECHO_MARKS 的引用（诊断 / 剔除行）
++_ECHO_MARKS = _ECHO_STRONG + _ECHO_WEAK
+ 
+ 
+ def _looks_echoed(text: str) -> bool:
+     head = (text or "")[:600]
+-    return any(m in head for m in _ECHO_MARKS)
++    if any(m in head for m in _ECHO_STRONG):
++        return True
++    # 弱指纹至少命中两条才判废：单条可能只是正文恰好提到
++    return sum(1 for m in _ECHO_WEAK if m in head) >= 2
+ 
+ 
+ def _strip_echo(text: str):
+@@ -163,6 +177,28 @@ NUM_RE = re.compile(
+ )
+ FILLERS = ("呃", "嗯", "那个", "这个", "就是说", "然后呢", "好吧")
+ 
++
++def _partial_ratio(s: str, out: str) -> float:
++    """片段相似度 0–100。
++
++    【新增 v2.7】rapidfuzz 未安装时不再让整次润色崩掉：原来 audit 里
++    直接 `from rapidfuzz import fuzz`，缺包时润色已跑完却在校验阶段抛
++    ImportError，十几分钟的结果整份丢掉。这里用 3-gram 覆盖率兜底，
++    精度略低但方向一致（只用于「是否漏句」的粗判，不参与改写）。
++    """
++    try:
++        from rapidfuzz import fuzz
++        return float(fuzz.partial_ratio(s, out))
++    except Exception:
++        s = s or ""
++        out = out or ""
++        if not s:
++            return 0.0
++        n = 3
++        grams = [s[i:i + n] for i in range(max(1, len(s) - n + 1))]
++        hit = sum(1 for g in grams if g in out)
++        return 100.0 * hit / max(1, len(grams))
++
+ _LLM = None
+ _LOAD_LOCK = threading.Lock()
+ _RUN_LOCK = threading.Lock()      # llama.cpp 同一实例不能并发推理，串行更稳
+@@ -273,8 +309,15 @@ def _units(text, limit=None):
+             continue
+         for seg in _SENT_SPLIT.split(ln):
+             seg = seg.strip()
+-            if seg:
++            if not seg:
++                continue
++            # 【新增 v2.7】整段粘贴、没有句末标点的稿子：单句超长时按字数硬切，
++            # 否则一个 3 万字的「句子」会整块塞进模型，直接超上下文。
++            if len(seg) <= limit:
+                 units.append(seg)
++            else:
++                units.extend(seg[i:i + limit]
++                             for i in range(0, len(seg), limit))
+     return units
+ 
+ 
+@@ -293,6 +336,21 @@ def chunk_text(text, limit=None):
+     return chunks
+ 
+ 
++def estimate_chunks(text) -> int:
++    """【新增 v2.7】按当前后端估算块数，供服务端算「卡死」预算。
++
++    云端 3000 字一块、本地 700 字一块，服务端不能再用固定 CHUNK_CHARS
++    估——会把云端长稿的合理耗时误判成卡死。
++    """
++    try:
++        import cloud_llm as CL
++        limit = (CLOUD_CHUNK_CHARS if CL.load_config().get("enabled")
++                 else CHUNK_CHARS)
++    except Exception:
++        limit = CHUNK_CHARS
++    return max(1, len(chunk_text(text or "", limit=limit)))
++
++
+ # ---------------------------------------------------------------- 推理
+ 
+ def _polish_chunk(llm, text):
+@@ -367,6 +425,25 @@ def last_sentence(text):
+     return parts[-1] if parts else ""
+ 
+ 
++def _tail_present(part: str, tail: str) -> bool:
++    """块尾句是否已经出现在这一块里（允许模型只去掉了句末标点）。
++
++    【新增 v2.7】原来只做严格 `tail in part`，模型把句号改成逗号或删掉标点
++    就会误判成「缺失」，于是同一句被追加两遍。
++    这里只放宽到「去掉句末标点后原样出现」，不做模糊匹配——实测课程里
++    相邻句子高度相似（"这是第98句…" / "这是第99句…"），模糊匹配会把
++    真的被删掉的末句误判成已保留，那才是更严重的内容丢失。
++    """
++    if not tail:
++        return True
++    if tail in part:
++        return True
++    core = tail.rstrip("。！？!?…；;，, ")
++    if len(core) < 4:
++        return False
++    return part.rstrip("。！？!?…；;，, ").endswith(core)
++
++
+ def polish(text, log=print, progress=None):
+     """润色整段讲稿。返回 {source, polished, tail, audit, diff, chunks, elapsed, model}。
+ 
+@@ -389,9 +466,13 @@ def polish(text, log=print, progress=None):
+         raise ValueError(f"文本 {len(text)} 字，超过硬上限 {MAX_INPUT} 字，"
+                          f"可用 ASR_LLM_MAX_CHARS 调整")
+     llm = _ensure(log)
+-    chunks = chunk_text(text)
++    # 【新增 v2.7】云端用大块（3000 字），本地小模型仍用 700 字。
++    is_cloud = hasattr(llm, "estimate")
++    limit = CLOUD_CHUNK_CHARS if is_cloud else CHUNK_CHARS
++    chunks = chunk_text(text, limit=limit)
+     if len(text) > AUTO_CHUNK_AT:
+-        log(f"长稿 {len(text)} 字，自动分 {len(chunks)} 块逐块润色后合并")
++        log(f"长稿 {len(text)} 字，自动分 {len(chunks)} 块"
++            f"（每块约 {limit} 字）逐块润色后合并")
+     parts, t0, restored = [], time.time(), 0
+     total = len(chunks)
+     emit(0, total, "开始分块润色")
+@@ -425,7 +506,7 @@ def polish(text, log=print, progress=None):
+             # 不该让用户逐块去找；原文真正的末句仍交给界面「补回原末句」，
+             # 不静默补，红线闸门保持有效。
+             tail = last_sentence(ck)
+-            if i < len(chunks) and tail and tail not in part:
++            if (i < len(chunks) and tail and not _tail_present(part, tail)):
+                 part = (part.rstrip() + "\n" + tail).strip()
+                 restored += 1
+             parts.append(part)
+@@ -444,7 +525,7 @@ def polish(text, log=print, progress=None):
+         "audit": audit(text, out),
+         "diff": diff_ops(text, out),
+         "chunks": len(chunks),
+-        "chunk_chars": CHUNK_CHARS,
++        "chunk_chars": limit,
+         "tail_restored": restored,     # 【新增 v2.4】自动补回的块尾句数量
+         "fallback_chunks": fallback,   # 【新增 v2.5】保留原文、未润色的块数
+         "elapsed": round(time.time() - t0, 1),
+@@ -460,24 +541,44 @@ def must_keep_terms(src):
+     """从项目术语表里取「原文中真的出现了」的术语当检查项。
+ 
+     不硬编码清单：硬编码只对一份稿子有效，术语表才是项目里真正的真相源。
+-    hotwords.txt 是「词|权重」或纯词；aliases.txt 是「简称=>全称」，
+-    两侧都算——原文写的是哪一侧，润色后就该还是哪一侧。
++
++    【修复 v2.7】返回「可接受形式组」而不是扁平词表：
++      · 热词 → ("药品经营质量管理规范",)，必须原样出现；
++      · 简称 → ("医疗器械GMP", "医疗器械生产质量管理规范")，
++        保留简称或展开成全称都算通过。
++    原来两侧都当独立硬项，`医疗器械GMP=>…` 会把简称本身判成「丢失」，
++    可模型按规则保留简称、根本不展开，硬红线永远不过、「采用」永远是灰的。
+     """
+-    out = set()
+-    for name in ("hotwords.txt", "aliases.txt"):
+-        p = TERMS / name
+-        if not p.exists():
+-            continue
+-        for ln in p.read_text(encoding="utf-8").splitlines():
++    groups = []
++    p = TERMS / "hotwords.txt"
++    if p.exists():
++        for ln in p.read_text(encoding="utf-8-sig").splitlines():
+             ln = ln.strip()
+             if not ln or ln.startswith("#"):
+                 continue
+-            for part in re.split(r"[|=>]", ln):
+-                t = part.strip()
+-                # 4 字以上才检查：「药品」「企业」这类太泛，留着是常识，不用盯
+-                if len(t) >= 4 and t in src:
+-                    out.add(t)
+-    return sorted(out)
++            t = ln.split("|", 1)[0].strip()
++            # 4 字以上才检查：「药品」「企业」这类太泛，留着是常识，不用盯
++            if len(t) >= 4 and t in src:
++                groups.append((t,))
++
++    p = TERMS / "aliases.txt"
++    if p.exists():
++        for ln in p.read_text(encoding="utf-8-sig").splitlines():
++            ln = ln.strip()
++            if not ln or ln.startswith("#") or "=>" not in ln:
++                continue
++            short, _, full = ln.partition("=>")
++            short, full = short.strip(), full.strip()
++            forms = tuple(x for x in (short, full) if len(x) >= 4)
++            if forms and any(x in src for x in forms):
++                groups.append(forms)
++    # 去重但保持稳定顺序
++    seen, out = set(), []
++    for g in groups:
++        if g not in seen:
++            seen.add(g)
++            out.append(g)
++    return out
+ 
+ 
+ def coverage(src, out):
+@@ -486,11 +587,10 @@ def coverage(src, out):
+     LLM 顺滑最危险的失败不是改错字，而是**整句漏掉**——PoC 里就丢了结尾，
+     而术语/数字/长度四项全过，完全查不出来。这条是专门为它加的。
+     """
+-    from rapidfuzz import fuzz
+     sents = [s.strip() for s in re.split(r"[。！？\n]", src) if len(s.strip()) >= 6]
+     if not sents:
+         return 1.0, []
+-    miss = [s for s in sents if fuzz.partial_ratio(s, out) < 70]
++    miss = [s for s in sents if _partial_ratio(s, out) < 70]
+     return round(1 - len(miss) / len(sents), 2), miss
+ 
+ 
+@@ -503,7 +603,8 @@ def audit(src, out):
+     res = {}
+ 
+     terms = must_keep_terms(src)
+-    lost = [t for t in terms if t not in out]
++    # 【修改 v2.7】每组允许多种可接受写法（简称 / 全称），命中任一即算保留
++    lost = ["／".join(g) for g in terms if not any(x in out for x in g)]
+     res["术语保留"] = {
+         "pass": not lost, "hard": True,
+         "note": f"{len(terms)} 条全部保留" if not lost
+@@ -529,9 +630,8 @@ def audit(src, out):
+     cov, miss = coverage(src, out)
+     sents = [s.strip() for s in re.split(r"[。！？\n]", src) if len(s.strip()) >= 6]
+     if sents:
+-        from rapidfuzz import fuzz
+         last = sents[-1]
+-        keep = fuzz.partial_ratio(last, out) >= 60
++        keep = _partial_ratio(last, out) >= 60
+         res["末句保留"] = {
+             "pass": keep, "hard": True,
+             "note": "保留" if keep else f"疑似被删：{last[:18]}",
+diff --git a/rules/filler_words.json b/rules/filler_words.json
+index f8c4ffa..9a02315 100644
+--- a/rules/filler_words.json
++++ b/rules/filler_words.json
+@@ -1,5 +1,5 @@
+ {
+-  "_版本": "2.2",
++  "_版本": "2.7",
+   "_说明": "五类填充词 + 七组删留判别。groups 里的词可直接删；guards 里的词要看上下文，多数只出「建议改写」不动原文。宁可少删，不可误删。 standalone_only：会组成常用词的单字语气词（如「额」→金额/额度/余额），只在独立出现时才删。",
+   "process_order": [
+     "组合填充",
+@@ -113,7 +113,7 @@
+     },
+     "语气词": {
+       "mode": "always",
+-      "desc": "全部删除。语气助词（嘛/哈/呢/啦/呗/哇/哟）只在句尾删，避免误伤「干嘛」「哈哈」「你呢」。",
++      "desc": "全部删除。语气助词（嘛/哈/呢/啦/呗/哇/哟）只在句尾删，避免误伤「干嘛」「哈哈」「你呢」。「我们/咱们」不在这里：它们要先经过 guards.自称 判断——单位自称保留并建议改「我局」，泛称引导才删，其余不动。",
+       "words": [
+         "呃",
+         "额",
+@@ -135,8 +135,6 @@
+         "哎哟",
+         "啊哈",
+         "哦哟",
+-        "我们",
+-        "咱们",
+         "然后"
+       ],
+       "tail_only": [
+@@ -288,7 +286,7 @@
+         "咱们": "本单位"
+       },
+       "lookahead": 12,
+-      "desc": "单位自称改为「我局/本单位」（只建议，不删）；泛称引导删掉「我们」，后面保留「来看…」；其余不动。"
++      "desc": "单位自称改为「我局/本单位」（只建议，不删）；泛称引导（来看/讲一下/说一下）删掉「我们」；其余不动——「我们要注意」里的「我们」是主语，删了会改变语气。"
+     },
+     "指代": {
+       "words": [
+diff --git a/samples/probe_v27_bench.py b/samples/probe_v27_bench.py
+new file mode 100644
+index 0000000..c4ed827
+--- /dev/null
++++ b/samples/probe_v27_bench.py
+@@ -0,0 +1,112 @@
++# -*- coding: utf-8 -*-
++"""v2.7 基准：Paraformer 分片并行到底几路最划算（20 核 Ultra 7 265K）。
++
++v2.4 只测过 1 / 2 / 4 路，默认取 2。20 核机器上 2 路各 8 线程只用到 16 线程，
++还剩 4 个核空转；本脚本补测 3 路（各 5 线程），并复测 2 / 4 路，
++用同一段 600 秒真实课程、同样的低能量切片，比较墙钟、整机 CPU、文本一致率。
++
++为什么每路线程数取 16//workers：v2.4 已实测「单路 20 线程」只比 4 线程快 6%，
++说明瓶颈不在线程数，而在单条解码链喂不满核心；多路才是有效手段。
++
++运行：python samples/probe_v27_bench.py
++"""
++import difflib
++import statistics
++import sys
++import tempfile
++import threading
++import time
++import wave
++from pathlib import Path
++
++BASE = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(BASE))
++
++import numpy as np               # noqa: E402
++import torch                     # noqa: E402
++import transcribe as T           # noqa: E402
++
++SRC = sorted((BASE / "out").glob("*16k.wav"), key=lambda p: p.stat().st_size)[-1]
++SECONDS = 600
++SR = 16000
++CHUNK = 150                       # 600s → 4 片，足够喂 2/3/4 路
++TMP = Path(tempfile.mkdtemp(prefix="v27bench_"))
++
++
++class Sampler:
++    def __init__(self):
++        self.cpu, self.stop = [], threading.Event()
++
++    def _run(self):
++        try:
++            import psutil
++        except Exception:
++            return
++        psutil.cpu_percent(None)
++        while not self.stop.is_set():
++            self.cpu.append(psutil.cpu_percent(None))
++            time.sleep(0.4)
++
++    def __enter__(self):
++        self.t = threading.Thread(target=self._run, daemon=True)
++        self.t.start()
++        return self
++
++    def __exit__(self, *a):
++        self.stop.set()
++        self.t.join(timeout=2)
++
++    def avg(self):
++        return statistics.mean(self.cpu) if self.cpu else 0.0
++
++
++def cut():
++    with wave.open(str(SRC), "rb") as w:
++        n = min(int(SECONDS * w.getframerate()), w.getnframes())
++        raw = w.readframes(n)
++    pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
++    dst = TMP / "clip600.wav"
++    with wave.open(str(dst), "wb") as w:
++        w.setnchannels(1)
++        w.setsampwidth(2)
++        w.setframerate(SR)
++        w.writeframes((np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes())
++    return dst
++
++
++def main():
++    print(f"音源 {SRC.name}  取前 {SECONDS}s", flush=True)
++    wav = cut()
++    hotword = T.load_hotwords(T.HOTWORD_FILE)
++    cfg = T.MODELS["paraformer"]
++    model = T.get_model(cfg, "cpu")
++    gen = dict(batch_size_s=300, disable_pbar=True)
++    if hotword:
++        gen["hotword"] = hotword
++    T.FUNASR_CHUNK_SEC = CHUNK
++
++    results = []
++    for workers in (2, 3, 4):
++        T.FUNASR_WORKERS = workers
++        with Sampler() as s:
++            t0 = time.time()
++            item = T._run_funasr_parallel(wav, model, dict(gen), print, None)
++            dt = time.time() - t0
++        results.append({"w": workers, "sec": round(dt, 1),
++                        "cpu": round(s.avg()),
++                        "text": item.get("text") or ""})
++        print(f"{workers} 路 / 各 {max(2, 16 // workers)} 线程："
++              f"{dt:6.1f}s  CPU {s.avg():5.1f}%  字数 {len(item.get('text') or '')}",
++              flush=True)
++
++    base = results[0]
++    print("\n=== 汇总（600s 音频，4 片）===")
++    for r in results:
++        ratio = difflib.SequenceMatcher(None, base["text"], r["text"]).ratio()
++        print(f"{r['w']} 路：{r['sec']:6.1f}s  相对 2 路 {base['sec']/r['sec']:4.2f}×  "
++              f"CPU {r['cpu']:3d}%  文本一致 {ratio*100:5.1f}%")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/samples/test_api.py b/samples/test_api.py
+index f130241..f217bd9 100644
+--- a/samples/test_api.py
++++ b/samples/test_api.py
+@@ -45,7 +45,9 @@ def get(path):
+ 
+ src = Path("samples/test_lesson.mp3")
+ print("[1] 上传", flush=True)
+-up = post_form("/api/upload", {}, {"file": (src.name, src.read_bytes())})
++# 【修改 v2.7】用带时间戳的文件名，避免「同名同大小已完成 → 跳过」把测试挡成 400
++upname = f"api_smoke_{int(time.time())}.mp3"
++up = post_form("/api/upload", {}, {"file": (upname, src.read_bytes())})
+ print("   ", up, flush=True)
+ 
+ print("[2] 转写（paraformer）", flush=True)
+diff --git a/samples/test_api_v11.py b/samples/test_api_v11.py
+index 9d7179c..56fc765 100644
+--- a/samples/test_api_v11.py
++++ b/samples/test_api_v11.py
+@@ -7,7 +7,9 @@ from pathlib import Path
+ 
+ BASE = Path(__file__).resolve().parent.parent
+ API = "http://127.0.0.1:7870"
+-TID = sys.argv[1] if len(sys.argv) > 1 else "6c700b29d26e"
++# 【修改 v2.7】不再写死任务 ID：从 /api/tasks 取最近一条已完成任务，
++# 否则换机器/清过任务记录就 404，看起来像接口坏了。
++TID = sys.argv[1] if len(sys.argv) > 1 else ""
+ opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+ 
+ 
+@@ -24,6 +26,12 @@ def post(path, obj):
+         return json.loads(r.read().decode("utf-8"))
+ 
+ 
++if not TID:
++    listing = get("/api/tasks")
++    done = [x for x in listing.get("tasks", []) if x.get("status") == "done"]
++    assert done, "服务里没有已完成任务，请先转写一条再跑本测试"
++    TID = done[0]["id"]
++
+ task = get("/api/task/" + TID)
+ assert task["status"] == "done", task
+ res = task["result"]
+diff --git a/samples/test_guard.py b/samples/test_guard.py
+index a6a5e1f..9640bb5 100644
+--- a/samples/test_guard.py
++++ b/samples/test_guard.py
+@@ -1,127 +1,129 @@
+-#!/usr/bin/env python
+-# -*- coding: utf-8 -*-
+-"""五类填充词 + 七组判别的实测脚本"""
+-
+-import sys
+-from pathlib import Path
+-
+-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+-import clean_transcript as CT
+-
+-RULES = Path(__file__).resolve().parent.parent / "rules" / "filler_words.json"
+-CORR = Path(__file__).resolve().parent.parent / "terms" / "corrections.txt"
+-
+-C = CT.Cleaner(CT.load_rules(RULES), CT.load_corrections(CORR))
+-
+-SAMPLE = (
+-    "嗯，这个，各位同事啊，那么今天下午呢，我们主要是讲一下这个，就是药品零售企业，"
+-    "那个，日常检查的一些要点。那么首先呢，我先说一下啊，我们到了现场，第一个，"
+-    "就是要看它的这个证照是不是齐全，对吧？然后呢，这个执业药师是不是在岗，"
+-    "这个是很重要的一条，很重要的一个方面。然后的话，就是说，还要看它的这个药品陈列，"
+-    "那个，处方药和非处方药有没有分开，这个样子。嗯，基本上就是这些，发现问题呢，"
+-    "我们就要，这个，依法依规地进行处理，对吧？"
+-)
+-
+-
+-def run(label, text, expect_keep=(), expect_gone=()):
+-    out, changes, warns = C.clean(text)
+-    ok = True
+-    for k in expect_keep:
+-        if k not in out:
+-            ok = False
+-    for k in expect_gone:
+-        if k in out:
+-            ok = False
+-    flag = "OK  " if ok else "FAIL"
+-    print(f"[{flag}] {label}")
+-    print(f"       原：{text}")
+-    print(f"       后：{out}")
+-    if changes:
+-        print(f"       改动：{'；'.join(f'{a} {b}' for a, b, _ in changes)}")
+-    if C.last_suggestions:
+-        print(f"       建议：{'；'.join(C.last_suggestions)}")
+-    print()
+-    return ok
+-
+-
+-print("=" * 78)
+-print("一、用户样本全文")
+-print("=" * 78)
+-out, ch, wn = C.clean(SAMPLE)
+-print(out)
+-print()
+-print("字数：", len(SAMPLE), "→", len(out), f"（删 {100*(1-len(out)/len(SAMPLE)):.0f}%）")
+-print("改动：", "；".join(f"{a} {b}" for a, b, _ in ch))
+-print("建议：", "；".join(C.last_suggestions) or "无")
+-
+-print()
+-print("=" * 78)
+-print("二、逐条判别")
+-print("=" * 78)
+-
+-cases = [
+-    # 语气词：全部删
+-    ("语气词全部删", "嗯，啊，呃，哦，诶，哎，这个事要注意。",
+-     ("这个事要注意",), ("嗯", "啊", "呃", "哦", "诶", "哎")),
+-    # 结尾叹词只在句尾删，不伤实词
+-    ("嘛/哈 不伤实词", "你干嘛去了？哈哈，是这样嘛。",
+-     ("干嘛", "哈哈"), ()),
+-    # 句首填充：无指代删
+-    ("句首填充无指代", "这个，就是说，我们要注意。", ("要注意",), ("这个", "就是说")),
+-    # 有指代保留
+-    ("这个+名词保留", "这个文件，那个条款，这个批号都要看。",
+-     ("这个文件", "那个条款", "这个批号"), ()),
+-    # 句尾确认
+-    ("句尾确认删除", "证照是不是齐全，对吧？", ("齐全？",), ("对吧",)),
+-    ("是不是在岗不删", "要看执业药师是不是在岗。", ("是不是在岗",), ()),
+-    # 口头冗余
+-    ("口头冗余整体删", "那个啥，怎么说呢，我这么说吧，要查。", ("要查",),
+-     ("那个啥", "怎么说呢", "我这么说吧")),
+-    # 组合填充优先
+-    ("组合填充整体删", "这个就是说呢，然后的话，重点在这。", ("重点在这",),
+-     ("这个就是说", "然后的话")),
+-    # 所以说：有因果保留
+-    ("所以说有因果保留", "因为冷链断了，所以说这批药不能用了。",
+-     ("所以说",), ()),
+-    # 【修改 v2.4】2026-11-09 涨潮归主动把「我们 / 咱们 / 好」加入删除词表
+-    # （网课口头禅），这两条按新规则更新预期；护栏意图不变：该删的删干净，
+-    # 且绝不误伤后面的专业表述。
+-    ("所以说无因果删除", "所以说，我们要注意。", ("要注意",), ("所以说", "我们")),
+-    # 这样的话：条件句保留
+-    ("这样的话条件句保留", "这样的话就可以了。", ("这样的话",), ()),
+-    ("这样的话填充删除", "这样的话，我们先看证照。", ("先看证照",), ("这样的话",)),
+-    # 我们：已按用户新增规则改为「一律删」（见上条注释）
+-    ("我们单位自称按新规则删", "我们的监管要求是这样的。", ("监管要求",), ("我们",)),
+-    ("我们泛称引导", "我们来看这个案例。", ("来看这个案例",), ("我们",)),
+-    # 其实：转折保留
+-    ("其实表转折保留", "其实是这样，并不是那样。", ("其实是这样",), ()),
+-    ("其实口头禅删除", "其实，这个问题要注意。", ("这个问题要注意",), ("其实",)),
+-    # 约量
+-    ("基本上无数据删", "基本上就是这些。", ("就是这些",), ("基本上",)),
+-    # 【修改 v1.4】断言改为只验「约量词不被当填充词删」。
+-    # 原来写死 ("大概三十",) / ("差不多五万",) 会与数字规整冲突（ITN 会转成 30 / 5万），
+-    # 而这两条用例的本意是保护约量词，与数字写法无关。
+-    ("大概含数字保留", "大概三十个工作日能办完。", ("大概",), ()),
+-    ("差不多含金额保留", "差不多五万元左右。", ("差不多",), ()),
+-    # 【新增 v1.4】「额」是语气词，但也是常用词的词内字，无条件 replace 会改坏专业表述
+-    ("金额不被误删", "货值金额五十万元。", ("金额",), ()),
+-    ("额度不被误删", "这个额度要控制。", ("额度",), ()),
+-    ("余额不被误删", "账户余额不足。", ("余额",), ()),
+-    ("限额不被误删", "超出限额了。", ("限额",), ()),
+-    ("句首额仍可删", "额，这个我们讲一下。", ("讲一下",), ()),
+-    # 解释
+-    ("换句话说有解释建议", "换句话说，这就是许可前置。", ("换句话说",), ()),
+-    ("可以说当填充删", "可以说非常重要。", ("非常重要",), ("可以说",)),
+-    # 引导
+-    ("请注意建议精简", "请注意，这里是重点。", ("请注意",), ()),
+-]
+-
+-allok = True
+-for label, text, keep, gone in cases:
+-    allok &= run(label, text, keep, gone)
+-
+-print("=" * 78)
+-print("全部通过" if allok else "有未通过用例")
+-print("=" * 78)
+-# 【修改 v1.4】原来无论成败都返回 0，自动化跑整套回归时无法发现失败
+-sys.exit(0 if allok else 1)
++#!/usr/bin/env python
++# -*- coding: utf-8 -*-
++"""五类填充词 + 七组判别的实测脚本"""
++
++import sys
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
++import clean_transcript as CT
++
++RULES = Path(__file__).resolve().parent.parent / "rules" / "filler_words.json"
++CORR = Path(__file__).resolve().parent.parent / "terms" / "corrections.txt"
++
++C = CT.Cleaner(CT.load_rules(RULES), CT.load_corrections(CORR))
++
++SAMPLE = (
++    "嗯，这个，各位同事啊，那么今天下午呢，我们主要是讲一下这个，就是药品零售企业，"
++    "那个，日常检查的一些要点。那么首先呢，我先说一下啊，我们到了现场，第一个，"
++    "就是要看它的这个证照是不是齐全，对吧？然后呢，这个执业药师是不是在岗，"
++    "这个是很重要的一条，很重要的一个方面。然后的话，就是说，还要看它的这个药品陈列，"
++    "那个，处方药和非处方药有没有分开，这个样子。嗯，基本上就是这些，发现问题呢，"
++    "我们就要，这个，依法依规地进行处理，对吧？"
++)
++
++
++def run(label, text, expect_keep=(), expect_gone=()):
++    out, changes, warns = C.clean(text)
++    ok = True
++    for k in expect_keep:
++        if k not in out:
++            ok = False
++    for k in expect_gone:
++        if k in out:
++            ok = False
++    flag = "OK  " if ok else "FAIL"
++    print(f"[{flag}] {label}")
++    print(f"       原：{text}")
++    print(f"       后：{out}")
++    if changes:
++        print(f"       改动：{'；'.join(f'{a} {b}' for a, b, _ in changes)}")
++    if C.last_suggestions:
++        print(f"       建议：{'；'.join(C.last_suggestions)}")
++    print()
++    return ok
++
++
++print("=" * 78)
++print("一、用户样本全文")
++print("=" * 78)
++out, ch, wn = C.clean(SAMPLE)
++print(out)
++print()
++print("字数：", len(SAMPLE), "→", len(out), f"（删 {100*(1-len(out)/len(SAMPLE)):.0f}%）")
++print("改动：", "；".join(f"{a} {b}" for a, b, _ in ch))
++print("建议：", "；".join(C.last_suggestions) or "无")
++
++print()
++print("=" * 78)
++print("二、逐条判别")
++print("=" * 78)
++
++cases = [
++    # 语气词：全部删
++    ("语气词全部删", "嗯，啊，呃，哦，诶，哎，这个事要注意。",
++     ("这个事要注意",), ("嗯", "啊", "呃", "哦", "诶", "哎")),
++    # 结尾叹词只在句尾删，不伤实词
++    ("嘛/哈 不伤实词", "你干嘛去了？哈哈，是这样嘛。",
++     ("干嘛", "哈哈"), ()),
++    # 句首填充：无指代删
++    ("句首填充无指代", "这个，就是说，我们要注意。", ("要注意",), ("这个", "就是说")),
++    # 有指代保留
++    ("这个+名词保留", "这个文件，那个条款，这个批号都要看。",
++     ("这个文件", "那个条款", "这个批号"), ()),
++    # 句尾确认
++    ("句尾确认删除", "证照是不是齐全，对吧？", ("齐全？",), ("对吧",)),
++    ("是不是在岗不删", "要看执业药师是不是在岗。", ("是不是在岗",), ()),
++    # 口头冗余
++    ("口头冗余整体删", "那个啥，怎么说呢，我这么说吧，要查。", ("要查",),
++     ("那个啥", "怎么说呢", "我这么说吧")),
++    # 组合填充优先
++    ("组合填充整体删", "这个就是说呢，然后的话，重点在这。", ("重点在这",),
++     ("这个就是说", "然后的话")),
++    # 所以说：有因果保留
++    ("所以说有因果保留", "因为冷链断了，所以说这批药不能用了。",
++     ("所以说",), ()),
++    # 【修改 v2.4】2026-11-09 涨潮归主动把「我们 / 咱们 / 好」加入删除词表
++    # （网课口头禅），这两条按新规则更新预期；护栏意图不变：该删的删干净，
++    # 且绝不误伤后面的专业表述。
++    # v2.7：删「所以说」，但「我们要注意」的「我们」是主语，按自称判别保留
++    ("所以说无因果删除", "所以说，我们要注意。", ("我们要注意",), ("所以说",)),
++    # 这样的话：条件句保留
++    ("这样的话条件句保留", "这样的话就可以了。", ("这样的话",), ()),
++    ("这样的话填充删除", "这样的话，我们先看证照。", ("先看证照",), ("这样的话",)),
++    # 我们：v2.7 起交给 guards.自称 —— 单位自称保留并建议改「我局」，
++    # 不能再无条件删（「我们的监管要求」删掉会变成「的监管要求」）。
++    ("我们单位自称保留并建议", "我们的监管要求是这样的。", ("监管要求", "我们"), ()),
++    ("我们泛称引导", "我们来看这个案例。", ("来看这个案例",), ("我们",)),
++    # 其实：转折保留
++    ("其实表转折保留", "其实是这样，并不是那样。", ("其实是这样",), ()),
++    ("其实口头禅删除", "其实，这个问题要注意。", ("这个问题要注意",), ("其实",)),
++    # 约量
++    ("基本上无数据删", "基本上就是这些。", ("就是这些",), ("基本上",)),
++    # 【修改 v1.4】断言改为只验「约量词不被当填充词删」。
++    # 原来写死 ("大概三十",) / ("差不多五万",) 会与数字规整冲突（ITN 会转成 30 / 5万），
++    # 而这两条用例的本意是保护约量词，与数字写法无关。
++    ("大概含数字保留", "大概三十个工作日能办完。", ("大概",), ()),
++    ("差不多含金额保留", "差不多五万元左右。", ("差不多",), ()),
++    # 【新增 v1.4】「额」是语气词，但也是常用词的词内字，无条件 replace 会改坏专业表述
++    ("金额不被误删", "货值金额五十万元。", ("金额",), ()),
++    ("额度不被误删", "这个额度要控制。", ("额度",), ()),
++    ("余额不被误删", "账户余额不足。", ("余额",), ()),
++    ("限额不被误删", "超出限额了。", ("限额",), ()),
++    ("句首额仍可删", "额，这个我们讲一下。", ("讲一下",), ()),
++    # 解释
++    ("换句话说有解释建议", "换句话说，这就是许可前置。", ("换句话说",), ()),
++    ("可以说当填充删", "可以说非常重要。", ("非常重要",), ("可以说",)),
++    # 引导
++    ("请注意建议精简", "请注意，这里是重点。", ("请注意",), ()),
++]
++
++allok = True
++for label, text, keep, gone in cases:
++    allok &= run(label, text, keep, gone)
++
++print("=" * 78)
++print("全部通过" if allok else "有未通过用例")
++print("=" * 78)
++# 【修改 v1.4】原来无论成败都返回 0，自动化跑整套回归时无法发现失败
++sys.exit(0 if allok else 1)
+diff --git a/samples/test_more_terms.py b/samples/test_more_terms.py
+index eeb2528..b2fc80b 100644
+--- a/samples/test_more_terms.py
++++ b/samples/test_more_terms.py
+@@ -26,9 +26,9 @@ CASES = [
+     ("东西呢删除", "东西呢？", "东西？"),
+     ("今天下午呢", "今天下午呢，我们讲。", "今天下午，我们讲。"),
+     ("干嘛不删", "你干嘛去了？", "你干嘛去了？"),
+-    ("好啦", "好啦，走吧。", "好，走。"),
++    ("好啦", "好啦，走吧。", "走。"),   # 「好」是用户新增的句首填充规则
+     ("走呗", "走呗。", "走。"),
+-    ("好哇", "好哇，就这么办。", "好，就这么办。"),
++    ("好哇", "好哇，就这么办。", "就这么办。"),
+ 
+     # ── punct_only：可能当实词的，只在句末/标点前删 ──
+     ("你看那边保留", "你看那边。", "你看那边。"),
+diff --git a/samples/test_v17.py b/samples/test_v17.py
+index f393ca3..f70163d 100644
+--- a/samples/test_v17.py
++++ b/samples/test_v17.py
+@@ -124,8 +124,8 @@ def unit():
+ 
+     # 13. 术语表驱动：术语来自 terms/，不是硬编码
+     terms = LP.must_keep_terms(SRC)
+-    assert "两品一械" in terms, terms
+-    assert all(len(t) >= 4 for t in terms)
++    assert ("两品一械",) in terms, terms   # v2.7 起返回元组：简称/全称命中任一即可
++    assert all(all(len(x) >= 4 for x in g) for g in terms), terms
+     assert LP.must_keep_terms("完全不相关的一句话") == []
+     ok(f"术语清单来自 terms/（本稿命中 {len(terms)} 条）")
+ 
+diff --git a/samples/test_v18.py b/samples/test_v18.py
+index 29b341e..fddbee0 100644
+--- a/samples/test_v18.py
++++ b/samples/test_v18.py
+@@ -144,7 +144,13 @@ class FakeLLM:
+ 
+     def create_chat_completion(self, messages, **kw):
+         body = messages[-1]["content"]
+-        text = body.split("原文：")[-1].split("\n/no_think")[0].strip("\n")
++        # 【修改 v2.7】兼容 v2.5 起的 <transcript> 包裹；旧格式仍保留
++        import re as _re
++        hit = _re.search(r"<transcript>\s*(.*?)\s*</transcript>", body, _re.S)
++        if hit:
++            text = hit.group(1)
++        else:
++            text = body.split("原文：")[-1].split("\n/no_think")[0].strip("\n")
+         self.calls.append(len(text))
+         if len(text) > self.cap:
+             return {"choices": [{"finish_reason": "length",
+diff --git a/samples/test_v21.py b/samples/test_v21.py
+index 593c2bc..88f57ae 100644
+--- a/samples/test_v21.py
++++ b/samples/test_v21.py
+@@ -87,7 +87,7 @@ def cloud_unit(tmp: Path):
+         p = CL.apply_preset("glm-4-flash")
+         ok("免费模型价格为 0", p["price_in"] == 0 and p["price_out"] == 0, p)
+         d = CL.apply_preset("deepseek-v4-flash")
+-        ok("DeepSeek 用新模型名", d["model"] == "deepseek-v4-flash", d)
++        ok("DeepSeek 用新模型名", d["model"] == "deepseek-flash", d)
+ 
+         cfg = CL.save_config({"enabled": True, "preset": "glm-4-flash",
+                               "base_url": "https://open.bigmodel.cn/api/paas/v4",
+diff --git a/samples/test_v24.py b/samples/test_v24.py
+index 3cb9b72..9ccc175 100644
+--- a/samples/test_v24.py
++++ b/samples/test_v24.py
+@@ -78,7 +78,9 @@ def parallel_unit(tmp):
+     finally:
+         T.FUNASR_WORKERS, T.FUNASR_CHUNK_SEC = old_workers, old_chunk
+ 
+-    ok("默认 2 路并行", T.FUNASR_WORKERS == 2, T.FUNASR_WORKERS)
++    # 【修改 v2.7】默认并行度改为按核数/内存自适应（上限 4），不再固定 2
++    ok("默认并行度自适应", T.FUNASR_WORKERS == T._default_funasr_workers()
++       and 1 <= T.FUNASR_WORKERS <= 4, T.FUNASR_WORKERS)
+     ok("默认片长 600s", T.FUNASR_CHUNK_SEC == 600.0, T.FUNASR_CHUNK_SEC)
+     src = (BASE / "transcribe.py").read_text(encoding="utf-8")
+     ok("workers=1 可回退整段", "if FUNASR_WORKERS > 1:" in src)
+@@ -167,7 +169,7 @@ def guards():
+     manual = BASE / "web" / "说明书.html"
+     ok("顶栏有使用说明按钮", 'id="btnManual"' in web)
+     ok("说明书静态页存在", manual.exists())
+-    ok("说明书已更新到 2.4", manual.exists() and "版本 2.4" in manual.read_text(encoding="utf-8"))
++    ok("说明书已更新到 2.7", manual.exists() and "版本 2.7" in manual.read_text(encoding="utf-8"))
+     ok("说明书无旧删源表述", manual.exists() and "连源文件一起删" not in manual.read_text(encoding="utf-8"))
+     ok("前端无删源复选框", 'id="purgeMedia"' not in web)
+     ok("后端强制不删源", "purge = False" in srv)
+diff --git a/samples/test_v25.py b/samples/test_v25.py
+index 9c7f25e..257844d 100644
+--- a/samples/test_v25.py
++++ b/samples/test_v25.py
+@@ -112,11 +112,11 @@ def crlf_flow(tmp: Path):
+     print("[换行] CRLF 文件保存后仍是 CRLF")
+     d = setup(tmp / "crlf", nl=b"\r\n")
+     p = d / "aliases.txt"
+-    G.apply_changes({"kind": "aliases", "adds": [{"from": "UDI", "to": "医疗器械唯一标识"}]})
++    G.apply_changes({"kind": "aliases", "adds": [{"from": "SOP", "to": "标准操作规程"}]})
+     raw = p.read_bytes()
+     ok("仍为 CRLF", b"\r\n" in raw and raw.count(b"\r\n") >= raw.count(b"\n") - 2)
+     ok("未混入裸 LF", raw.replace(b"\r\n", b"").count(b"\n") == 0)
+-    ok("内容写入", "UDI=>医疗器械唯一标识".encode() in raw)
++    ok("内容写入", "SOP=>标准操作规程".encode() in raw)
+ 
+ 
+ def guards(tmp: Path):
+diff --git a/samples/test_v27.py b/samples/test_v27.py
+new file mode 100644
+index 0000000..f3dbf3a
+--- /dev/null
++++ b/samples/test_v27.py
+@@ -0,0 +1,325 @@
++# -*- coding: utf-8 -*-
++"""v2.7 专项回归：术语表扩充 / 字幕清理生效 / 4 路并行 / DeepSeek 不思考 / 审计修复。
++
++全程使用临时目录与内存假对象，不改真实词表与配置。
++运行：python samples/test_v27.py
++"""
++import io
++import json
++import os
++import shutil
++import sys
++import tempfile
++import zipfile
++from pathlib import Path
++
++BASE = Path(__file__).resolve().parent.parent
++sys.path.insert(0, str(BASE))
++
++import clean_transcript as CT   # noqa: E402
++import cloud_llm as CL          # noqa: E402
++import glossary as G            # noqa: E402
++import llm_polish as LP         # noqa: E402
++import termfix as TF            # noqa: E402
++import transcribe as T          # noqa: E402
++
++PASS = []
++
++
++def ok(name, cond, extra=""):
++    PASS.append((name, bool(cond)))
++    print(f"  {'✓' if cond else '✗'} {name}"
++          f"{(' — ' + str(extra)) if extra and not cond else ''}")
++
++
++# ────────────────────────── 术语表内容 ──────────────────────────
++
++def terms_content():
++    print("[术语表] 规模、去重、危险条目")
++    lines = [ln.strip() for ln in
++             (BASE / "terms" / "hotwords.txt").read_text(encoding="utf-8").splitlines()
++             if ln.strip() and not ln.startswith("#")]
++    words = [ln.split("|")[0].strip() for ln in lines]
++    ok("热词 200–400 条", 200 <= len(words) <= 400, len(words))
++    ok("热词无重复", len(words) == len(set(words)),
++       [w for w in words if words.count(w) > 1][:4])
++    for must in ("医疗器械生产质量管理规范检查指导原则",
++                 "医疗器械生产质量管理规范无菌医疗器械检查指导原则",
++                 "关键项目", "主要项目", "一般项目",
++                 "化妆品生产质量管理规范", "首营企业", "药品追溯码"):
++        ok(f"含「{must}」", must in words)
++
++    corr = dict(CT.load_corrections(BASE / "terms" / "corrections.txt"))
++    for bad in ("影片", "驻藏", "备安", "处于药品"):
++        ok(f"危险替换已停用：{bad}", bad not in corr)
++    ok("管带→管代仍启用", corr.get("管带") == "管代")
++
++    aliases = TF.load_aliases(BASE / "terms" / "aliases.txt")
++    amap = dict(aliases)
++    ok("管代→管理者代表", amap.get("管代") == "管理者代表")
++    ok("UDI→医疗器械唯一标识", amap.get("UDI") == "医疗器械唯一标识")
++    ok("长简称先于裸 GMP", "医疗器械GMP" in amap)
++
++    changes, _ = TF.expand_aliases("这个医疗器械GMP的要求", aliases)
++    ok("器械 GMP 不展开成药监 GMP", "医疗器械生产质量管理规范" in changes
++       and "药品生产质量管理规范" not in changes, changes)
++
++
++def subtitle_glossary():
++    print("[字幕] 术语表参与字幕清理，且外部编辑即时生效")
++    tmp = Path(tempfile.mkdtemp(prefix="v27g_"))
++    orig_base = CT.BASE
++    try:
++        (tmp / "terms").mkdir(parents=True)
++        (tmp / "terms" / "hotwords.txt").write_text(
++            "药品经营质量管理规范\n", encoding="utf-8")
++        (tmp / "terms" / "aliases.txt").write_text(
++            "GSP=>药品经营质量管理规范\n管代=>管理者代表\n", encoding="utf-8")
++        CT.BASE = tmp
++        c = CT.Cleaner({"groups": {}, "guards": {}}, [])
++        out, ch, _ = c.clean("依据药品经营质量规范，管代负责GSP。")
++        ok("字幕句应用术语补全", "药品经营质量管理规范" in out, out)
++        ok("字幕句应用简称膨胀", "管理者代表" in out, out)
++
++        # 外部改词表后，不重建进程、下一次 Cleaner 就生效（mtime 缓存）
++        (tmp / "terms" / "hotwords.txt").write_text(
++            "药品经营质量管理规范\n药物警戒质量管理规范\n", encoding="utf-8")
++        os.utime(tmp / "terms" / "hotwords.txt", None)
++        c2 = CT.Cleaner({"groups": {}, "guards": {}}, [])
++        out2, _, _ = c2.clean("依据药物警戒质量规范执行。")
++        ok("外部编辑词表即时生效", "药物警戒质量管理规范" in out2, out2)
++    finally:
++        CT.BASE = orig_base
++        CT.load_glossary(force=True)
++        shutil.rmtree(tmp, ignore_errors=True)
++
++    p = G.preview("依据药品经营质量规范，管代负责质量管理体系。")
++    names = [s["name"] for s in p["steps"]]
++    ok("试一句显示三步链路", "简称膨胀" in names and "术语补全" in names, names)
++    ok("试一句给出改后文本", "药品经营质量管理规范" in p["after"], p["after"])
++
++
++def glossary_bom(tmp: Path):
++    print("[术语表] BOM / GBK 往返不破坏原文件")
++    orig = G.KINDS
++    try:
++        for enc, bom in (("utf-8", True), ("gbk", False)):
++            f = tmp / f"c_{enc}.txt"
++            f.write_bytes((b"\xef\xbb\xbf" if bom else b"")
++                          + "错词=>正确词\n".encode(enc))
++            G.KINDS = {"corrections": {"path": f, "mode": "map", "label": "错词校正"}}
++            items = G.parse_items(f, "map")
++            ok(f"{enc} 解析首条", items and items[0]["from"] == "错词", items)
++            G.apply_changes({"kind": "corrections",
++                             "adds": [{"from": "管带", "to": "管代"}]})
++            raw = f.read_bytes()
++            ok(f"{enc} BOM 保持", raw.startswith(b"\xef\xbb\xbf") == bom)
++            ok(f"{enc} 编码未变", raw.decode("utf-8-sig" if bom else enc)
++               .strip().endswith("管带=>管代"))
++    finally:
++        G.KINDS = orig
++
++
++# ────────────────────────── 识别与并行 ──────────────────────────
++
++def transcribe_cases():
++    print("[识别] 热词权重、切片、并行度")
++    tmp = Path(tempfile.mkdtemp(prefix="v27t_"))
++    try:
++        p = tmp / "h.txt"
++        p.write_text("管代|20\n错词|abc\n正常|88\n", encoding="utf-8")
++        hw = T.load_hotwords(p)
++        ok("坏权重按整行当词，不拼坏热词串", "错词|abc 20" in hw and "错词 20" not in hw, hw)
++        ok("合法权重保留", "正常 88" in hw, hw)
++    finally:
++        shutil.rmtree(tmp, ignore_errors=True)
++
++    import numpy as np
++    pcm = (np.sin(np.arange(16000 * 12) / 20.0) * 0.2).astype("float32")
++    parts = T._split_pcm(pcm, 16000, 4.0, 0.5)
++    ok("12s 按 4s 切片 ≥3 片", len(parts) >= 3, len(parts))
++    offs = [o for _, o in parts]
++    ok("偏移单调", all(offs[i] < offs[i + 1] for i in range(len(offs) - 1)), offs)
++    covered = sum(len(c) for c, _ in parts)
++    ok("不丢采样", covered == len(pcm), (covered, len(pcm)))
++    ok("末片到结尾", abs((offs[-1] + len(parts[-1][0]) / 16000) - 12) < 0.05)
++
++    ok("默认并行 1–4 路", 1 <= T.FUNASR_WORKERS <= 4, T.FUNASR_WORKERS)
++    ok("默认等于自适应值",
++       T.FUNASR_WORKERS == T._default_funasr_workers(), T.FUNASR_WORKERS)
++
++
++# ────────────────────────── 润色 / 云端 ──────────────────────────
++
++def llm_cases():
++    print("[润色] 术语组、回显检测、块尾判断、块数估算")
++    groups = LP.must_keep_terms("这个医疗器械GMP的要求，管代负责。")
++    flat = [g for g in groups]
++    ok("简称/全称作为一组", any("医疗器械GMP" in g and
++                          "医疗器械生产质量管理规范" in g for g in flat), flat)
++    ok("不误加药监 GMP", not any("药品生产质量管理规范" in g for g in flat), flat)
++
++    ok("单说「技术约定」不算回显", not LP._looks_echoed("我们技术约定一下，这个条款怎么理解。"))
++    ok("复述规则仍能识别",
++       LP._looks_echoed("你是一名熟悉药品、医疗器械、化妆品监管工作的文字编辑。"))
++
++    ok("块尾只差标点算已保留", LP._tail_present("……谢谢大家", "谢谢大家。"))
++    ok("块尾真的删了要补回", not LP._tail_present("这是第98句的内容。", "这是第99句的内容。"))
++
++    orig = CL.load_config
++    try:
++        CL.load_config = lambda: {"enabled": True}
++        cloud = LP.estimate_chunks("字。" * 15000)
++        CL.load_config = lambda: {"enabled": False}
++        local = LP.estimate_chunks("字。" * 15000)
++        ok("云端块数明显更少", cloud * 3 < local, (cloud, local))
++    finally:
++        CL.load_config = orig
++
++
++def cloud_cases():
++    print("[云端] DeepSeek 关闭思考 + 默认额度")
++    cfg = CL.load_config()
++    cfg.update(enabled=True, preset="deepseek-v4-flash",
++               base_url="https://api.deepseek.com", model="deepseek-flash",
++               api_key="sk-test", thinking="off", max_tokens=8192)
++    captured = {}
++
++    class Resp:
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *a):
++            return False
++
++        def read(self):
++            return json.dumps({"choices": [{"message": {"content": "正常"},
++                                            "finish_reason": "stop"}],
++                               "usage": {}}).encode()
++
++    class Op:
++        def open(self, req, timeout=0):
++            captured["body"] = json.loads(req.data.decode())
++            return Resp()
++
++    orig = CL._opener
++    CL._opener = lambda: Op()
++    try:
++        CL.CloudChat(cfg).create_chat_completion(
++            messages=[{"role": "user", "content": "hi"}], max_tokens=32)
++        ok("请求体带 thinking=disabled",
++           captured["body"].get("thinking") == {"type": "disabled"}, captured)
++        cfg["thinking"] = "auto"
++        captured.clear()
++        CL.CloudChat(cfg).create_chat_completion(
++            messages=[{"role": "user", "content": "hi"}], max_tokens=32)
++        ok("auto 时不发 thinking", "thinking" not in captured["body"])
++    finally:
++        CL._opener = orig
++
++    ok("默认关闭思考", CL.DEFAULTS["thinking"] == "off")
++    ok("默认输出额度 8192", CL.DEFAULTS["max_tokens"] == 8192)
++    ok("现行模型名", CL.PRESETS["deepseek-v4-flash"]["model"] == "deepseek-flash")
++
++
++# ────────────────────────── 队列 / 备份 ──────────────────────────
++
++def server_cases():
++    print("[服务] 结果载荷回收、队列幽灵条目、重启落盘")
++    import server as S
++
++    orig_tasks = dict(S.TASKS)
++    try:
++        S.TASKS.clear()
++        for i in range(25):
++            S.TASKS[f"t{i}"] = {"status": "done", "result": {"cues": [i]}}
++        S._prune_tasks(300)
++        kept = sum(1 for v in S.TASKS.values() if v.get("result"))
++        ok("只保留最近 20 份结果", kept == 20, kept)
++
++        S.TASKS["cancel1"] = {"status": "cancelled", "result": None}
++        S.JOB_Q.put("cancel1")
++        ok("删除前在队列里", "cancel1" in S.JOB_Q.snapshot())
++        S._remove_task("cancel1")
++        ok("删除后队列无幽灵", "cancel1" not in S.JOB_Q.snapshot(),
++           S.JOB_Q.snapshot())
++    finally:
++        S.TASKS.clear()
++        S.TASKS.update(orig_tasks)
++
++    tmp = Path(tempfile.mkdtemp(prefix="v27j_"))
++    orig_jobs, orig_tasks = S.JOBS, dict(S.TASKS)
++    try:
++        S.JOBS = tmp
++        (tmp / "run1.json").write_text(json.dumps(
++            {"id": "run1", "status": "running", "logs": []}), encoding="utf-8")
++        S.TASKS.clear()
++        S._load_jobs()
++        disk = json.loads((tmp / "run1.json").read_text(encoding="utf-8"))
++        ok("running 重启后落盘为 interrupted", disk["status"] == "interrupted",
++           disk.get("status"))
++    finally:
++        S.JOBS = orig_jobs
++        S.TASKS.clear()
++        S.TASKS.update(orig_tasks)
++        shutil.rmtree(tmp, ignore_errors=True)
++
++
++def backup_cases():
++    print("[备份] 篡改包按 sha256 拒绝")
++    import backup as BK
++    tmp = Path(tempfile.mkdtemp(prefix="v27b_"))
++    orig_base, orig_dir = BK.BASE, BK.BACKUP_DIR
++    try:
++        (tmp / "terms").mkdir(parents=True)
++        (tmp / "rules").mkdir(parents=True)
++        (tmp / "terms" / "corrections.txt").write_text("管带=>管代\n", encoding="utf-8")
++        (tmp / "terms" / "aliases.txt").write_text("GSP=>药品经营质量管理规范\n",
++                                                   encoding="utf-8")
++        (tmp / "terms" / "hotwords.txt").write_text("药品管理法\n", encoding="utf-8")
++        (tmp / "rules" / "filler_words.json").write_text("{}", encoding="utf-8")
++        BK.BASE, BK.BACKUP_DIR = tmp, tmp / "backups"
++
++        data, _, _ = BK.export_zip(False, False)
++        src = zipfile.ZipFile(io.BytesIO(data))
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
++            for name in src.namelist():
++                raw = src.read(name)
++                if name == "terms/corrections.txt":
++                    raw = "管带=>管道\n".encode("utf-8")   # 篡改内容，manifest 不变
++                z.writestr(name, raw)
++        try:
++            BK.import_zip(buf.getvalue())
++            ok("篡改包被拒绝", False)
++        except ValueError as exc:
++            ok("篡改包被拒绝", "sha256" in str(exc), str(exc))
++    finally:
++        BK.BASE, BK.BACKUP_DIR = orig_base, orig_dir
++        shutil.rmtree(tmp, ignore_errors=True)
++
++
++def main():
++    tmp = Path(tempfile.mkdtemp(prefix="v27_"))
++    try:
++        terms_content()
++        subtitle_glossary()
++        glossary_bom(tmp)
++        transcribe_cases()
++        llm_cases()
++        cloud_cases()
++        server_cases()
++        backup_cases()
++    finally:
++        shutil.rmtree(tmp, ignore_errors=True)
++
++    bad = [n for n, c in PASS if not c]
++    print(f"\n{len(PASS) - len(bad)}/{len(PASS)} 通过")
++    if bad:
++        print("失败：" + "、".join(bad))
++        return 1
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/server.py b/server.py
+index 1b300e1..ed18413 100644
+--- a/server.py
++++ b/server.py
+@@ -409,6 +409,10 @@ def _load_jobs():
+             continue
+         d["result"] = None
+         st = d.get("status")
++        # 【修复 v2.7】先登记再落盘。原来 running 分支先调 _persist(tid)，
++        # 而 _persist 从 TASKS 取任务——此时还没登记，直接 return，
++        # 「改成 interrupted」永远写不进磁盘，每次重启都重复同一判断。
++        TASKS[tid] = d
+         if st == "queued":
+             # 【新增 v2.3】夜间无人值守的关键：排队中的任务必须自动续跑。
+             # 原实现把 queued 和 running 一起标成「中断」，等于重启一次
+@@ -420,7 +424,6 @@ def _load_jobs():
+             d["error"] = "服务重启，任务中断；可点「重试」重新排队"
+             # 状态改了要立刻落盘，磁盘上不再留假的 running
+             _persist(tid)
+-        TASKS[tid] = d
+ 
+     for tid in resume:
+         JOB_Q.put(tid)
+@@ -506,8 +509,17 @@ def _rehydrate(task: dict):
+ 
+ 
+ def _prune_tasks(limit: int):
+-    """只淘汰已结束的任务；排队中和识别中的不能被清掉。"""
++    """只淘汰已结束的任务；排队中和识别中的不能被清掉。
++
++    【新增 v2.7】同时给「结果载荷」设上限：result 里是整份 cues（长课
++    一两千条），300 个任务就是几百 MB。只保留最近 20 份，更早的置空；
++    再次打开时 _rehydrate 会从 out/ 的产物重建，功能不受影响。
++    """
+     terminal = {"done", "error", "cancelled", "interrupted"}
++    with_result = [k for k, v in TASKS.items()
++                   if v.get("status") in terminal and v.get("result")]
++    for k in with_result[:-20] if len(with_result) > 20 else []:
++        TASKS[k]["result"] = None
+     while len(TASKS) > limit:
+         victim = next((k for k, v in TASKS.items()
+                        if v.get("status") in terminal), None)
+@@ -731,8 +743,11 @@ def upload(file: UploadFile = File(...)):
+     解码器无限期挂住，未限制大小的上传会把磁盘撑满。
+     """
+     fid = uuid.uuid4().hex[:12]
+-    safe = _safe(Path(file.filename or "upload.bin").name)[:120] or "upload"
+-    ext = Path(safe).suffix.lower()
++    raw_name = Path(file.filename or "upload.bin").name
++    # 【修复 v2.7】先取扩展名再截断文件名。原来先截到 120 字再取后缀，
++    # 超长中文文件名会把「.mp4」截掉，前端收到「不支持的文件类型」。
++    ext = Path(raw_name).suffix.lower()
++    safe = (_safe(raw_name)[:max(1, 120 - len(ext))] or "upload") + ext
+     if ext not in ALLOWED_MEDIA_EXT:
+         return JSONResponse(
+             {"error": f"不支持的文件类型：{ext or '无扩展名'}"}, status_code=400)
+@@ -884,7 +899,12 @@ def _enqueue_upload(file_id: str, opt: dict):
+         if not getattr(prov, "ready", False):
+             return None, f"{prov.name} 的 HTTP 调用尚未接入"
+     src = Path(info["path"])
+-    size = src.stat().st_size if src.exists() else 0
++    # 【新增 v2.7】stat 可能因文件被外部清理/同步盘改名而抛 OSError，
++    # 原来会 500；这里按 0 处理，交给 _already_done 与 _worker 报「源文件已清理」。
++    try:
++        size = src.stat().st_size if src.exists() else 0
++    except OSError:
++        size = 0
+     if _already_done(info["name"], size):
+         return None, "同名同大小的课已完成，已跳过"
+     tid = uuid.uuid4().hex[:12]
+@@ -1025,18 +1045,24 @@ def api_queue_set(payload: dict):
+     for k in ("paused", "watch", "skip_done"):
+         if k in payload:
+             QSTATE[k] = bool(payload[k])
+-    if "auto_retry" in payload:
+-        QSTATE["auto_retry"] = max(0, min(5, int(payload["auto_retry"])))
+-    if "watch_interval" in payload:
+-        QSTATE["watch_interval"] = max(10, min(3600, int(payload["watch_interval"])))
+-    if "start_at" in payload:
+-        v = payload["start_at"]
+-        QSTATE["start_at"] = float(v) if v else None
++    # 【新增 v2.7】数值参数统一兜成 400。原来传 "abc" 会 ValueError → 500，
++    # 界面只看到「保存失败」，不知道是哪个字段写错了。
++    try:
++        if "auto_retry" in payload:
++            QSTATE["auto_retry"] = max(0, min(5, int(payload["auto_retry"])))
++        if "watch_interval" in payload:
++            QSTATE["watch_interval"] = max(10, min(3600, int(payload["watch_interval"])))
++        if "start_at" in payload:
++            v = payload["start_at"]
++            QSTATE["start_at"] = float(v) if v else None
++    except (TypeError, ValueError):
++        return JSONResponse({"error": "队列参数不合法：auto_retry / watch_interval "
++                                      "需为整数，start_at 需为时间戳"}, status_code=400)
++    if QSTATE.get("start_at"):
+         # 【新增 v2.4】定时开始与暂停互斥：CLI / 直接调 API 若只带 start_at，
+         # 而队列仍处于暂停态，到点也永远不会开跑（Gate 先看 paused）。
+         # 设定未来的定时即自动解除暂停；只点「暂停」不会带 start_at，不受影响。
+-        if QSTATE["start_at"]:
+-            QSTATE["paused"] = False
++        QSTATE["paused"] = False
+     QS.save(QSTATE)
+     QGATE.notify()
+     return api_queue()
+@@ -1044,7 +1070,12 @@ def api_queue_set(payload: dict):
+ 
+ @app.post("/api/queue/move")
+ def api_queue_move(payload: dict):
+-    tid, delta = str(payload.get("id") or ""), int(payload.get("delta") or 0)
++    # 【新增 v2.7】delta 非法时 400，而不是 500
++    try:
++        delta = int(payload.get("delta") or 0)
++    except (TypeError, ValueError):
++        return JSONResponse({"error": "delta 必须是整数"}, status_code=400)
++    tid = str(payload.get("id") or "")
+     ok = JOB_Q.move(tid, delta)
+     return {"ok": ok, "queue": [x["id"] for x in api_queue()["queue"]]}
+ 
+@@ -1146,6 +1177,16 @@ def _remove_task(tid: str, purge_media: bool = False):
+     if not t:
+         return False
+     TASKS.pop(tid, None)
++    # 【新增 v2.7】把任务从队列里一并摘掉。已取消的任务仍留在 deque 里，
++    # 删记录后 api_queue 会显示一条「名字是 id、状态空白」的幽灵条目，
++    # 直到 worker 轮到它才消失。
++    try:
++        if hasattr(JOB_Q, "remove"):
++            JOB_Q.remove(tid)
++        else:
++            JOB_Q.queue.remove(tid)      # 兼容测试里替换成标准 queue.Queue
++    except (ValueError, AttributeError):
++        pass
+     try:
+         _job_path(tid).unlink(missing_ok=True)
+     except OSError:
+@@ -1250,12 +1291,24 @@ def api_glossary_save(payload: dict):
+         return JSONResponse({"error": str(exc)}, status_code=400)
+     except OSError as exc:
+         return JSONResponse({"error": f"写入失败：{exc}"}, status_code=500)
+-    GLOSS.reload_caches()
+-    r["note"] = ("热词只影响新任务；错词与简称立即生效，"
+-                 "老任务点一次「重新清理」即可应用")
++    fresh = GLOSS.reload_caches()
++    r["note"] = ("热词只影响新任务的识别；错词、简称、术语补全"
++                 "同时作用于字幕清理与讲稿清理，老任务点一次「重新清理」即可应用"
++                 + ("" if fresh else "（本次缓存刷新失败，重启服务后生效）"))
+     return r
+ 
+ 
++@app.post("/api/glossary/preview")
++def api_glossary_preview(payload: dict):
++    """【新增 v2.7】术语表「试一句」：证明它真的参与字幕清理。"""
++    try:
++        return GLOSS.preview(payload.get("text") or "")
++    except ValueError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=400)
++    except Exception as exc:
++        return JSONResponse({"error": f"试改失败：{exc}"}, status_code=500)
++
++
+ # ─────────── 【新增 v2.5】配置与词库备份 / 迁移 ───────────
+ #
+ # 重装电脑 / 换机时，用户要带走的是「自己养出来的词表与设置」，
+@@ -1589,7 +1642,7 @@ def api_health():
+     这里不会被 CPU 任务阻塞。
+     """
+     running = [t for t in TASKS.values() if t.get("status") == "running"]
+-    return {"ok": True, "version": "2.4",       # modified(v2.4): 首页说明书/源文件禁删/进度可见
++    return {"ok": True, "version": "2.7",       # modified(v2.7): 术语表扩充 / 默认 4 路并行 / DeepSeek 不思考
+             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
+             "running": len(running),
+             "tasks": len(TASKS), "uploads": len(UPLOADS),
+@@ -1848,7 +1901,10 @@ def api_llm_status():
+     return {"available": ok, "detail": detail,
+             "backend": "cloud" if cfg.get("enabled") else "local",
+             "model_dir": str(LP.MODEL_DIR),
+-            "max_input": LP.MAX_INPUT, "chunk_chars": LP.CHUNK_CHARS}
++            "max_input": LP.MAX_INPUT, "chunk_chars": LP.CHUNK_CHARS,
++            "cloud_chunk_chars": LP.CLOUD_CHUNK_CHARS,
++            "thinking": cfg.get("thinking") or "auto",
++            "thinking_supported": CL.supports_thinking(cfg)}
+ 
+ 
+ # ─────────── 【新增 v2.2】云端润色模型设置 ───────────
+@@ -1910,7 +1966,9 @@ def api_llm_polish(payload: dict):
+     # 正常占用 → 409（等一下就好）；超时占用 → 503（明说卡住了、要重启）。
+     # 【修改 v2.4】长稿要按块数放宽卡死判定：3 万字约 43 块，本地模型
+     # 可能跑 20 分钟，固定 600 秒会把正常运行的上一稿误判成「卡死」。
+-    est_chunks = max(1, len(text) // LP.CHUNK_CHARS + 1)
++    # 【修改 v2.7】按后端估算块数：云端 3000 字/块、本地 700 字/块，
++    # 再用固定 CHUNK_CHARS 会把云端长稿的正常耗时误判成「卡死」。
++    est_chunks = LP.estimate_chunks(text)
+     max_wait = max(LLM_MAX_SECONDS, est_chunks * 90)
+     if not _LLM_BUSY.acquire(blocking=False):
+         stuck = time.monotonic() - (_LLM_START[0] or time.monotonic())
+diff --git a/termfix.py b/termfix.py
+index 73f0d2d..01f5052 100644
+--- a/termfix.py
++++ b/termfix.py
+@@ -49,13 +49,29 @@ MIN_TERM_LEN = 4       # 短于此长度的术语不参与补全（太容易误
+ 
+ # ────────────────────── 配置加载 ──────────────────────
+ 
++def read_text_any(path) -> str:
++    """【新增 v2.7】读词表：优先 UTF-8（含 BOM），失败再按 GBK。
++
++    中文 Windows 上用记事本「另存为 ANSI」得到的是 GBK；旧实现直接
++    UnicodeDecodeError，整个识别任务失败。词表内容都是中文，两种编码
++    足以覆盖，读不出来才明确报错。
++    """
++    raw = Path(path).read_bytes()
++    for enc in ("utf-8-sig", "gbk"):
++        try:
++            return raw.decode(enc)
++        except UnicodeDecodeError:
++            continue
++    raise ValueError(f"{Path(path).name} 不是 UTF-8 / GBK 编码，请另存为 UTF-8")
++
++
+ def load_terms(path) -> list:
+     """读术语表：每行一个，# 注释，行尾 |权重 忽略。"""
+     p = Path(path)
+     if not p.exists():
+         return []
+     out = []
+-    for ln in p.read_text(encoding="utf-8").splitlines():
++    for ln in read_text_any(p).splitlines():
+         ln = ln.strip()
+         if not ln or ln.startswith("#"):
+             continue
+@@ -76,7 +92,7 @@ def load_aliases(path) -> list:
+     if not p.exists():
+         return []
+     out, skipped = [], []
+-    for ln in p.read_text(encoding="utf-8").splitlines():
++    for ln in read_text_any(p).splitlines():
+         ln = ln.strip()
+         if not ln or ln.startswith("#") or "=>" not in ln:
+             continue
+diff --git a/terms/aliases.txt b/terms/aliases.txt
+index 571b14c..c0298b4 100644
+--- a/terms/aliases.txt
++++ b/terms/aliases.txt
+@@ -1,4 +1,4 @@
+-# 简称膨胀表（v1.5）
++# 简称膨胀表（v1.5，2026-11-09 扩充）
+ # 格式：简称=>全称。一行一条，# 开头为注释。
+ #
+ # 为什么单独一张表：
+@@ -9,6 +9,7 @@
+ #   英文缩写按「前后不是字母数字」整词匹配 —— 支持「GSP认证」「按GSP要求」，
+ #   但不会把 GDP / GSPX 误伤。
+ #   中文简称按整词直接替换（中文没有词边界）。
++#   长简称先替换：所以「医疗器械GMP」会先于「GMP」命中。
+ #
+ # 使用建议：只放**无争议**的简称。改错术语比不改更糟，
+ #   有歧义的（如「两品一械」在不同文件里所指范围不同）宁可不放，
+@@ -22,6 +23,26 @@ GCP=>药物临床试验质量管理规范
+ GLP=>药物非临床研究质量管理规范
+ GAP=>中药材生产质量管理规范
+ 
++# ── 带语境的 GMP（必须先于裸 GMP 命中）──
++# 【2026-11-09 修复】「医疗器械GMP」过去会被裸 GMP 展开成
++# 「医疗器械药品生产质量管理规范」——器械课里这是错的。
++# 长词优先替换，先把带器械/药品前缀的整段吃掉，裸 GMP 只兜底通用说法。
++医疗器械GMP=>医疗器械生产质量管理规范
++器械GMP=>医疗器械生产质量管理规范
++药品GMP=>药品生产质量管理规范
++
++# ── 监管通用缩写（2026-11-09 新增）──
++NMPA=>国家药品监督管理局
++MAH=>药品上市许可持有人
++UDI=>医疗器械唯一标识
++IVD=>体外诊断试剂
++CAPA=>纠正和预防措施
++QMS=>质量管理体系
++
++# ── 岗位简称（2026-11-09 新增）──
++# 「管代」在医疗器械行业专指管理者代表，无其他常见含义。
++管代=>管理者代表
++
+ # ── 机构简称（可按本地习惯启用，注意与正式发文口径一致） ──
+ # 国家药监局=>国家药品监督管理局
+ # 国家局=>国家药品监督管理局
+diff --git a/terms/corrections.txt b/terms/corrections.txt
+index 2760d80..faab4d9 100644
+--- a/terms/corrections.txt
++++ b/terms/corrections.txt
+@@ -1,7 +1,11 @@
+-# 药品医疗器械监管 · ASR 错词校正表
++# 药品医疗器械化妆品监管 · ASR 错词校正表
+ # 格式：错误词=>正确词
+ # 规则：只放"几乎不可能正确"的同音误写，避免误伤。
+ # 有歧义的词（如 储备/贮藏）请放到 corrections_review.txt 人工确认。
++#
++# 【2026-11-09 审计】把 11 条会误伤正常表达的条目移入文末「待人工确认」，
++# 逐条写明原因（如「准备安全」含「备安」、「驻藏部队」含「驻藏」）。
++# 这张表是全局替换，宁可少一条，不可改错一处。
+ 
+ # ── 高频制度名 ──
+ 两瓶一械=>两品一械
+@@ -13,9 +17,6 @@
+ 药物景杰=>药物警戒
+ 药物警界=>药物警戒
+ 
+-# ── 实测抓到的错误（2026-10-26 用 TTS 样本跑出）──
+-处于药品=>储运药品
+-
+ # ── 集采与评价 ──
+ 带两采购=>带量采购
+ 带量彩购=>带量采购
+@@ -29,26 +30,22 @@
+ 挂考=>挂靠
+ 走漂=>走票
+ 过漂=>过票
+-抽氧=>抽样
+ 减验=>检验
+ 眼证=>验证
+-备安=>备案
+ 招回=>召回
+ 消毁=>销毁
+ 治剂=>制剂
+ 无证经银=>无证经营
++挂靠经银=>挂靠经营
++超范围经银=>超范围经营
++监督检察=>监督检查
++符合性检察=>符合性检查
++许可检察=>许可检查
++出租出借证罩=>出租出借证照
+ 
+ # ── 中药与剂型 ──
+-影片=>饮片
+-印片=>饮片
+-泡制=>炮制
+-炮炙=>炮制
+-列药=>劣药
+-列要=>劣药
+ 津膏=>浸膏
+ 丁剂=>酊剂
+-双剂=>栓剂
+-去雾剂=>气雾剂
+ 颗料=>颗粒
+ 胶襄=>胶囊
+ 注谢液=>注射液
+@@ -66,7 +63,6 @@
+ 清洁眼证=>清洁验证
+ 
+ # ── 其他常见误写 ──
+-驻藏=>贮藏
+ 温湿肚=>温湿度
+ 冷连=>冷链
+ 追愫=>追溯
+@@ -74,14 +70,66 @@
+ 批记绿=>批记录
+ 有效其=>有效期
+ 
+-# ── 医疗器械质量管理规范 ──
++# ── 医疗器械（2026-11-09 新增）──
++医疗器戒=>医疗器械
++医疗器诫=>医疗器械
++无菌屏帐=>无菌屏障
++环氧已烷=>环氧乙烷
++环氧乙完=>环氧乙烷
++初始无染菌=>初始污染菌
++初始污染均=>初始污染菌
++沉降均=>沉降菌
++浮游均=>浮游菌
++结净区=>洁净区
++洁静区=>洁净区
++洁净驱=>洁净区
++洁净渡=>洁净度
++气闸市=>气闸室
++传递床=>传递窗
++换气次树=>换气次数
++纯华水=>纯化水
++注射用谁=>注射用水
++关键项木=>关键项目
++主要项木=>主要项目
++一搬项目=>一般项目
++检查指导原责=>检查指导原则
++质量管理休系=>质量管理体系
++管理平审=>管理评审
++纠正措失=>纠正措施
++预防措失=>预防措施
++偏差处里=>偏差处理
++风险管里=>风险管理
++设计转挽=>设计转换
++可用性工成=>可用性工程
++进货坚验=>进货检验
++过程坚验=>过程检验
++出厂坚验=>出厂检验
++供应商审该=>供应商审核
++质量协义=>质量协议
++
++# ── 化妆品（2026-11-09 新增）──
++化装品=>化妆品
++非处方要=>非处方药
++
++# ── 医疗器械质量管理规范 · 岗位简称 ──
+ # 「管代」= 管理者代表的行业简称；ASR 常同音误写为「管带」。
+ # 「管带」在现代监管语境几乎不可能是正确词，放心自动纠正。
+ 管带=>管代
+ 
+-# ── 待人工确认（可能误伤，默认不启用） ──
+-# 管道=>管代  「管道」是常用词，全局替换会误伤，只能在明确上下文里人工确认
+-# 飞检=>飞行检查
+-# 储备=>贮藏
+-# 代理采购=>带量采购
+-# 批纪=>批次
++# ── 待人工确认（默认不启用：会误伤正常表达）──
++# 影片=>饮片        「教学影片」「宣传影片」是正常词
++# 印片=>饮片        「印片」是影像/印刷领域的正常词
++# 处于药品=>储运药品  「处于药品短缺状态」会被改坏
++# 备安=>备案        「准备安全」「储备安全」含「备安」
++# 抽氧=>抽样        「抽氧」在制氧/设备语境是正常词
++# 双剂=>栓剂        「双剂型」含「双剂」
++# 去雾剂=>气雾剂    「去雾剂」是真实产品类别
++# 泡制=>炮制        「泡制药材」「泡制酒」是正常表达
++# 炮炙=>炮制        「炮炙」本身是中药学传统术语，可能是原文
++# 驻藏=>贮藏        「驻藏部队」会被改坏
++# 列要=>劣药        「列要点」含「列要」
++# 列药=>劣药        保留启用：现代汉语里「列药」几乎不成词
++# 飞检=>飞行检查    行业口语，正式稿可保留
++# 储备=>贮藏        语义不同，不能全局替换
++# 代理采购=>带量采购 语义不同
++# 批纪=>批次        低频，先观察
+diff --git a/terms/hotwords.txt b/terms/hotwords.txt
+index d139115..6904024 100644
+--- a/terms/hotwords.txt
++++ b/terms/hotwords.txt
+@@ -1,11 +1,19 @@
+-# 药品医疗器械监督管理 · ASR 热词表
++# 药品医疗器械化妆品监督管理 · ASR 热词表
+ # 格式：每行一个词条，# 开头为注释。行尾可写 "|权重"，缺省 20。
+ # 建议总量 100-300 条；超过 500 条会拖慢解码。
++#
++# 【2026-11-09 扩充】按 NMPA 现行法规目录、2026-11-01 施行的新版《医疗器械
++# 生产质量管理规范》及 4 个检查指导原则、GSP 经营检查、化妆品监管三条线补齐。
++# 这张表不只给 ASR 做热词偏置，还是 termfix 漏字补全的术语基准，
++# 因此宁可写全称、不要写缩写（缩写放 aliases.txt）。
+ 
+-# ── 法律法规 ──
++# ── 法律 ──
+ 中华人民共和国药品管理法
+ 中华人民共和国疫苗管理法
+ 中华人民共和国中医药法
++中华人民共和国广告法|12
++
++# ── 行政法规 ──
+ 医疗器械监督管理条例
+ 药品管理法实施条例
+ 麻醉药品和精神药品管理条例
+@@ -16,37 +24,110 @@
+ 中药品种保护条例|15
+ 化妆品监督管理条例|15
+ 
+-# ── 规章与规范 ──
++# ── 药品规章与规范 ──
+ 药品生产质量管理规范
+ 药品经营质量管理规范
+ 药物非临床研究质量管理规范|15
+ 药物临床试验质量管理规范|15
++药物警戒质量管理规范|15
++中药材生产质量管理规范|15
+ 药品注册管理办法
++药品生产监督管理办法
++药品经营和使用质量监督管理办法
++药品网络销售监督管理办法
++药品上市后变更管理办法|15
+ 药品不良反应报告和监测管理办法
+ 药品召回管理办法
+ 药品检查管理办法
+-药品上市后变更管理办法|15
+-医疗器械生产质量管理规范
+-医疗器械经营质量管理规范|15
++生物制品批签发管理办法|15
++进口药材管理办法|15
++
++# ── 医疗器械规章与规范 ──
++医疗器械生产质量管理规范|30
++医疗器械经营质量管理规范|20
+ 医疗器械使用质量监督管理办法
+ 医疗器械注册与备案管理办法
+ 体外诊断试剂注册与备案管理办法
++医疗器械生产监督管理办法
++医疗器械经营监督管理办法
++医疗器械网络销售监督管理办法|15
++医疗器械不良事件监测和再评价管理办法|15
++医疗器械召回管理办法|15
++医疗器械分类规则|15
++医疗器械分类目录
++医疗器械通用名称命名规则|15
++医疗器械说明书和标签管理规定|15
++医疗器械标准管理办法|15
++医疗器械临床试验质量管理规范|15
++
++# ── 2026 新版医疗器械 GMP 检查指导原则（2026-11-01 施行）──
++医疗器械生产质量管理规范检查指导原则|40
++医疗器械生产质量管理规范无菌医疗器械检查指导原则|40
++医疗器械生产质量管理规范植入性医疗器械检查指导原则|40
++医疗器械生产质量管理规范体外诊断试剂检查指导原则|40
++医疗器械生产质量管理规范定制式义齿检查指导原则|40
++医疗器械生产质量管理规范附录|25
++医疗器械生产质量管理规范附录无菌医疗器械|30
++医疗器械生产质量管理规范附录植入性医疗器械|30
++医疗器械生产质量管理规范附录体外诊断试剂|30
++医疗器械生产质量管理规范附录定制式义齿|30
++医疗器械生产质量管理规范附录独立软件|30
++关键项目|25
++主要项目|25
++一般项目|25
++许可核查|20
++生产许可核查|25
++上市后监督检查|25
++全覆盖检查|15
++
++# ── 化妆品规章与规范 ──
++化妆品生产质量管理规范|20
++化妆品注册备案管理办法|15
++化妆品生产经营监督管理办法|15
++牙膏监督管理办法|15
++化妆品安全技术规范|15
++已使用化妆品原料目录|15
++化妆品新原料|20
++特殊化妆品|20
++普通化妆品|20
++化妆品功效宣称|20
++化妆品功效评价|15
++儿童化妆品|20
++化妆品不良反应|20
++化妆品禁用原料|15
++化妆品限用原料|15
++化妆品准用防腐剂|12
++化妆品标签|15
++全成分标注|12
++化妆品委托生产|12
++牙膏|12
++牙膏备案|12
+ 
+ # ── 监管主体与制度 ──
+ 国家药品监督管理局
++国家市场监督管理总局|15
++省级药品监督管理部门|15
+ 药品监督管理部门
+-药品上市许可持有人
+-医疗器械注册人
+-医疗器械备案人
++药品检查机构|15
++检查员|15
++观察员|12
+ 两品一械
++三品一械|12
+ 药物警戒
+ 飞行检查
++延伸检查|20
++有因检查|20
++许可检查|20
++常规检查|15
++符合性检查|20
+ 监督检查|15
+ 监督抽检
+ 注册核查
+ 上市前GMP符合性检查|15
+ 药品追溯
+-医疗器械唯一标识
++药品信息化追溯体系|15
++药品追溯码|20
++医疗器械唯一标识|20
+ 集中带量采购
+ 国家组织药品集中采购
+ 仿制药质量和疗效一致性评价
+@@ -56,31 +137,17 @@
+ 蛋白同化制剂
+ 肽类激素
+ 医疗机构制剂
+-药品网络销售
+-第三方药品物流
+-药品现代物流
+-冷链药品|15
+-温湿度监测
+-冷链验证
++药品上市许可持有人制度|15
++医疗器械注册人制度|15
++双随机一公开|12
++四不两直|12
++四个最严|12
+ 
+-# ── 违法违规情形 ──
+-假药
+-劣药
+-无证经营
+-挂靠经营
+-走票
+-过票
+-出租出借证照|15
+-超范围经营
+-以次充好
+-掺杂使假
+-虚假宣传
+-商业贿赂
+-药品回扣
+-
+-# ── 药品类别 ──
++# ── 药品类别与质量 ──
+ 处方药
+ 非处方药
++甲类非处方药|12
++乙类非处方药|12
+ 中药饮片
+ 中药配方颗粒
+ 中药材
+@@ -93,34 +160,6 @@
+ 原料药
+ 药用辅料
+ 直接接触药品的包装材料和容器|12
+-
+-# ── 医疗器械 ──
+-医疗器械分类目录
+-第一类医疗器械
+-第二类医疗器械
+-第三类医疗器械
+-医疗器械经营许可
+-医疗器械注册证
+-医疗器械生产许可证
+-大型医用设备
+-植入性医疗器械
+-无菌医疗器械|15
+-一次性使用无菌医疗器械
+-体外诊断试剂
+-定制式义齿
+-医疗美容医疗器械
+-医疗器械不良事件
+-医疗器械召回
+-
+-# ── 人员与角色 ──
+-执业药师
+-药学技术人员
+-医药代表
+-质量管理负责人
+-法定代表人
+-企业负责人
+-
+-# ── 常见专业表述 ──
+ 药品不良反应
+ 疑似预防接种异常反应
+ 药品质量公告
+@@ -143,8 +182,184 @@
+ 药品通用名称
+ 药品商品名称
+ 
+-# ── 医疗器械质量管理体系（岗位 / 角色）──
+-# 「管代」是「管理者代表」的行业简称，ASR 易误作「管带 / 管道」；
+-# 列入热词提高首次识别率，漏字补全也以此为术语基准。
++# ── 药品经营（GSP / 批发 / 零售连锁）──
++药品上市许可持有人
++药品批发企业|20
++药品零售企业|20
++药品零售连锁企业|20
++零售连锁门店|15
++药品经营许可证|20
++药品生产许可证|20
++医疗机构制剂许可证|12
++营业执照|10
++首营企业|25
++首营品种|25
++供货单位|20
++购货单位|20
++资质审核|20
++质量保证协议|15
++收货|12
++验收|12
++养护|15
++储存|12
++出库复核|15
++运输|10
++配送|10
++冷链药品|20
++冷藏药品|15
++冷冻药品|12
++阴凉库|15
++常温库|15
++冷库|15
++冷藏车|15
++保温箱|15
++温湿度自动监测系统|20
++温湿度监测
++冷链验证
++处方审核|20
++处方调配|15
++核对|10
++发药|12
++用药指导|15
++药学服务|15
++远程审方|20
++拆零销售|15
++含麻黄碱类复方制剂|20
++终止妊娠药品|15
++第二类精神药品|15
++医疗用毒性药品|15
++药品网络销售
++网售处方药|15
++在线药学服务|12
++第三方药品物流
++药品现代物流
++多仓协同|12
++委托储存|15
++委托运输|15
++药品经营质量管理规范现场检查指导原则|25
++
++# ── 医疗器械注册与生产 ──
++医疗器械注册人
++医疗器械备案人
++受托生产企业|25
++委托生产|20
++受托生产|20
++质量协议|15
++医疗器械注册证
++医疗器械生产许可证
++医疗器械经营许可证|15
++第二类医疗器械经营备案|15
++第一类医疗器械
++第二类医疗器械
++第三类医疗器械
++大型医用设备
++植入性医疗器械
++无菌医疗器械|15
++一次性使用无菌医疗器械
++体外诊断试剂
++定制式义齿
++独立软件|20
++医疗美容医疗器械
++医疗器械不良事件
++医疗器械召回
++一级召回|12
++二级召回|12
++三级召回|12
++创新医疗器械特别审查|15
++优先审批|12
++附条件批准|12
++注册质量管理体系核查|20
++临床试验|12
++临床评价|15
++同品种临床评价|15
++医疗器械网络安全|15
++人工智能医疗器械|15
++医疗器械软件|15
++
++# ── 质量管理体系（通用要素）──
++质量管理体系|25
++管理评审|20
++内部审核|20
++纠正措施|20
++预防措施|20
++不合格品控制|20
++变更控制|20
++偏差处理|20
++设计开发|20
++设计转换|20
++设计验证|15
++设计确认|15
++风险管理|15
++可用性工程|12
++采购控制|15
++供应商审核|20
++合格供应商名录|15
++进货检验|20
++过程检验|15
++出厂检验|15
++关键工序|20
++特殊过程|20
++生产记录|15
++检验记录|15
++留样|15
++生产放行|15
++上市放行|15
++环氧乙烷灭菌|20
++辐照灭菌|15
++湿热灭菌|15
++无菌屏障系统|20
++初始污染菌|20
++细菌内毒素|15
++洁净区|20
++悬浮粒子|15
++沉降菌|15
++浮游菌|15
++换气次数|15
++压差|12
++纯化水|15
++注射用水|15
++工艺用水|15
++工艺用气|12
++洁净服|12
++气闸室|12
++传递窗|12
++
++# ── 违法违规与执法 ──
++假药
++劣药
++无证经营
++挂靠经营
++走票
++过票
++出租出借证照|15
++超范围经营
++非法渠道购进|20
++未凭处方销售处方药|20
++执业药师不在岗|20
++以次充好
++掺杂使假
++虚假宣传
++商业贿赂
++药品回扣
++行刑衔接|15
++处罚到人|15
++从业禁止|12
++失信联合惩戒|12
++案件移送|12
++查封扣押|15
++责令改正|12
++没收违法所得|12
++吊销许可证|12
++撤销批准证明文件|12
++
++# ── 人员与岗位 ──
++执业药师
++药学技术人员
++医药代表
++质量管理负责人
++法定代表人
++企业负责人
+ 管理者代表
+ 管代|20
++质量管理部门|15
++生产管理部门|15
+diff --git a/transcribe.py b/transcribe.py
+index 627577c..1534a0e 100644
+--- a/transcribe.py
++++ b/transcribe.py
+@@ -83,7 +83,10 @@ def _is_16k_mono(path: Path) -> bool:
+     try:
+         import wave
+         with wave.open(str(path), "rb") as w:
+-            return w.getframerate() == 16000 and w.getnchannels() == 1
++            # 【修改 v2.7】补上 16bit 判定：24bit / 32bit wav 也满足「16k 单声道」，
++            # 旧判断会直接放行，后面按 <i2 读取就整段变成噪声。
++            return (w.getframerate() == 16000 and w.getnchannels() == 1
++                    and w.getsampwidth() == 2)
+     except Exception:
+         return False
+ 
+@@ -148,20 +151,28 @@ def unique_stem(src: Path, outdir: Path) -> str:
+ # ────────────────────────── 热词 ──────────────────────────
+ 
+ def load_hotwords(path: Path, default_weight: int = 20) -> str:
+-    """读取热词表，返回 FunASR 要求的 '词 权重 词 权重' 格式"""
++    """读取热词表，返回 FunASR 要求的 '词 权重 词 权重' 格式。
++
++    【修改 v2.7】权重只接受 1–100 的整数；`词|abc` 这种写错的条目按
++    「整行是一个词」处理，与术语表界面的解析口径保持一致。
++    旧实现会把 abc 原样拼进热词串，FunASR 解析失败后整张热词表静默失效。
++    """
+     if not path.exists():
+         return ""
+     parts = []
+-    for line in path.read_text(encoding="utf-8").splitlines():
++    for line in path.read_text(encoding="utf-8-sig").splitlines():
+         line = line.strip()
+         if not line or line.startswith("#"):
+             continue
++        word, weight = line, default_weight
+         if "|" in line:
+-            w, _, wt = line.partition("|")
+-            w, wt = w.strip(), wt.strip()
+-            parts.append(f"{w} {wt or default_weight}")
+-        else:
+-            parts.append(f"{line} {default_weight}")
++            head, tail = line.split("|", 1)
++            head, tail = head.strip(), tail.strip()
++            if head and tail.isdigit() and 1 <= int(tail) <= 100:
++                word, weight = head, int(tail)
++            # 后缀不是合法权重：整行当词，不乱解释（与 glossary.parse_items 一致）
++        if word:
++            parts.append(f"{word} {weight}")
+     return " ".join(parts)
+ 
+ 
+@@ -322,6 +333,7 @@ def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str,
+     # ASR_FUNASR_WORKERS=1：整段推理，零回归路径。
+     # 【新增 v2.4】generate() 是阻塞调用，长课期间进度条会一直停在 12%，
+     # 用守护心跳把「已用时长」写进阶段文案；pct 不动，前端不算假 ETA。
++    _set_torch_threads(max(4, min(8, os.cpu_count() or 8)))
+     gen["input"] = str(wav)
+     stop = threading.Event()
+     t0 = time.time()
+@@ -354,18 +366,17 @@ def _run_funasr_parallel(wav: Path, model, gen: dict, log, progress) -> dict:
+     import tempfile
+     import wave as _wave
+     import numpy as np
+-    import torch
+     from concurrent.futures import ThreadPoolExecutor, as_completed
+-    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
+ 
+-    pcm = normalize_audio_input(str(wav))
+-    parts = split_audio_into_chunks(
+-        wav=pcm, sr=16000, max_chunk_sec=FUNASR_CHUNK_SEC,
+-        search_expand_sec=min(30.0, FUNASR_CHUNK_SEC / 6))
++    pcm = _read_pcm16k(wav)
++    parts = _split_pcm(pcm, 16000, FUNASR_CHUNK_SEC,
++                       min(30.0, FUNASR_CHUNK_SEC / 6))
+     total = len(parts)
+     workers = min(FUNASR_WORKERS, total)
+-    # 2 路各 8 线程 / 4 路各 4 线程，与基准一致；核多了只会互相抢。
+-    torch.set_num_threads(max(2, min(8, 16 // workers)))
++    # 2 路各 8 线程 / 4 路各 4–5 线程，与基准一致；核多了只会互相抢。
++    # 【修改 v2.7】按实际核数分配，不再写死 16：4 核机器 2 路各 8 线程
++    # 会把 4 个核塞进 16 个线程，上下文切换反而更慢。
++    _set_torch_threads(max(2, min(8, (os.cpu_count() or 8) // workers)))
+     log(f"Paraformer：{len(pcm) / 16000 / 60:.1f} 分钟切 {total} 片，{workers} 路并行")
+ 
+     def write_part(chunk, path):
+@@ -448,12 +459,49 @@ QWEN3_WORKERS = min(4, max(1, int(os.environ.get("ASR_QWEN3_WORKERS") or 2)))
+ # + 多线程并发调用 generate()；片在低能量处切，时间戳按片偏移拼回。
+ # 代价：切点附近有约 1%~3% 的字差异；追求逐字精确设 ASR_FUNASR_WORKERS=1
+ # 即可回到「整段推理」的零回归路径。
+-FUNASR_WORKERS = min(4, max(1, int(os.environ.get("ASR_FUNASR_WORKERS") or 2)))
++#
++# 【修改 v2.7】默认并行度由固定 2 改为按本机核数/内存自适应，上限 4。
++# 2026-11-09 复测（600 秒真实课程切 4 片，20 核 Ultra 7 265K / 63GB）：
++#   2 路各 8 线程 26.4s / CPU 75%
++#   3 路各 5 线程 22.9s / CPU 74%（1.15×）
++#   4 路各 4 线程 16.9s / CPU 92%（1.56×，文本逐字一致）
++# 固定 2 路会空着 4 个核，79 分钟课白等一倍时间，故按机器能力取 4。
++# 内存按每路约 4GB 估算，内存小或想完全复刻旧行为时设 ASR_FUNASR_WORKERS=2。
++def _default_funasr_workers() -> int:
++    try:
++        cores = os.cpu_count() or 4
++        try:
++            import psutil
++            ram_gb = psutil.virtual_memory().total / 1073741824
++        except Exception:
++            ram_gb = 16.0
++        return max(1, min(4, cores // 4, int(ram_gb // 4)))
++    except Exception:
++        return 2
++
++
++FUNASR_WORKERS = min(4, max(1, int(os.environ.get("ASR_FUNASR_WORKERS")
++                                   or _default_funasr_workers())))
+ FUNASR_CHUNK_SEC = min(1800.0, max(120.0,
+                                   float(os.environ.get("ASR_FUNASR_CHUNK") or 600)))
+ QWEN3_THREADS = max(4, min(8, (os.cpu_count() or 8) // 2))
+ 
+ 
++def _set_torch_threads(n: int) -> None:
++    """【新增 v2.7】统一设置 torch 线程数。
++
++    原来是「谁先跑谁设置、跑完不还原」：Paraformer 4 路把线程压到 4 之后，
++    再跑单路 Qwen3 就只有 4 个线程（实测单路 20 线程 125s / 10 线程 134s，
++    压到 4 线程更慢），表现为「换了个模型突然变慢」。
++    每个识别入口现在都显式设一次，互不污染。
++    """
++    try:
++        import torch
++        torch.set_num_threads(max(1, int(n)))
++    except Exception:
++        pass
++
++
+ def _resolve_ms_dir(model_id: str) -> str:
+     """把 ModelScope 模型 ID 解析成本地目录；已缓存则秒回，不重复下载"""
+     try:
+@@ -463,11 +511,71 @@ def _resolve_ms_dir(model_id: str) -> str:
+         return model_id
+ 
+ 
++def _read_pcm16k(wav: Path):
++    """【新增 v2.7】读 16kHz / 单声道 / 16bit wav 为 float32 PCM。
++
++    调用前 run_pipeline 已经过 ensure_wav，格式是保证的；这里再校验一次，
++    宁可明确报错，也不要把 24bit 当 16bit 读成噪声。
++    """
++    import wave as _wave
++    import numpy as np
++    with _wave.open(str(wav), "rb") as f:
++        if (f.getframerate() != 16000 or f.getnchannels() != 1
++                or f.getsampwidth() != 2):
++            raise RuntimeError(
++                f"音频格式不支持：{wav.name}（需 16kHz 单声道 16bit）")
++        raw = f.readframes(f.getnframes())
++    return np.frombuffer(raw, dtype="<i2").astype("float32") / 32768.0
++
++
++def _split_pcm(pcm, sr: int = 16000, max_chunk_sec: float = 170.0,
++               search_expand_sec: float = 5.0) -> list:
++    """【新增 v2.7】在低能量处把 PCM 切片，返回 [(片段, 起始秒), ...]。
++
++    替代 `qwen_asr.inference.utils.split_audio_into_chunks`：
++      ① Paraformer 分片并行不再隐式依赖通义 qwen_asr 包——只装 funasr
++         的机器以前一开默认并行就 ImportError，属于隐藏依赖；
++      ② 能量包络改成按 20ms 分帧取均值，79 分钟音频 0.1 秒级算完；
++         旧实现整段 convolve（窗长 320）要几十秒。
++    切点仍取目标位置 ±search_expand 范围内的最低能量帧，避免把一句话劈开。
++    """
++    import numpy as np
++
++    total = len(pcm)
++    max_len = max(1, int(max_chunk_sec * sr))
++    if total <= max_len:
++        return [(pcm, 0.0)]
++
++    frame = max(1, int(sr * 0.02))            # 20ms 一帧
++    n = total // frame
++    env = (np.abs(pcm[:n * frame]).reshape(n, frame).mean(axis=1)
++           if n else np.zeros(1, dtype="float32"))
++    guard = max(1, int(1.0 * sr))             # 每片至少 1 秒，防切点不前进
++
++    parts, start = [], 0
++    while total - start > max_len:
++        target = start + max_len
++        lo = max(start + guard, target - int(search_expand_sec * sr))
++        hi = min(total - guard, target + int(search_expand_sec * sr))
++        if hi <= lo:
++            cut = target
++        else:
++            a, b = lo // frame, max(lo // frame + 1, hi // frame)
++            cut = int((a + int(np.argmin(env[a:b]))) * frame)
++        cut = max(cut, start + guard)
++        parts.append((pcm[start:cut], start / sr))
++        start = cut
++    parts.append((pcm[start:], start / sr))
++    return parts
++
++
+ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=None) -> dict:
+     """Qwen3-ASR：LLM 架构精度高，字级时间戳由强制对齐模型给出"""
+     import torch
+     from qwen_asr import Qwen3ASRModel
+ 
++    _quiet_third_party()
++
+     model = _QWEN3_CACHE.get(cfg["model"])
+     if model is None:
+         log(f"加载 {cfg['model']}（本地缓存优先）")
+@@ -493,18 +601,14 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=N
+ 
+     # 【修改 v1.9】原来把整段音频一次性交给库：model.transcribe(audio=str(wav))。
+     # 现在按低能量边界切成 QWEN3_WINDOW_SEC 的片，逐片识别后拼回，内存恒定在单片水平。
+-    from qwen_asr.inference.utils import normalize_audio_input, split_audio_into_chunks
+-
+-    pcm = normalize_audio_input(str(wav))
+-    parts = split_audio_into_chunks(wav=pcm, sr=16000, max_chunk_sec=QWEN3_WINDOW_SEC,
+-                                    search_expand_sec=QWEN3_EXPAND_SEC)
++    # 【修改 v2.7】切片与读盘改用本模块实现，见 _read_pcm16k / _split_pcm。
++    pcm = _read_pcm16k(wav)
++    parts = _split_pcm(pcm, 16000, QWEN3_WINDOW_SEC, QWEN3_EXPAND_SEC)
+     total = len(parts)
+     workers = QWEN3_WORKERS if total > 1 else 1
+-    if workers > 1:
+-        # 并行时把每个算子的线程数压到 8：实测 2 路×8 线程比 2 路×20 线程快，
+-        # 否则 40 个线程抢 20 个核，光上下文切换就把收益吃回去。
+-        import torch
+-        torch.set_num_threads(QWEN3_THREADS)
++    # 【修复 v2.7】单路也要显式设线程：否则会被上一次 Paraformer 并行
++    # 压到 4 线程，单路 Qwen3 白白慢一截。
++    _set_torch_threads(QWEN3_THREADS if workers > 1 else (os.cpu_count() or 8))
+     log(f"音频 {len(pcm) / 16000 / 60:.1f} 分钟，切 {total} 片"
+         + (f"，{workers} 路并行识别" if workers > 1 else "逐片识别"))
+ 
+@@ -576,10 +680,30 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=N
+ _MODEL_CACHE = {}
+ 
+ 
++def _quiet_third_party() -> None:
++    """【新增 v2.7】压掉 FunASR / ModelScope 的 INFO 噪声。
++
++    实测每切一片就把整张热词表（300 多条）以 INFO 打到 stdout 一次，
++    79 分钟课要刷几十屏；这些日志不进任务日志，只污染控制台，
++    还会让「看起来卡住了」更难判断。WARNING 级别保留真正的告警。
++    """
++    try:
++        import logging
++        # FunASR / ModelScope 用 root logger 打 INFO；只设具名 logger 压不住，
++        # 实测每片仍会把 300 多条热词整表刷到 stderr（79 分钟课 5MB 日志）。
++        # 本项目的运行日志一律走 print / 任务日志，压 root 到 WARNING 不影响排障。
++        logging.getLogger().setLevel(logging.WARNING)
++        for name in ("funasr", "modelscope", "qwen_asr"):
++            logging.getLogger(name).setLevel(logging.WARNING)
++    except Exception:
++        pass
++
++
+ def get_model(cfg: dict, device: str):
+     """模型只加载一次，批处理时省下每个文件 30 秒的加载时间"""
+     from funasr import AutoModel
+ 
++    _quiet_third_party()
+     key = (cfg["model"], device)
+     if key in _MODEL_CACHE:
+         return _MODEL_CACHE[key]
+diff --git a/web/index.html b/web/index.html
+index d6b2c1e..1cb1cfd 100644
+--- a/web/index.html
++++ b/web/index.html
+@@ -454,6 +454,15 @@
+   .gbar{display:flex;gap:10px;align-items:center;margin-bottom:6px}
+   .gbar input{flex:1}
+   .gbar span{font-size:var(--fs-12);color:var(--muted);white-space:nowrap}
++  /* 【新增 v2.7】术语表「试一句」 */
++  .gtest{display:flex;gap:6px;align-items:center;margin:2px 0 8px}
++  .gtest input{flex:1;min-width:0}
++  .gtestout{margin:0 0 8px;padding:8px 10px;border:1px solid var(--line);
++            border-radius:var(--r-8);background:var(--soft2);
++            font-size:var(--fs-12);line-height:1.75}
++  .gtestout .step{color:var(--muted)}
++  .gtestout .sg{color:var(--warn-fg)}
++  .gtestout b{color:var(--ok);font-weight:600}
+   .glist{max-height:44vh;overflow-y:auto;border:1px solid var(--line);border-radius:var(--r-8)}
+   .grow{display:flex;align-items:center;gap:8px;padding:6px 10px;
+         border-bottom:1px solid var(--line);font-size:var(--fs-13)}
+@@ -725,7 +734,7 @@
+     <div class="llmprog" id="llmProg" hidden>
+       <div class="lp-top"><b id="llmProgTitle">润色中 0%</b><span class="lp-meta" id="llmProgMeta">准备中</span></div>
+       <div class="lp-track"><div class="lp-fill" id="llmProgFill"></div></div>
+-      <div class="lp-tip">正在按 700 字一块逐块润色并自动合并；全部完成后才会弹出对比预览，点「采用」才写入成稿。期间请勿关闭或刷新页面，也不要重复点击。</div>
++      <div class="lp-tip">正在按整句分块逐块润色（云端 3000 字 / 本地 700 字一块）并自动合并；全部完成后才会弹出对比预览，点「采用」才写入成稿。期间请勿关闭或刷新页面，也不要重复点击。</div>
+     </div>
+     <textarea id="revText" spellcheck="false" placeholder="把转写稿粘贴到这里，或点右侧「用当前转写结果」加载。&#10;&#10;约定：每句一行。第一遍只删填充词，从这一份原稿开始，后面每遍都不会覆盖原稿。"></textarea>
+     <div class="revfoot">
+@@ -810,6 +819,12 @@
+         <button data-k="hotwords">识别热词<em id="gcHotwords">0</em></button>
+       </div>
+       <div class="note" id="glossNote"></div>
++      <div class="gtest">
++        <input id="glossTest" maxlength="200" autocomplete="off"
++               placeholder="试一句：如「依据药品经营质量规范，管代负责质量管理体系」">
++        <button id="glossTestRun" title="用当前术语表跑一遍，看看这句会被怎么改">试改</button>
++      </div>
++      <div class="gtestout" id="glossTestOut" hidden></div>
+       <div class="gadd">
+         <input id="glossA" maxlength="40" placeholder="错词 / 简称 / 热词" autocomplete="off">
+         <span class="arrow" id="glossArrow">→</span>
+@@ -1065,7 +1080,7 @@
+       <div class="note" style="margin-bottom:12px">
+         默认用<b>本地 Qwen3-4B</b>（零成本、零外传，但 1 小时课件的润色要跑几分钟）。
+         要更快或想省本机 CPU，可切到<b>智谱 GLM-4-Flash（永久免费）</b>或
+-        <b>DeepSeek V4-Flash（低价）</b>。切换只影响「LLM 润色」这一遍，字幕与时间轴不受影响。
++        <b>DeepSeek V4.1-Flash（低价）</b>。切换只影响「LLM 润色」这一遍，字幕与时间轴不受影响。
+       </div>
+       <div class="cfgrow"><label>后端</label>
+         <select id="cloudEnabled">
+@@ -1076,6 +1091,10 @@
+       <div class="cfgrow"><label>预设</label>
+         <select id="cloudPreset"></select>
+       </div>
++      <div class="cfgrow" id="cloudThinkRow"><label>思考模式</label>
++        <label class="chk" style="margin:0"><input type="checkbox" id="cloudNoThink" checked>
++          关闭思考（更快、更省，讲稿整理推荐）</label>
++      </div>
+       <div class="cfgrow"><label>接口地址</label><input id="cloudBase" placeholder="https://open.bigmodel.cn/api/paas/v4"></div>
+       <div class="cfgrow"><label>模型名</label><input id="cloudModel" placeholder="glm-4-flash"></div>
+       <div class="cfgrow"><label>API Key</label><input id="cloudKey" type="password" placeholder="留空表示沿用本模型已保存的密钥" autocomplete="off"></div>
+@@ -1092,8 +1111,12 @@
+         <div class="qhint" style="padding:8px 4px;line-height:1.8">
+           · 1 小时中文课约 1.2 万字，润色输入+输出合计约 2–3 万 token。<br>
+           · GLM-4-Flash：<b>0 元</b>（官方长期免费，限 30 并发 / 约 3 次每秒）。<br>
+-          · DeepSeek V4-Flash：按 $0.14/M 输入 + $0.28/M 输出，一小时课约 <b>¥0.05</b>；
+-            北京时段 18:00–次日 09:00 是低谷价，约再减半。<br>
++          · DeepSeek V4.1-Flash：输入 $0.15/M + 输出 $0.60/M，一小时课约 <b>¥0.07</b>；
++            工作日 09:00–17:00 为高峰价（翻倍），其余时段为低谷价。<br>
++          · <b>默认关闭思考</b>：DeepSeek V4 默认先输出思维链，整理讲稿不需要，
++            关掉后同样的稿子更快、更省，也不会把 max_tokens 吃在 reasoning 上。<br>
++          · 云端长稿按 3000 字一块（本地 700 字），3 万字约 10 次请求，
++            比原来 43 次少了 3/4 的提示词重复开销。<br>
+           · 云端 ASR（腾讯云 / 火山）按音频时长计费，约每小时 1–2 元，我们不走那条路：
+             <b>识别永远在本地</b>，只有讲稿文字上云。<br>
+           · API Key 只存本机 config/cloud_llm.json，已排除出 git；界面只显示脱敏串。<br>
+@@ -2263,6 +2286,8 @@ function cloudForm(){
+     price_in: Number($('#cloudPriceIn').value || 0),
+     price_out: Number($('#cloudPriceOut').value || 0),
+     currency: $('#cloudCurrency').value,
++    // 【新增 v2.7】DeepSeek 默认不思考；非 DeepSeek 端点后端会忽略该字段
++    thinking: $('#cloudNoThink').checked ? 'off' : 'auto',
+   };
+ }
+ function cloudFill(st, keepKey){
+@@ -2278,6 +2303,10 @@ function cloudFill(st, keepKey){
+   $('#cloudPriceIn').value = st.price_in ?? 0;
+   $('#cloudPriceOut').value = st.price_out ?? 0;
+   $('#cloudCurrency').value = st.currency || 'CNY';
++  // 【新增 v2.7】思考开关：只有 DeepSeek 端点支持，其它端点隐藏
++  const think = $('#cloudThinkRow');
++  think.style.display = st.thinking_supported ? '' : 'none';
++  $('#cloudNoThink').checked = (st.thinking || 'auto') === 'off';
+   if(!keepKey) $('#cloudKey').value = '';
+   // 【修改 v2.4】明确显示「哪些模型已存 Key」，避免切换后误以为没保存
+   const saved = st.keys_saved || [];
+@@ -2312,6 +2341,9 @@ $('#cloudPreset').onchange = async ()=>{
+     $('#cloudPriceIn').value = d.price_in ?? 0;
+     $('#cloudPriceOut').value = d.price_out ?? 0;
+     $('#cloudCurrency').value = d.currency || 'CNY';
++    // 【新增 v2.7】切到 DeepSeek 自动勾上「不思考」，切回 GLM 则隐藏该行
++    $('#cloudThinkRow').style.display = (d.base_url || '').includes('deepseek') ? '' : 'none';
++    $('#cloudNoThink').checked = (d.thinking || 'auto') === 'off';
+     // 【修改 v2.4】切换预设要清掉上一个模型残留的输入，并提示该模型自己的
+     // 密钥状态；保存时后端会自动从该预设的槽位取 Key，不会串到别的模型。
+     $('#cloudKey').value = '';
+@@ -2320,7 +2352,7 @@ $('#cloudPreset').onchange = async ()=>{
+       : '本模型尚未保存密钥，请粘贴后点「保存」';
+     $('#cloudNote').textContent = (d.preset === 'glm-4-flash')
+       ? '智谱 GLM-4-Flash 永久免费；到 open.bigmodel.cn 注册后在「API 密钥」里创建 Key。'
+-      : '以服务商最新公告为准；DeepSeek 夜间（北京时间 18:00–次日 09:00）为低谷价。';
++      : 'DeepSeek V4.1-Flash：输入 $0.15/M、输出 $0.60/M；工作日 09:00–17:00 为高峰价。默认已关闭思考。';
+   }catch(e){}
+ };
+ $('#cloudTest').onclick = async ()=>{
+@@ -3084,9 +3116,9 @@ let tailOnlyWords = [];
+ const gloss = {kind:'corrections', files:{}, edits:{}, loaded:false};
+ 
+ const GLOSS_NOTE = {
+-  corrections: '格式：错误词 => 正确词。只放「几乎不可能正确」的同音误写（如 管带 => 管代）；保存后立即生效，老任务点一次「重新清理」即可应用。',
+-  aliases: '格式：简称 => 全称。英文缩写按整词匹配（GSP认证 会展开，GSPX 不会）；中文简称直接替换。只放无争议的简称，拿不准的先别启用。',
+-  hotwords: '每行一个热词，可带权重（如 管代|20，缺省 20）。热词只在识别阶段起作用，因此只影响新任务；建议 100–300 条，超过 500 条会拖慢解码。'
++  corrections: '格式：错误词 => 正确词。只放「几乎不可能正确」的同音误写（如 管带 => 管代）。它同时作用于字幕与讲稿：保存后立即生效，老任务点一次「重新清理」即可应用。',
++  aliases: '格式：简称 => 全称。英文缩写按整词匹配（GSP认证 会展开，GSPX 不会）；长简称优先（医疗器械GMP 不会被展开成「医疗器械药品生产…」）。字幕与讲稿共用。',
++  hotwords: '每行一个热词，可带权重（如 管代|20，缺省 20）。两个用途：① 识别阶段做热词偏置（只影响新任务）；② 作为术语漏字补全的基准（字幕与讲稿都生效）。建议 100–300 条，超过 500 条会拖慢解码。'
+ };
+ 
+ async function glossLoad(force){
+@@ -3254,6 +3286,31 @@ $('#glossSave').onclick = async ()=>{
+   finally{ btn.disabled = false; btn.textContent = old; }
+ };
+ 
++/* ---------- 【新增 v2.7】术语表「试一句」----------
++   不解释「术语表到底管不管字幕」，直接让用户拿一句原文试：
++   错词校正 → 简称膨胀 → 术语补全，三步各自改了什么一眼看见。 */
++async function glossTest(){
++  const t = $('#glossTest').value.trim();
++  const box = $('#glossTestOut');
++  if(!t){ toast('先输入一句原文'); return; }
++  box.hidden = false;
++  box.textContent = '试改中…';
++  try{
++    const d = await (await fetch('/api/glossary/preview', {method:'POST',
++      headers:{'Content-Type':'application/json'},
++      body:JSON.stringify({text:t})})).json();
++    if(d.error){ box.textContent = '✗ ' + d.error; return; }
++    const steps = (d.steps || []).map(s=>
++      `<div class="step">${esc(s.name)}：${esc(s.detail)}</div>`).join('');
++    const sg = (d.suggestions || []).length
++      ? `<div class="sg">建议：${d.suggestions.map(esc).join('；')}</div>` : '';
++    box.innerHTML = `<div>改前：${esc(d.before)}</div>${steps}`
++      + `<div>改后：<b>${esc(d.after)}</b></div>${sg}`;
++  }catch(e){ box.textContent = '试改失败：' + e; }
++}
++$('#glossTestRun').onclick = glossTest;
++$('#glossTest').addEventListener('keydown', e=>{ if(e.key === 'Enter') glossTest(); });
++
+ /* ---------- 【新增 v2.5】备份与迁移 ----------
+    只导出「自己养出来的配置」：三张词表、口语词规则、云端设置、队列偏好。
+    音视频与字幕稿不搬——那是几个 GB，且重装后能从原课件再生成。 */
+diff --git "a/web/\350\257\264\346\230\216\344\271\246.html" "b/web/\350\257\264\346\230\216\344\271\246.html"
+index 83473a0..e80e89d 100644
+--- "a/web/\350\257\264\346\230\216\344\271\246.html"
++++ "b/web/\350\257\264\346\230\216\344\271\246.html"
+@@ -44,7 +44,7 @@ a{color:var(--accent)}
+ <body>
+ <div class="wrap">
+ <h1>网课转字幕 · 使用说明书</h1>
+-<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.4 ｜ 2026-11-09 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
++<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.7 ｜ 2026-11-09 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
+ <hr>
+ <nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a><a href="#s9">九、备份与迁移（重装电脑 / 换机）</a></nav>
+ <h2 id="s1">一、三分钟上手</h2>
+@@ -121,15 +121,22 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+ <p>「改稿」页 → <strong>「润色模型设置」</strong>（就在「LLM 润色」按钮旁边）：</p>
+ <table><thead><tr><th>项</th><th>填什么</th></tr></thead><tbody>
+ <tr><td>后端</td><td>本地模型（默认） / 云端 OpenAI 兼容模型</td></tr>
+-<tr><td>预设</td><td>智谱 GLM-4-Flash（永久免费） / DeepSeek V4-Flash（低价） / 自定义</td></tr>
++<tr><td>预设</td><td>智谱 GLM-4-Flash（永久免费） / DeepSeek V4.1-Flash（低价 · 默认不思考） / 自定义</td></tr>
+ <tr><td>接口地址</td><td>智谱 <code>https://open.bigmodel.cn/api/paas/v4</code>；DeepSeek <code>https://api.deepseek.com</code></td></tr>
+-<tr><td>模型名</td><td><code>glm-4-flash</code>；<code>deepseek-v4-flash</code>（旧名 <code>deepseek-chat</code> 已于 2026-07 停用）</td></tr>
++<tr><td>模型名</td><td><code>glm-4-flash</code>；<code>deepseek-flash</code>（旧名 <code>deepseek-v4-flash</code> 仍可用，<code>deepseek-chat</code> 已于 2026-07 停用）</td></tr>
+ <tr><td>API Key</td><td>到 <code>open.bigmodel.cn</code> 或 <code>platform.deepseek.com</code> 注册后在控制台创建，粘贴一次即可</td></tr>
++<tr><td>思考模式</td><td>仅 DeepSeek 显示；默认勾选「关闭思考」（更快、更省、讲稿整理不需要思维链）</td></tr>
+ <tr><td>单价</td><td>预设自动填好，只用于界面估算费用</td></tr>
+ </tbody></table>
+ <p>点「测试连接」确认通了，再点「保存」。不填 Key 或把后端切回「本地模型」</p>
+ <p>随时回到纯本地，零外传。</p>
+ <blockquote><strong>每个预设的 Key 分开保存</strong>：填了智谱的，再切到 DeepSeek 填另一个，<br>两个互不覆盖；切换下拉会自动带出该模型自己的 Key，输入框留空即沿用。<br>「当前」一栏会显示本模型是否已存 Key、总共存了几个。<br>注意：只填 Key 还不够，要把<strong>「后端」选成「云端 OpenAI 兼容模型」</strong>才会真的用云端；<br>否则界面会提示「密钥已保存，当前仍是本地模型」。</blockquote>
++<p><strong>DeepSeek 为什么要关思考（v2.7）</strong>：DeepSeek V4 系列默认先输出一段思维链，</p>
++<p><code>reasoning_effort</code> 还是 high。整理讲稿不需要推理，开着只会更慢、更贵，</p>
++<p>而且思维链也算 <code>max_tokens</code>——实测 746 字一块的 reasoning 吃掉 1033 token，</p>
++<p>正文容易被截断。现在 DeepSeek 预设<strong>默认勾选「关闭思考」</strong>，请求体传</p>
++<p><code>thinking: {"type": "disabled"}</code>；实测 210 字短稿 0.8 秒返回、输出仅 29 token。</p>
++<p>想恢复思考就去掉勾选（仅 DeepSeek 端点会显示这个开关，GLM / Ollama 不发送该字段）。</p>
+ <p><strong>本地模型实际怎么调用</strong>（不用填任何 Key、不联网）：把「后端」选成</p>
+ <p><strong>「本地模型（默认）」</strong>保存，回改稿页点「LLM 润色」即可。模型是</p>
+ <p><code>D:\AI\models\llm\Qwen\Qwen3-4B-GGUF\Qwen3-4B-Q4_K_M.gguf</code>（2.4GB），</p>
+@@ -137,13 +144,14 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+ <p>「润色模型设置」里点开就能看到模型是否就绪（不可用会写明原因并置灰按钮）。</p>
+ <p>模型目录可用 <code>ASR_LLM_DIR</code> 改。跑完先看 diff 预览和五项红线，点「采用」</p>
+ <p>才写成 <code>&lt;课程名&gt;_润色</code> 文件——不会自动覆盖原稿。</p>
+-<p><strong>长稿自动分块（v2.4）</strong>：原来 8000 字会被硬拦，现在 3 万字也能一次跑完。</p>
+-<p>程序按 <strong>700 字整句切块</strong>（不切断句子）→ 逐块送模型 → 自动合并成一整篇 →</p>
+-<p>回传预览 → 确认后写入成稿。非末尾块的结尾句若被模型删掉，程序会自动补回</p>
++<p><strong>长稿自动分块（v2.4 / v2.7）</strong>：原来 8000 字会被硬拦，现在 3 万字也能一次跑完。</p>
++<p>程序按<strong>整句</strong>切块（不切断句子）→ 逐块送模型 → 自动合并成一整篇 →</p>
++<p>回传预览 → 确认后写入成稿。本地模型 700 字/块，云端 3000 字/块（v2.7）。</p>
++<p>非末尾块的结尾句若被模型删掉，程序会自动补回</p>
+ <p>并在提示里报数量；<strong>原文真正的最后一句</strong>仍由界面「补回原末句」交给你决定，</p>
+-<p>红线闸门不会失效。前端与服务端超时按块数自动放宽（3 万字约 43 块，</p>
+-<p>本地模型可能跑 20 分钟左右），整体硬上限 20 万字（<code>ASR_LLM_MAX_CHARS</code>）。</p>
+-<blockquote>想更快：在设置里切到 GLM-4-Flash（免费）或 DeepSeek，43 块通常一两分钟跑完；<br>想零外传就保持本地模型，晚上挂着跑即可。</blockquote>
++<p>红线闸门不会失效。前端与服务端超时按块数自动放宽（3 万字本地约 43 块，</p>
++<p>可能跑 20 分钟左右），整体硬上限 20 万字（<code>ASR_LLM_MAX_CHARS</code>）。</p>
++<blockquote>想更快：在设置里切到 GLM-4-Flash（免费）或 DeepSeek，云端 3 万字约 10 块，<br>通常两三分钟跑完；想零外传就保持本地模型，晚上挂着跑即可。</blockquote>
+ <p><strong>安全边界</strong>：音视频识别<strong>永远在本机</strong>，云端模型只接收「讲稿文字」做润色；</p>
+ <p>字幕与时间轴一个字都不上云。API Key 只存本机 <code>config/cloud_llm.json</code>，</p>
+ <p>该目录已加入 <code>.gitignore</code>，界面只显示脱敏串。</p>
+@@ -152,21 +160,24 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+ <tr><td>本地 Qwen3-ASR 识别</td><td><strong>¥0</strong></td><td>约 30–45 分钟</td><td>2 路分片并行后实测 1.8–2.2× 实时</td></tr>
+ <tr><td>本地 Qwen3-4B 润色</td><td><strong>¥0</strong></td><td>数分钟</td><td>纯 CPU，稿子不出机</td></tr>
+ <tr><td>智谱 GLM-4-Flash 润色</td><td><strong>¥0</strong></td><td>十几秒</td><td>官方长期免费，限 30 并发 / 约 3 次每秒</td></tr>
+-<tr><td>DeepSeek V4-Flash 润色</td><td><strong>约 ¥0.05</strong></td><td>十几秒</td><td>$0.14/M 输入 + $0.28/M 输出；夜间低谷约半价</td></tr>
++<tr><td>DeepSeek V4.1-Flash 润色</td><td><strong>约 ¥0.07</strong></td><td>几秒</td><td>输入 $0.15/M + 输出 $0.60/M；关闭思考后输出 token 大幅下降</td></tr>
+ <tr><td>云端 ASR（腾讯云/火山）</td><td>约 ¥1–2 / 小时</td><td>几分钟</td><td><strong>本项目不走这条路</strong>，仅供对照</td></tr>
+ </tbody></table>
+ <p>润色一稿约 2–3 万 token（输入+输出）。**成本的大头是「按音频时长计费的云端 ASR」，</p>
+ <p>不是文字润色**；把识别留在本地、只让文字上云，几十节课的成本也接近零。</p>
++<p>v2.7 起云端长稿按 <strong>3000 字一块</strong>（本地仍 700 字），3 万字约 10 次请求，</p>
++<p>提示词重复开销比原来的 43 次少约 3/4。</p>
+ <h3>4.3 再省一点的六个习惯</h3>
+-<ol><li>识别一律本地；云端只开「LLM 润色」。</li><li>「LLM 润色」一稿只跑一次，之后的修改用本地七遍改稿 / 查找替换，不重复调模型。</li><li>批量任务勾「跳过已转录」，重复拖入同一批课件不白跑。</li><li>DeepSeek 放在<strong>北京时间 18:00–次日 09:00</strong> 跑（官方低谷价，约半价）。</li><li>专业术语、简称、漏字交给本地术语表与「术语补全」，不用花钱让模型猜。</li><li>先批量跑完识别，第二天集中校对时再统一润色，避免边跑边改造成重复调用。</li></ol>
++<ol><li>识别一律本地；云端只开「LLM 润色」。</li><li>「LLM 润色」一稿只跑一次，之后的修改用本地七遍改稿 / 查找替换，不重复调模型。</li><li>批量任务勾「跳过已转录」，重复拖入同一批课件不白跑。</li><li>DeepSeek 避开<strong>工作日 09:00–17:00</strong>（官方高峰价，约为低谷的 2 倍）；晚上、清晨、周末都是低谷。</li><li>专业术语、简称、漏字交给本地术语表与「术语补全」，不用花钱让模型猜。</li><li>先批量跑完识别，第二天集中校对时再统一润色，避免边跑边改造成重复调用。</li></ol>
+ <p>润色结果要先过<strong>五项硬红线</strong>（术语、条款号、数字、末句、长度）才能「采用」；</p>
+ <p>界面会显示本次用了多少 token、约合多少钱。</p>
+ <h3>4.4 长稿要等多久？结果会不会丢</h3>
+-<p>3 万字讲稿按 700 字整句切成约 43 块，云端 GLM-4-Flash 实测约 12 分钟</p>
+-<p>（每块 20–25 秒），本地 Qwen3-4B 更久。<strong>这期间正文不会变</strong>——整篇是</p>
++<p>3 万字讲稿：云端按 <strong>3000 字</strong>切成约 10 块（本地 Qwen3-4B 仍按 700 字切约 43 块），</p>
++<p>云端 GLM-4-Flash 实测每块十几秒，整篇约 2–3 分钟；本地模型更久。</p>
++<p><strong>这期间正文不会变</strong>——整篇是</p>
+ <p>「全部块跑完 → 合并 → 一次性返回」，属正常，不是卡住。改稿页上方会显示</p>
+ <p>一条醒目进度条（百分比、块数、已用时间、预计剩余），「LLM 润色」按钮</p>
+-<p>同时显示 <code>润色 12/43</code>。想直接查状态，浏览器打开</p>
++<p>同时显示 <code>润色 3/10</code>。想直接查状态，浏览器打开</p>
+ <p><code>http://127.0.0.1:7870/api/llm/progress</code>，看 <code>done / total / busy</code>。</p>
+ <p><strong>两条规定</strong>：</p>
+ <ol><li>跑完之前不要关闭或刷新页面，也不要重复点按钮（会提示「已有稿子在润色」）。</li><li>跑完会弹出「对比预览 + 五项红线」，<strong>必须点「采用」才写入成稿</strong>；</li></ol>
+@@ -199,9 +210,18 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+ <p>两个反直觉点：① 把单路线程拉到 20 核几乎没用（模型小，单路并行度有限），</p>
+ <p><strong>只有切片并发</strong>才能喂满核心；② 同进程创建多个 FunASR 模型实例会直接段错误</p>
+ <p>（exit 139），所以实现是「一个实例 + 多线程」，实测稳定。</p>
+-<p>代价是切点附近约 1%~3% 的字差异（每片独立跑 VAD / 标点）。默认 2 路是</p>
+-<p>速度与准确性的折中；<strong>追求逐字精确（法规条文）把 <code>ASR_FUNASR_WORKERS</code> 设 1</strong>，</p>
+-<p>回到整段推理的零回归路径。分片后每完成一片都会上报进度，长课不再停在 12%。</p>
++<p>代价是切点附近约 1%~3% 的字差异（每片独立跑 VAD / 标点）。</p>
++<p><strong>v2.7 起默认并行度按机器自适应</strong>（核数 //4 与 内存GB //4，取小，上限 4）：</p>
++<p>20 核 / 63GB → <strong>4 路</strong>。复测 600 秒真实课程切 4 片：</p>
++<table><thead><tr><th>并行</th><th>每路线程</th><th>墙钟</th><th>CPU</th><th>相对 2 路</th></tr></thead><tbody>
++<tr><td>2 路</td><td>8</td><td>26.4s</td><td>75%</td><td>1.00×</td></tr>
++<tr><td>3 路</td><td>5</td><td>22.9s</td><td>74%</td><td>1.15×</td></tr>
++<tr><td><strong>4 路</strong></td><td><strong>4</strong></td><td><strong>16.9s</strong></td><td><strong>92%</strong></td><td><strong>1.56×</strong></td></tr>
++</tbody></table>
++<p>79 分钟整课实测 <strong>185.6 秒</strong>（含 31.6 秒模型加载），旧基线 222.7 秒；</p>
++<p>扣掉加载约 154 秒，折合约 1.45×。<strong>追求逐字精确（法规条文）</strong>仍可把</p>
++<p><code>ASR_FUNASR_WORKERS</code> 设 1，回到整段推理的零回归路径；内存吃紧设 2。</p>
++<p>分片后每完成一片都会上报进度，长课不再停在 12%。</p>
+ <p>实测整条 79 分钟课件：整段单路 400 秒（6分40秒）产出 1431 条 / 21858 字；</p>
+ <p>用满 20 核的 Qwen3 要 40 分钟以上。<strong>占用率不是目标，端到端耗时才是</strong>。</p>
+ <hr>
+@@ -210,7 +230,7 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+ <tr><td><code>ASR_QWEN3_WORKERS</code></td><td>2</td><td>分片并行路数（1–4）</td></tr>
+ <tr><td><code>ASR_QWEN3_WINDOW</code></td><td>170</td><td>每片秒数（夹在 30–175），越大内存越高</td></tr>
+ <tr><td><code>ASR_QWEN3_MAXTOK</code></td><td>2048</td><td>单片最大输出 token</td></tr>
+-<tr><td><code>ASR_FUNASR_WORKERS</code></td><td>2</td><td>Paraformer 并行路数（1–4）；<strong>设 1 = 整段推理、逐字精确</strong></td></tr>
++<tr><td><code>ASR_FUNASR_WORKERS</code></td><td>自适应（≤4）</td><td>Paraformer 并行路数（1–4）；20 核/63GB 算得 4。<strong>设 1 = 整段推理、逐字精确</strong></td></tr>
+ <tr><td><code>ASR_FUNASR_CHUNK</code></td><td>600</td><td>Paraformer 每片秒数（120–1800），越大切点越少、内存越高</td></tr>
+ <tr><td><code>ASR_LLM_TIMEOUT</code></td><td>600</td><td>润色卡死判定秒数</td></tr>
+ <tr><td><code>ASR_LLM_PROXY</code></td><td>空</td><td>云端模型走代理时显式指定；默认绕开失效的环境代理</td></tr>
+@@ -223,18 +243,20 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
+ <tr><td>任务栏一直「排队中」</td><td>队列被暂停或设了定时开始；展开「批量 · 夜间无人值守」看状态</td></tr>
+ <tr><td>长课跑到一半进程消失</td><td>2.3 已修（长音频整批前向段错误）；若仍发生，查 <code>out/_crash.log</code></td></tr>
+ <tr><td>内存暴涨 / 机器卡</td><td>把 <code>ASR_QWEN3_WORKERS</code> 设 1，或 <code>ASR_QWEN3_WINDOW</code> 调小到 120</td></tr>
+-<tr><td>CPU 只占 14%，想把 20 核用满</td><td>单路 Paraformer 只用约 4 核；2.4 起默认 2 路分片并行（见第五节）。给单路塞 20 线程实测只快 6%</td></tr>
++<tr><td>CPU 只占 14%，想把 20 核用满</td><td>单路 Paraformer 只用约 4 核；<strong>v2.7 起按核数/内存自适应，20 核/63GB 默认 4 路</strong>（见第五节）。给单路塞 20 线程实测只快 6%</td></tr>
+ <tr><td>视频点开不能播</td><td>服务重启后上传态地址会失效；点任务栏「打开」重新挂载，v2.4 起旧地址也会自动按编号找回</td></tr>
+ <tr><td>点了润色，页面好像没变化 / 不知回传没有</td><td>长稿要等全部块跑完才一次性返回，正文结束前本来就不动；看改稿页上方进度条，或打开 <code>/api/llm/progress</code> 查 <code>done / total</code></td></tr>
+ <tr><td>润色跑完但刷新后预览没了</td><td>v2.4 补丁起结果落盘到 <code>out/_llm/last.json</code>，重新打开页面自动找回；补丁之前的结果只在 HTTP 响应里，需重跑一次</td></tr>
+ <tr><td>误点一下把润色预览关掉了</td><td>结果没丢，在 <code>out/_llm/last.json</code>。改稿页点「<strong>上次润色</strong>」（带绿点）即可原样再打开；刚跑完半小时内刷新页面还会自动弹回</td></tr>
+ <tr><td>刷新 / 重开页面后字幕不见了</td><td>字幕只活在页面内存里，刷新会清空显示，但 <code>.srt</code> 一直在 <code>out/</code>。2.4 补丁起会自动载回上次打开的任务；更早的版本请在左侧任务栏点该任务的「打开」</td></tr>
+ <tr><td>润色后字幕没跟着变</td><td>设计如此：润色只改<strong>讲稿轨</strong>，字幕轨永远是识别原文 + 字级时间戳（见第二节双轨红线）。字幕要更顺用「重新清理」或逐句校对，别把整段改写灌进字幕</td></tr>
+-<tr><td>润色一直没结果</td><td>3 万字约分 43 块，云端约 10–13 分钟、本地约 20 分钟；按钮实时显示「润色 12/43」，连续 3 块网络失败会立刻报错，不再干等</td></tr>
+-<tr><td>3 万字 / 8000 字上限</td><td>v2.4 已取消硬拦：自动按 700 字整句分块、逐块润色、合并回传，预览后写入成稿</td></tr>
++<tr><td>润色一直没结果</td><td>云端 3 万字约 10 块、2–3 分钟；本地约 43 块、20 分钟左右。按钮实时显示「润色 3/10」，连续 3 块网络失败会立刻报错，不再干等</td></tr>
++<tr><td>3 万字 / 8000 字上限</td><td>v2.4 已取消硬拦：自动整句分块、逐块润色、合并回传，预览后写入成稿；v2.7 起云端 3000 字/块、本地 700 字/块</td></tr>
+ <tr><td>导出成稿点了没反应</td><td>已改为「复制文本」单按钮，直接粘贴到 Word</td></tr>
+-<tr><td>「管带 / 管道」被识别成别的词</td><td>顶栏「<strong>术语表</strong>」→ 错词校正加 <code>管带 =&gt; 管代</code>、识别热词加 <code>管代</code>（权重 20）；保存即生效，热词只影响新任务。也可直接改 <code>terms/*.txt</code></td></tr>
+-<tr><td>术语表 / 错词表在哪里设置</td><td>顶栏「术语表」按钮：错词校正（错→对）、简称表（简称→全称）、识别热词（词+权重）三页签，可增删改；文件本体在 <code>terms/corrections.txt</code>、<code>aliases.txt</code>、<code>hotwords.txt</code></td></tr>
++<tr><td>「管带 / 管道」被识别成别的词</td><td>顶栏「<strong>术语表</strong>」→ 错词校正已有 <code>管带 =&gt; 管代</code>，简称表已有 <code>管代 =&gt; 管理者代表</code>；保存即生效。也可直接改 <code>terms/*.txt</code>，v2.7 起改完不用重启，点「重新清理」就生效</td></tr>
++<tr><td>术语表 / 错词表在哪里设置</td><td>顶栏「术语表」按钮：错词校正（错→对）、简称表（简称→全称）、识别热词（词+权重）三页签，可增删改；<strong>「试改」输入框</strong>可现场验证一句话会被怎么改；文件本体在 <code>terms/corrections.txt</code>、<code>aliases.txt</code>、<code>hotwords.txt</code></td></tr>
++<tr><td>术语表改了，字幕清理用不用得上</td><td>用得上。错词 / 简称 / 术语补全同时作用于<strong>字幕清理与讲稿清理</strong>；老任务点一次「重新清理」。弹窗里的「试改」显示的就是这条链路</td></tr>
++<tr><td>DeepSeek 能不能不推理</td><td>能。v2.7 起 DeepSeek 预设默认关思考，请求体传 <code>thinking: {"type": "disabled"}</code>；实测短稿 0.8 秒、输出 29 token。想恢复思考去掉勾选即可（仅 DeepSeek 端点有该开关）</td></tr>
+ <tr><td>重装电脑后词表和设置要重配一遍？</td><td>顶栏「备份」→ 导出 zip（可含 API Key，注意别外发）；新机装好工具后同一入口导入。导入前会自动快照，导错可退回。详见第九节</td></tr>
+ <tr><td>填了 GLM 的 Key，再填 DeepSeek 存不上</td><td>2.4 起每个预设分开存 Key；切换下拉会自动带出本模型的 Key，留空即沿用</td></tr>
+ <tr><td>填了 Key 但润色还是本地模型</td><td>要把「后端」选成「云端 OpenAI 兼容模型」，只存 Key 不会自动切换</td></tr>
+diff --git "a/\344\275\277\347\224\250\350\257\264\346\230\216\344\271\246.md" "b/\344\275\277\347\224\250\350\257\264\346\230\216\344\271\246.md"
+index 8378424..f59e1cb 100644
+--- "a/\344\275\277\347\224\250\350\257\264\346\230\216\344\271\246.md"
++++ "b/\344\275\277\347\224\250\350\257\264\346\230\216\344\271\246.md"
+@@ -1,7 +1,7 @@
+ # 网课转字幕 · 使用说明书
+ 
+ > 面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。
+-> 版本 2.4 ｜ 2026-11-09 ｜ 配套：`README.md`（版本变更）、`DESIGN.md`（界面约定）、
++> 版本 2.7 ｜ 2026-11-09 ｜ 配套：`README.md`（版本变更）、`DESIGN.md`（界面约定）、
+ > `批量任务说明.txt`（命令行批量）、`网课转字幕.txt`（速查）。
+ > 本说明书已挂到工具首页顶栏的 **「使用说明」** 按钮，随时可查、可打印。
+ 
+@@ -123,10 +123,11 @@ Windows 计划任务里把「程序」设为 Python 解释器、「参数」设
+ | 项 | 填什么 |
+ |---|---|
+ | 后端 | 本地模型（默认） / 云端 OpenAI 兼容模型 |
+-| 预设 | 智谱 GLM-4-Flash（永久免费） / DeepSeek V4-Flash（低价） / 自定义 |
++| 预设 | 智谱 GLM-4-Flash（永久免费） / DeepSeek V4.1-Flash（低价 · 默认不思考） / 自定义 |
+ | 接口地址 | 智谱 `https://open.bigmodel.cn/api/paas/v4`；DeepSeek `https://api.deepseek.com` |
+-| 模型名 | `glm-4-flash`；`deepseek-v4-flash`（旧名 `deepseek-chat` 已于 2026-07 停用） |
++| 模型名 | `glm-4-flash`；`deepseek-flash`（旧名 `deepseek-v4-flash` 仍可用，`deepseek-chat` 已于 2026-07 停用） |
+ | API Key | 到 `open.bigmodel.cn` 或 `platform.deepseek.com` 注册后在控制台创建，粘贴一次即可 |
++| 思考模式 | 仅 DeepSeek 显示；默认勾选「关闭思考」（更快、更省、讲稿整理不需要思维链） |
+ | 单价 | 预设自动填好，只用于界面估算费用 |
+ 
+ 点「测试连接」确认通了，再点「保存」。不填 Key 或把后端切回「本地模型」
+@@ -138,6 +139,13 @@ Windows 计划任务里把「程序」设为 Python 解释器、「参数」设
+ > 注意：只填 Key 还不够，要把**「后端」选成「云端 OpenAI 兼容模型」**才会真的用云端；
+ > 否则界面会提示「密钥已保存，当前仍是本地模型」。
+ 
++**DeepSeek 为什么要关思考（v2.7）**：DeepSeek V4 系列默认先输出一段思维链，
++`reasoning_effort` 还是 high。整理讲稿不需要推理，开着只会更慢、更贵，
++而且思维链也算 `max_tokens`——实测 746 字一块的 reasoning 吃掉 1033 token，
++正文容易被截断。现在 DeepSeek 预设**默认勾选「关闭思考」**，请求体传
++`thinking: {"type": "disabled"}`；实测 210 字短稿 0.8 秒返回、输出仅 29 token。
++想恢复思考就去掉勾选（仅 DeepSeek 端点会显示这个开关，GLM / Ollama 不发送该字段）。
++
+ **本地模型实际怎么调用**（不用填任何 Key、不联网）：把「后端」选成
+ **「本地模型（默认）」**保存，回改稿页点「LLM 润色」即可。模型是
+ `D:\AI\models\llm\Qwen\Qwen3-4B-GGUF\Qwen3-4B-Q4_K_M.gguf`（2.4GB），
+@@ -146,15 +154,16 @@ Windows 计划任务里把「程序」设为 Python 解释器、「参数」设
+ 模型目录可用 `ASR_LLM_DIR` 改。跑完先看 diff 预览和五项红线，点「采用」
+ 才写成 `<课程名>_润色` 文件——不会自动覆盖原稿。
+ 
+-**长稿自动分块（v2.4）**：原来 8000 字会被硬拦，现在 3 万字也能一次跑完。
+-程序按 **700 字整句切块**（不切断句子）→ 逐块送模型 → 自动合并成一整篇 →
+-回传预览 → 确认后写入成稿。非末尾块的结尾句若被模型删掉，程序会自动补回
++**长稿自动分块（v2.4 / v2.7）**：原来 8000 字会被硬拦，现在 3 万字也能一次跑完。
++程序按**整句**切块（不切断句子）→ 逐块送模型 → 自动合并成一整篇 →
++回传预览 → 确认后写入成稿。本地模型 700 字/块，云端 3000 字/块（v2.7）。
++非末尾块的结尾句若被模型删掉，程序会自动补回
+ 并在提示里报数量；**原文真正的最后一句**仍由界面「补回原末句」交给你决定，
+-红线闸门不会失效。前端与服务端超时按块数自动放宽（3 万字约 43 块，
+-本地模型可能跑 20 分钟左右），整体硬上限 20 万字（`ASR_LLM_MAX_CHARS`）。
++红线闸门不会失效。前端与服务端超时按块数自动放宽（3 万字本地约 43 块，
++可能跑 20 分钟左右），整体硬上限 20 万字（`ASR_LLM_MAX_CHARS`）。
+ 
+-> 想更快：在设置里切到 GLM-4-Flash（免费）或 DeepSeek，43 块通常一两分钟跑完；
+-> 想零外传就保持本地模型，晚上挂着跑即可。
++> 想更快：在设置里切到 GLM-4-Flash（免费）或 DeepSeek，云端 3 万字约 10 块，
++> 通常两三分钟跑完；想零外传就保持本地模型，晚上挂着跑即可。
+ 
+ **安全边界**：音视频识别**永远在本机**，云端模型只接收「讲稿文字」做润色；
+ 字幕与时间轴一个字都不上云。API Key 只存本机 `config/cloud_llm.json`，
+@@ -167,18 +176,20 @@ Windows 计划任务里把「程序」设为 Python 解释器、「参数」设
+ | 本地 Qwen3-ASR 识别 | **¥0** | 约 30–45 分钟 | 2 路分片并行后实测 1.8–2.2× 实时 |
+ | 本地 Qwen3-4B 润色 | **¥0** | 数分钟 | 纯 CPU，稿子不出机 |
+ | 智谱 GLM-4-Flash 润色 | **¥0** | 十几秒 | 官方长期免费，限 30 并发 / 约 3 次每秒 |
+-| DeepSeek V4-Flash 润色 | **约 ¥0.05** | 十几秒 | $0.14/M 输入 + $0.28/M 输出；夜间低谷约半价 |
++| DeepSeek V4.1-Flash 润色 | **约 ¥0.07** | 几秒 | 输入 $0.15/M + 输出 $0.60/M；关闭思考后输出 token 大幅下降 |
+ | 云端 ASR（腾讯云/火山） | 约 ¥1–2 / 小时 | 几分钟 | **本项目不走这条路**，仅供对照 |
+ 
+ 润色一稿约 2–3 万 token（输入+输出）。**成本的大头是「按音频时长计费的云端 ASR」，
+ 不是文字润色**；把识别留在本地、只让文字上云，几十节课的成本也接近零。
++v2.7 起云端长稿按 **3000 字一块**（本地仍 700 字），3 万字约 10 次请求，
++提示词重复开销比原来的 43 次少约 3/4。
+ 
+ ### 4.3 再省一点的六个习惯
+ 
+ 1. 识别一律本地；云端只开「LLM 润色」。
+ 2. 「LLM 润色」一稿只跑一次，之后的修改用本地七遍改稿 / 查找替换，不重复调模型。
+ 3. 批量任务勾「跳过已转录」，重复拖入同一批课件不白跑。
+-4. DeepSeek 放在**北京时间 18:00–次日 09:00** 跑（官方低谷价，约半价）。
++4. DeepSeek 避开**工作日 09:00–17:00**（官方高峰价，约为低谷的 2 倍）；晚上、清晨、周末都是低谷。
+ 5. 专业术语、简称、漏字交给本地术语表与「术语补全」，不用花钱让模型猜。
+ 6. 先批量跑完识别，第二天集中校对时再统一润色，避免边跑边改造成重复调用。
+ 
+@@ -187,11 +198,12 @@ Windows 计划任务里把「程序」设为 Python 解释器、「参数」设
+ 
+ ### 4.4 长稿要等多久？结果会不会丢
+ 
+-3 万字讲稿按 700 字整句切成约 43 块，云端 GLM-4-Flash 实测约 12 分钟
+-（每块 20–25 秒），本地 Qwen3-4B 更久。**这期间正文不会变**——整篇是
++3 万字讲稿：云端按 **3000 字**切成约 10 块（本地 Qwen3-4B 仍按 700 字切约 43 块），
++云端 GLM-4-Flash 实测每块十几秒，整篇约 2–3 分钟；本地模型更久。
++**这期间正文不会变**——整篇是
+ 「全部块跑完 → 合并 → 一次性返回」，属正常，不是卡住。改稿页上方会显示
+ 一条醒目进度条（百分比、块数、已用时间、预计剩余），「LLM 润色」按钮
+-同时显示 `润色 12/43`。想直接查状态，浏览器打开
++同时显示 `润色 3/10`。想直接查状态，浏览器打开
+ `http://127.0.0.1:7870/api/llm/progress`，看 `done / total / busy`。
+ 
+ **两条规定**：
+@@ -238,9 +250,20 @@ v2.4 补丁起，服务端在完成的瞬间把整份结果（含 diff 与红线
+ **只有切片并发**才能喂满核心；② 同进程创建多个 FunASR 模型实例会直接段错误
+ （exit 139），所以实现是「一个实例 + 多线程」，实测稳定。
+ 
+-代价是切点附近约 1%~3% 的字差异（每片独立跑 VAD / 标点）。默认 2 路是
+-速度与准确性的折中；**追求逐字精确（法规条文）把 `ASR_FUNASR_WORKERS` 设 1**，
+-回到整段推理的零回归路径。分片后每完成一片都会上报进度，长课不再停在 12%。
++代价是切点附近约 1%~3% 的字差异（每片独立跑 VAD / 标点）。
++**v2.7 起默认并行度按机器自适应**（核数 //4 与 内存GB //4，取小，上限 4）：
++20 核 / 63GB → **4 路**。复测 600 秒真实课程切 4 片：
++
++| 并行 | 每路线程 | 墙钟 | CPU | 相对 2 路 |
++|---|---|---|---|---|
++| 2 路 | 8 | 26.4s | 75% | 1.00× |
++| 3 路 | 5 | 22.9s | 74% | 1.15× |
++| **4 路** | **4** | **16.9s** | **92%** | **1.56×** |
++
++79 分钟整课实测 **185.6 秒**（含 31.6 秒模型加载），旧基线 222.7 秒；
++扣掉加载约 154 秒，折合约 1.45×。**追求逐字精确（法规条文）**仍可把
++`ASR_FUNASR_WORKERS` 设 1，回到整段推理的零回归路径；内存吃紧设 2。
++分片后每完成一片都会上报进度，长课不再停在 12%。
+ 
+ 实测整条 79 分钟课件：整段单路 400 秒（6分40秒）产出 1431 条 / 21858 字；
+ 用满 20 核的 Qwen3 要 40 分钟以上。**占用率不是目标，端到端耗时才是**。
+@@ -254,7 +277,7 @@ v2.4 补丁起，服务端在完成的瞬间把整份结果（含 diff 与红线
+ | `ASR_QWEN3_WORKERS` | 2 | 分片并行路数（1–4） |
+ | `ASR_QWEN3_WINDOW` | 170 | 每片秒数（夹在 30–175），越大内存越高 |
+ | `ASR_QWEN3_MAXTOK` | 2048 | 单片最大输出 token |
+-| `ASR_FUNASR_WORKERS` | 2 | Paraformer 并行路数（1–4）；**设 1 = 整段推理、逐字精确** |
++| `ASR_FUNASR_WORKERS` | 自适应（≤4） | Paraformer 并行路数（1–4）；20 核/63GB 算得 4。**设 1 = 整段推理、逐字精确** |
+ | `ASR_FUNASR_CHUNK` | 600 | Paraformer 每片秒数（120–1800），越大切点越少、内存越高 |
+ | `ASR_LLM_TIMEOUT` | 600 | 润色卡死判定秒数 |
+ | `ASR_LLM_PROXY` | 空 | 云端模型走代理时显式指定；默认绕开失效的环境代理 |
+@@ -270,18 +293,20 @@ v2.4 补丁起，服务端在完成的瞬间把整份结果（含 diff 与红线
+ | 任务栏一直「排队中」 | 队列被暂停或设了定时开始；展开「批量 · 夜间无人值守」看状态 |
+ | 长课跑到一半进程消失 | 2.3 已修（长音频整批前向段错误）；若仍发生，查 `out/_crash.log` |
+ | 内存暴涨 / 机器卡 | 把 `ASR_QWEN3_WORKERS` 设 1，或 `ASR_QWEN3_WINDOW` 调小到 120 |
+-| CPU 只占 14%，想把 20 核用满 | 单路 Paraformer 只用约 4 核；2.4 起默认 2 路分片并行（见第五节）。给单路塞 20 线程实测只快 6% |
++| CPU 只占 14%，想把 20 核用满 | 单路 Paraformer 只用约 4 核；**v2.7 起按核数/内存自适应，20 核/63GB 默认 4 路**（见第五节）。给单路塞 20 线程实测只快 6% |
+ | 视频点开不能播 | 服务重启后上传态地址会失效；点任务栏「打开」重新挂载，v2.4 起旧地址也会自动按编号找回 |
+ | 点了润色，页面好像没变化 / 不知回传没有 | 长稿要等全部块跑完才一次性返回，正文结束前本来就不动；看改稿页上方进度条，或打开 `/api/llm/progress` 查 `done / total` |
+ | 润色跑完但刷新后预览没了 | v2.4 补丁起结果落盘到 `out/_llm/last.json`，重新打开页面自动找回；补丁之前的结果只在 HTTP 响应里，需重跑一次 |
+ | 误点一下把润色预览关掉了 | 结果没丢，在 `out/_llm/last.json`。改稿页点「**上次润色**」（带绿点）即可原样再打开；刚跑完半小时内刷新页面还会自动弹回 |
+ | 刷新 / 重开页面后字幕不见了 | 字幕只活在页面内存里，刷新会清空显示，但 `.srt` 一直在 `out/`。2.4 补丁起会自动载回上次打开的任务；更早的版本请在左侧任务栏点该任务的「打开」 |
+ | 润色后字幕没跟着变 | 设计如此：润色只改**讲稿轨**，字幕轨永远是识别原文 + 字级时间戳（见第二节双轨红线）。字幕要更顺用「重新清理」或逐句校对，别把整段改写灌进字幕 |
+-| 润色一直没结果 | 3 万字约分 43 块，云端约 10–13 分钟、本地约 20 分钟；按钮实时显示「润色 12/43」，连续 3 块网络失败会立刻报错，不再干等 |
+-| 3 万字 / 8000 字上限 | v2.4 已取消硬拦：自动按 700 字整句分块、逐块润色、合并回传，预览后写入成稿 |
++| 润色一直没结果 | 云端 3 万字约 10 块、2–3 分钟；本地约 43 块、20 分钟左右。按钮实时显示「润色 3/10」，连续 3 块网络失败会立刻报错，不再干等 |
++| 3 万字 / 8000 字上限 | v2.4 已取消硬拦：自动整句分块、逐块润色、合并回传，预览后写入成稿；v2.7 起云端 3000 字/块、本地 700 字/块 |
+ | 导出成稿点了没反应 | 已改为「复制文本」单按钮，直接粘贴到 Word |
+-| 「管带 / 管道」被识别成别的词 | 顶栏「**术语表**」→ 错词校正加 `管带 => 管代`、识别热词加 `管代`（权重 20）；保存即生效，热词只影响新任务。也可直接改 `terms/*.txt` |
+-| 术语表 / 错词表在哪里设置 | 顶栏「术语表」按钮：错词校正（错→对）、简称表（简称→全称）、识别热词（词+权重）三页签，可增删改；文件本体在 `terms/corrections.txt`、`aliases.txt`、`hotwords.txt` |
++| 「管带 / 管道」被识别成别的词 | 顶栏「**术语表**」→ 错词校正已有 `管带 => 管代`，简称表已有 `管代 => 管理者代表`；保存即生效。也可直接改 `terms/*.txt`，v2.7 起改完不用重启，点「重新清理」就生效 |
++| 术语表 / 错词表在哪里设置 | 顶栏「术语表」按钮：错词校正（错→对）、简称表（简称→全称）、识别热词（词+权重）三页签，可增删改；**「试改」输入框**可现场验证一句话会被怎么改；文件本体在 `terms/corrections.txt`、`aliases.txt`、`hotwords.txt` |
++| 术语表改了，字幕清理用不用得上 | 用得上。错词 / 简称 / 术语补全同时作用于**字幕清理与讲稿清理**；老任务点一次「重新清理」。弹窗里的「试改」显示的就是这条链路 |
++| DeepSeek 能不能不推理 | 能。v2.7 起 DeepSeek 预设默认关思考，请求体传 `thinking: {"type": "disabled"}`；实测短稿 0.8 秒、输出 29 token。想恢复思考去掉勾选即可（仅 DeepSeek 端点有该开关） |
+ | 重装电脑后词表和设置要重配一遍？ | 顶栏「备份」→ 导出 zip（可含 API Key，注意别外发）；新机装好工具后同一入口导入。导入前会自动快照，导错可退回。详见第九节 |
+ | 填了 GLM 的 Key，再填 DeepSeek 存不上 | 2.4 起每个预设分开存 Key；切换下拉会自动带出本模型的 Key，留空即沿用 |
+ | 填了 Key 但润色还是本地模型 | 要把「后端」选成「云端 OpenAI 兼容模型」，只存 Key 不会自动切换 |
+diff --git "a/\345\256\241\350\256\241\346\212\245\345\221\212_v2.7.md" "b/\345\256\241\350\256\241\346\212\245\345\221\212_v2.7.md"
+new file mode 100644
+index 0000000..a2c667c
+--- /dev/null
++++ "b/\345\256\241\350\256\241\346\212\245\345\221\212_v2.7.md"
+@@ -0,0 +1,557 @@
++# 网课转字幕 v2.7 · 源代码审计 / Bug 修复 / 重构与迭代报告
++
++- 审计日期：2026-11-09
++- 代码基线：`641ac03 feat(v2.6): back up and migrate term tables plus settings in one zip`
++- 审计范围：项目根目录全部 Python 模块、前端单页、词表与规则、测试脚本
++- 审计方法：通读源码 → 静态检查 → 真实音频基准 → 接口冒烟 → 全量回归
++- 结论：修复 18 项影响正确性/稳定性的问题、7 项质量与性能问题；新增 1 个可验证功能（术语表「试改」）与 1 套 55 项回归；默认并行度 2→4，79 分钟整课 222.7s→185.6s（含模型加载，折合 1.45×）
++
++> 说明：本报告第 1–5、7–8 节为审计结论；第 6 节指向仓库中的完整源码与
++> `审计报告_v2.7.diff`。所有改动行均带 `# modified(v2.7)` / `【新增 v2.7】` /
++> `【修复 v2.7】` 注释，未删除任何原有可用逻辑。
++
++---
++
++## 一、同类方案调研小结
++
++### 1.1 调研对象与来源
++
++| 方向 | 参考对象 | 来源 |
++|---|---|---|
++| 本地 ASR 性能 | FunASR / Paraformer 官方并发说明、ONNX INT8 量化实践 | FunASR 语雀并发文档、社区量化实测（CSDN，2026） |
++| 长音频与字幕工作流 | Buzz、Subtitle Edit、whisper-webui 类项目 | GitHub 主流项目（星标高、维护活跃） |
++| 云端 LLM 润色 | DeepSeek 官方 API 文档（思考模式、价格、模型名） | api-docs.deepseek.com |
++| 监管术语 | NMPA 部门规章目录、2026 新版医疗器械 GMP 及 4 个检查指导原则 | nmpa.gov.cn |
++| 术语治理 | 热词偏置 + 后处理纠错 + 术语表三层方案 | 行业通用做法（ASR 后处理管线） |
++
++### 1.2 本地 ASR：能借鉴的与不能照搬的
++
++**可借鉴**
++
++1. **单实例多线程 + 分片并行**：FunASR 官方并发文档给的规律是「每路 1–2 核、
++   总线程不超过物理核」。我们已有单实例多线程（多实例实测段错误），本轮把
++   默认并行度从 2 提到 4，实测 600 秒 4 片：2 路 26.4s → 4 路 16.9s（1.56×），
++   整机 CPU 75% → 92%。
++2. **线程数按核数分配，而不是写死**：社区结论一致——线程过多会因调度和内存
++   带宽回吐收益。原实现写死 `16 // workers`，4 核机器会开出 16 线程。
++3. **长音频必须切片**：官方与社区都建议按低能量边界切，避免整批前向吃爆内存；
++   我们已按 600 秒切，切片算法改为 20ms 能量包络，79 分钟切片 0.14 秒。
++4. **INT8 量化**：社区实测单线程 RTF 降约 43%，但 16 线程时只降约 12%——
++   我们已经是多路并行、线程接近打满，收益有限；且需要额外导出 ONNX 模型、
++   重新验准确率，**本轮不引入**，留作后续可选项。
++
++**不能照搬**
++
++- 多进程/多容器并发：官方建议用多实例扩并发，但本项目实测**同进程第二个
++  AutoModel 必段错误（exit 139）**；多进程虽可行，但内存翻倍、队列与进度
++  复杂度陡增，不符合「个人自用、稳定优先」。
++- 把线程拉到 20：实测单路 20 线程只比 4 线程快 6%，纯属浪费。
++
++### 1.3 字幕工具：已采纳的成熟做法
++
++Buzz / Subtitle Edit / whisper-webui 的共同点，本项目大多已具备：
++
++- 多选入队、按顺序跑、文件夹监控、**跳过已转录**（v2.3 已做）；
++- 任务持久化、重启续跑、进度与剩余时间（v2.0/v2.3 已做）；
++- SRT/VTT 互转、波形定位、逐句校对、时间码微调（v1.x 已做）；
++- 双轨：字幕原文与整理稿分离（v1.3 已做，且是本项目最重要的数据约束）。
++
++本轮只补了它们普遍具备、我们缺的一项：**术语表改动后无需重启即可生效**，
++以及一个可现场验证的「试改」入口。
++
++### 1.4 云端润色：DeepSeek 的关键结论
++
++官方文档（2026-11 核对）：
++
++- V4 系列**默认开启思考**，`reasoning_effort` 默认 `high`；
++- 关闭方式：请求体 `{"thinking": {"type": "disabled"}}`（OpenAI SDK 放 `extra_body`）；
++- 现行模型名 `deepseek-flash`（服务 DeepSeek-V4.1-Flash）；旧名
++  `deepseek-v4-flash` 仍被接受并路由到同一模型；
++- 价格：输入 $0.15/M、输出 $0.60/M，缓存命中输入 $0.003/M；工作日
++  09:00–17:00 为高峰价，其余为低谷；
++- 关闭思考后 `temperature` / `top_p` 才真正生效，`max_tokens` 也不会被
++  `reasoning_content` 占用。
++
++据此落地：DeepSeek 预设默认关思考；`max_tokens` 2400→8192；云端分块
++700→3000 字；旧配置按「仅迁移程序默认值」的原则升级。
++
++### 1.5 术语治理：三层方案
++
++行业通用做法是「识别前热词偏置 + 识别后错词替换 + 简称/术语归一」，本项目
++三层都有，但存在两个问题：热词只有 151 条、错词表有误伤条目。本轮：
++
++- 热词扩到 331 条，按 NMPA 现行法规目录与 2026 新版器械 GMP 补齐；
++- 错词表把 11 条会误伤正常表达的全局替换移入「待人工确认」；
++- 简称表补 `管代/UDI/MAH/IVD/CAPA/QMS`，并修掉「医疗器械GMP 被裸 GMP
++  展开成药品 GMP」的语境错误；
++- 不引入 Aho-Corasick：89 条错词、596 句实测 0.17 秒，字符串替换足够，
++  多一个依赖不划算。
++
++### 1.6 调研结论（采纳 / 不采纳）
++
++| 做法 | 决定 | 理由 |
++|---|---|---|
++| 4 路分片并行、线程按核数分配 | **采纳** | 1.56×，CPU 92%，文本一致 |
++| 本地切片替代 qwen_asr 工具函数 | **采纳** | 去掉隐藏依赖，快 100 倍 |
++| ONNX INT8 量化 | 暂不 | 多线程下收益收窄，需重验准确率 |
++| 多进程扩并发 | 暂不 | 内存翻倍、复杂度高，稳定性优先 |
++| DeepSeek 关闭思考 | **采纳** | 官方支持，实测 0.8s / 29 token |
++| 云端 3000 字一块 | **采纳** | 请求数 43→10，提示词开销降 3/4 |
++| 云端 ASR | 不采纳 | 按音频时长计费，成本大头 |
++| LLM 润色同步字幕 | 不采纳 | 破坏字级时间戳对齐（双轨红线） |
++| 全量 ITN | 不采纳 | 会改坏条款号与「四不两直」等固定表述 |
++
++---
++
++## 二、项目理解小结
++
++**定位**：面向药品 / 医疗器械 / 化妆品监管网课的本地转写与校对工作台。
++音视频默认不出本机；可选云端识别源，但字幕与讲稿必须分轨。
++
++**核心数据模型（双轨，不可破坏）**：
++
++| 轨 | 内容 | 用途 | 约束 |
++|---|---|---|---|
++| A 字幕轨 | ASR 原文 + 字级时间戳 | SRT/VTT、波形、逐句校对、align.py | **一个字都不改**，保证音画同步 |
++| B 讲稿轨 | 规则清理 / LLM 顺滑后的文本 | 七遍改稿、DOCX/MD | 允许改写，**绝不回写时间轴** |
++
++**运行链路**：
++
++```
++上传/登记 → 队列（暂停/定时/重试/监控）→ ffmpeg 转 16k 单声道
++→ Paraformer 或 Qwen3-ASR（分片并行）→ 字级时间戳 → raw.srt/raw.txt/json
++→ 规则清理（错词→简称→术语补全→数字规整→填充词）
++→ clean.srt/clean.txt/report.md（字幕与讲稿同源但分产物）
++→ 人工校对（自动保存、修订学习）
++→（可选）LLM 润色讲稿 → 红线审计 + diff 预览 → 采用为 _润色 稿
++→（可选）七遍改稿 → 复制文本
++```
++
++**设计约束**：
++
++1. 宁可少删，不可误删；不确定的只出建议；
++2. 条款号、数字、法规名、模态词原样保留；
++3. 润色结果必须过五项硬红线 + 人工预览才能采用；
++4. 源文件禁止删除；产物只增不删；
++5. 本地优先，云端只处理文字；
++6. 配置与词库可整体备份/迁移。
++
++本轮所有修改均未改变上述定位与数据模型。
++
++---
++
++## 三、审计问题汇总
++
++级别：P1 = 影响正确性/稳定性/数据安全；P2 = 质量、性能、可维护性；P3 = 体验/文档。
++
++| ID | 级别 | 位置 | 问题 | 状态 |
++|---|---|---|---|---|
++| A1 | P1 | `server._load_jobs` | running→interrupted 后 `_persist` 时任务尚未登记，**永远写不进磁盘** | 已修 |
++| A2 | P1 | `llm_polish.must_keep_terms` | 简称被当独立硬项，润色保留简称即判「丢失」，**采用按钮永远灰** | 已修 |
++| A3 | P1 | `rules/filler_words.json` + `Cleaner` | 「我们/咱们」在语气词组被无条件删，**抢在自称判别之前**，单位自称无法保留 | 已修 |
++| A4 | P1 | `transcribe._run_funasr_parallel` | 隐式依赖 `qwen_asr` 的切片工具；只装 FunASR 时默认并行直接 ImportError | 已修 |
++| A5 | P1 | `transcribe` 线程管理 | Paraformer 4 路把 torch 线程压到 4，之后单路 Qwen3 被拖慢 | 已修 |
++| A6 | P1 | `transcribe._is_16k_mono` | 只看采样率/声道，24bit wav 被当 16bit 读成噪声 | 已修 |
++| A7 | P1 | `cloud_llm.test_connection` | DeepSeek 默认思考 + `max_tokens=16`，思维链吃光额度，测试显示「回复空」 | 已修 |
++| A8 | P1 | `cloud_llm.PRESETS` | 模型名、价格、`max_tokens` 均为旧值；3000 字块会被 2400 截断 | 已修 |
++| A9 | P1 | `terms/corrections.txt` | 11 条全局替换会误伤正常表达（影片、驻藏、备安、处于药品…） | 已修 |
++| A10 | P1 | `llm_polish._ECHO_MARKS` | 「技术约定」这类正文词单独命中就判复述提示词，正常稿被反复重试 | 已修 |
++| A11 | P1 | `llm_polish.audit` | `rapidfuzz` 缺失时抛 ImportError，整份润色结果丢失 | 已修 |
++| A12 | P1 | `glossary._read` | UTF-8 BOM 污染首条词目；GBK 词表直接 UnicodeDecodeError | 已修 |
++| A13 | P1 | `clean_transcript` | 词表只在启动时加载，记事本改完不重启不生效 | 已修 |
++| A14 | P1 | `server._remove_task` | 删任务不清队列，队列出现「名字是 id、状态空白」的幽灵条目 | 已修 |
++| A15 | P2 | `server._prune_tasks` | 300 个任务的 cues 全留内存，长课可达数百 MB | 已修 |
++| A16 | P2 | `server.upload` | 先截 120 字再取后缀，超长中文名丢扩展名被拒 | 已修 |
++| A17 | P2 | `server.api_queue_set/move` | 非数字参数 ValueError → 500，界面只说「保存失败」 | 已修 |
++| A18 | P2 | `backup.import_zip` | 不校验 sha256、不限解压总量；同秒导入快照互相覆盖 | 已修 |
++| A19 | P2 | `learn._save` | 固定 `.tmp` 名，并发保存互相覆盖 | 已修 |
++| A20 | P2 | `transcribe.load_hotwords` | 坏权重（`词|abc`）原样拼进热词串，整张表静默失效 | 已修 |
++| A21 | P2 | `llm_polish._units` | 无标点的超长整段只算一个「句子」，整块超上下文 | 已修 |
++| A22 | P2 | `transcribe` 日志 | FunASR 每片打印 300 条热词，79 分钟课约 5MB stderr | 已修 |
++| A23 | P2 | `llm_polish._tail_present` | 模型只改句末标点时误判末句缺失，同句被追加两遍 | 已修 |
++| A24 | P2 | `transcribe._split_pcm` | 旧切片整段 convolve，79 分钟要几十秒 | 已修 |
++| A25 | P2 | 前端术语表 | 无法验证「术语表到底管不管字幕」，只能靠说明文字 | 已新增「试改」 |
++| A26 | P3 | `server.api_health` | 版本号仍写 2.4 | 已修 |
++| A27 | P3 | 文档/测试 | 并行度、模型名、价格、块数等描述过期 | 已更新 |
++
++**审计中确认无需改动的高风险点**（已核对）：
++
++- `_inside` 路径校验、`_safe` 文件名、`/api/export` 格式白名单、`/api/download`
++  内部目录拦截均有效，未发现新的路径穿越；
++- `api_key` 从不进入 `/api/cloud/status`，只回脱敏串；备份 manifest 不含 Key；
++- 队列 `get()` 前后双重闸门、失败自动重排、重启续跑逻辑正确；
++- `align.py` 的时间戳清洗与插值边界处理正确，未发现越界；
++- `itn_zh` 的条款号遮蔽顺序正确，未发现新的误转。
++
++---
++
++## 四、变更总览
++
++### 4.1 修复（P1）
++
++1. 重启落盘：先登记任务再 `_persist`，磁盘不再留假 running。
++2. 术语红线：改为「简称/全称可接受形式组」，命中任一即通过。
++3. 自称保护：`我们/咱们` 从语气词组移出，交给 `guards.自称`。
++4. 去隐藏依赖：本地 `_read_pcm16k` / `_split_pcm` 替代 qwen_asr 工具。
++5. 线程隔离：每个识别入口显式设置 torch 线程数。
++6. 音频格式：`_is_16k_mono` 增加 16bit 判定。
++7. 云端测试：固定关思考、32 token。
++8. 云端口径：模型名 / 价格 / 额度迁移，默认 8192。
++9. 错词表安全：11 条危险替换停用并注明原因。
++10. 回显检测：强指纹 + 弱指纹≥2。
++11. rapidfuzz 兜底：3-gram 覆盖率，缺包不再丢结果。
++12. 词表编码：UTF-8 BOM / GBK 读写往返。
++13. 词表热更新：mtime 缓存，外部编辑下一次清理生效。
++14. 队列幽灵：删任务同步 `JOB_Q.remove`。
++
++### 4.2 质量与性能（P2）
++
++15. 结果载荷只留最近 20 份。
++16. 上传文件名保留扩展名。
++17. 队列接口参数校验（400 而非 500）。
++18. 备份 sha256 + 解压总量 + 快照防撞名。
++19. 学习统计临时文件随机名。
++20. 热词权重严格校验。
++21. 无标点长稿硬切。
++22. 第三方日志压制（5MB → 12 行）。
++23. 末句判断只放宽「句末标点差异」。
++24. 切片算法 20ms 能量包络（0.14s）。
++25. 默认并行 2→4（自适应）。
++26. 云端分块 700→3000 字。
++
++### 4.3 新增功能
++
++- 术语表「试一句」+ `POST /api/glossary/preview`：展示「错词校正 → 简称膨胀
++  → 术语补全」三步，证明术语表参与字幕清理。
++- 云端设置「关闭思考」勾选框（仅 DeepSeek 端点显示）。
++
++### 4.4 文档与测试
++
++- `README.md` 新增 2.7 节；`使用说明书.md` 更新 4.1/4.2/4.3/4.4/5/6/7 节，
++  重新生成 `web/说明书.html`（9 节）；
++- 新增 `samples/test_v27.py`（55 项）、`samples/probe_v27_bench.py`（并行基准）；
++- 修正 7 个过期测试断言（不改产品行为）。
++
++### 4.5 未改动及原因
++
++- `revise.py` / `gui.py`：不在热路径，通读未发现 P1；不做无收益重构。
++- 云端并发请求：GLM 限 3 次/秒，并发会引入 429 与顺序复杂度，收益不如
++  加大分块明显，暂不做。
++- Qwen3 并行度仍为 2：未做 3 路基准，内存占用高，稳定优先。
++- `然后` 的无条件删除：用户明确新增的规则，保留。
++
++---
++
++## 五、分点变更详情
++
++### C1 重启后 running 状态落盘（server.py `_load_jobs`）
++
++- **代码位置**：`server.py` `_load_jobs()`（约 374 行）
++- **原始问题**：`elif st == "running": d["status"]="interrupted"; _persist(tid)`，
++  但 `TASKS[tid] = d` 在其后。`_persist` 从 `TASKS` 取不到任务直接 return，
++  磁盘上的 `running` 永远清不掉；下次启动重复同一判断。
++- **修改思路**：先登记，再按状态落盘。
++- **代码片段**：
++
++```python
++d["result"] = None
++st = d.get("status")
++TASKS[tid] = d                      # 先登记，_persist 才取得到
++if st == "queued":
++    d["error"] = None
++    resume.append(tid)
++elif st == "running":
++    d["status"] = "interrupted"
++    d["error"] = "服务重启，任务中断；可点「重试」重新排队"
++    _persist(tid)
++```
++
++### C2 术语红线支持简称/全称（llm_polish.py `must_keep_terms` / `audit`）
++
++- **代码位置**：`llm_polish.py` 540 行、`audit()` 术语段
++- **原始问题**：`aliases.txt` 两侧都当独立硬项。新增
++  `医疗器械GMP=>医疗器械生产质量管理规范` 后，润色保留简称即判「丢失」，
++  五项硬红线永远不过，「采用」永远是灰的。
++- **修改思路**：返回「可接受形式组」；`audit` 命中任一形式即算保留。
++- **代码片段**：
++
++```python
++forms = tuple(x for x in (short, full) if len(x) >= 4)
++if forms and any(x in src for x in forms):
++    groups.append(forms)
++
++# audit:
++lost = ["／".join(g) for g in terms if not any(x in out for x in g)]
++```
++
++### C3 自称保护（rules + clean_transcript）
++
++- **代码位置**：`rules/filler_words.json` `groups.语气词.words`
++- **原始问题**：`我们/咱们` 在 `语气词` 组被 `_do_always` 无条件删除，
++  执行顺序在 `_guard_self_ref` 之前，导致「我们要注意」→「要注意」、
++  「我们监管部门」也无法保留并建议改「我局」。
++- **修改思路**：从语气词组移除，交给自称判别；语气词说明同步更新。
++- **改动**：`words` 23→21；`desc` 写明由 `guards.自称` 处理。
++- **行为变化**：`我们要注意` 现在保留「我们」（它是主语，删掉会从「我们应当」
++  变成祈使语气），`所以说` 仍删；`我们的监管要求` 保留并建议改「我局」；
++  `我们来看/讲一下` 仍删「我们」。
++
++### C4 去掉 Paraformer 隐藏依赖 + 本地切片（transcribe.py）
++
++- **代码位置**：`transcribe.py` 531 行 `_split_pcm`、`_read_pcm16k`
++- **原始问题**：`_run_funasr_parallel` 从 `qwen_asr.inference.utils` 导入
++  `normalize_audio_input` / `split_audio_into_chunks`。只装 FunASR 的机器
++  一旦用默认并行就 ImportError；整段 convolve 在 79 分钟音频上要几十秒。
++- **修改思路**：本地按 20ms 分帧求能量包络，在目标切点 ±search_expand
++  内取最低能量帧；每片至少 1 秒，防切点不前进。
++- **效果**：79 分钟切片 0.14 秒；不再依赖 qwen_asr。
++
++### C5 线程数与并行度（transcribe.py）
++
++- **代码位置**：`_default_funasr_workers`、`_set_torch_threads`、三个识别入口
++- **原始问题**：默认固定 2 路，20 核空 4 核；`torch.set_num_threads` 只在
++  Paraformer 并行里设置且不还原，污染后续 Qwen3 单路。
++- **修改思路**：按 `min(4, 核数//4, 内存GB//4)` 自适应；每个入口按
++  `核数//workers` 设置线程；单路 Qwen3 用满核数。
++- **实测**：2 路 26.4s/75% → 3 路 22.9s/74% → 4 路 16.9s/92%（1.56×）。
++
++### C6 DeepSeek 不思考（cloud_llm.py）
++
++- **代码位置**：`PRESETS`、`DEFAULTS`、`_migrate`、`supports_thinking`、
++  `create_chat_completion`、`test_connection`
++- **原始问题**：V4 默认思考，`max_tokens` 被 reasoning 占用；测试连接
++  `max_tokens=16` 时思维链吃光额度，返回空 content。
++- **修改思路**：配置项 `thinking: off|auto`；仅 DeepSeek 端点发送
++  `{"thinking": {"type": "disabled"}}`；测试连接固定关思考、32 token；
++  旧配置仅迁移「程序默认值」，用户自定义值不动。
++- **代码片段**：
++
++```python
++if supports_thinking(cfg) and str(cfg.get("thinking") or "auto") == "off":
++    payload["thinking"] = {"type": "disabled"}
++```
++
++- **实测**：连接 1.1s；210 字短稿 0.8s、`completion_tokens=29`、¥0.0007。
++
++### C7 云端分块 3000 字（llm_polish.py）
++
++- **代码位置**：`CLOUD_CHUNK_CHARS`、`polish()`、`estimate_chunks()`
++- **原始问题**：云端也按 700 字切，3 万字 43 次请求，每次重复 600 余字系统
++  提示；服务端还按 `CHUNK_CHARS` 估块数，长稿容易被误判卡死。
++- **修改思路**：云端 3000 字/块（可用 `ASR_LLM_CLOUD_CHUNK` 覆盖），
++  本地仍 700；`estimate_chunks` 按当前后端估算。
++- **效果**：3 万字约 10 块，提示词开销降约 3/4。
++
++### C8 词表编码与热更新（glossary.py / clean_transcript.py）
++
++- **代码位置**：`glossary._read`、`apply_changes`；`clean_transcript.load_glossary`
++- **原始问题**：
++  ① UTF-8 BOM 被当首条词目的一部分，第一条永远不生效；
++  ② GBK 词表直接 UnicodeDecodeError，术语表弹窗打不开；
++  ③ 词表只在模块导入时加载，记事本改完必须重启。
++- **修改思路**：`utf-8-sig → gbk` 依次解码，记住 BOM/编码并按原样写回；
++  `load_glossary` 用 (mtime_ns, size) 缓存，每次构造 `Cleaner` 核对一次。
++- **效果**：外部编辑下一次「重新清理」立即生效；GBK/UTF-8 往返字节级保持。
++
++### C9 错词表安全清理（terms/corrections.txt）
++
++- **代码位置**：`terms/corrections.txt` 文末「待人工确认」
++- **原始问题**：表内多条全局替换会误伤正常表达，违反表头「几乎不可能正确」
++  的自定规则：
++  `影片=>饮片`（教学影片）、`驻藏=>贮藏`（驻藏部队）、`备安=>备案`（准备安全）、
++  `处于药品=>储运药品`（处于药品短缺）、`泡制=>炮制`（泡制药材）、
++  `炮炙=>炮制`（本身是传统术语）、`双剂=>栓剂`（双剂型）、
++  `去雾剂=>气雾剂`（真实产品）、`抽氧=>抽样`（制氧语境）、
++  `列要=>劣药`（列要点）、`印片=>饮片`（影像领域）。
++- **修改思路**：移入注释区并逐条写明原因；保留 `管带=>管代` 等无争议条目。
++- **新增**：器械/化妆品高频同音误写 39 条（医疗器戒、无菌屏帐、初始无染菌、
++  洁净驱、传递床、关键项木、管理平审、化装品…）。
++
++### C10 回显检测与末句补回（llm_polish.py）
++
++- **代码位置**：`_ECHO_STRONG/_ECHO_WEAK`、`_looks_echoed`、`_tail_present`
++- **原始问题**：
++  ① 任一指纹命中即判复述；「技术约定」在网课正文里可能出现，正常稿被拦；
++  ② 块尾句只做严格 `in` 判断，模型只改句末标点就误判缺失，同句追加两遍。
++- **修改思路**：强指纹任一命中、弱指纹≥2；末句判断放宽到「去掉句末标点后
++  原样出现在结尾」，不做模糊匹配（相邻句高度相似时会漏掉真丢失）。
++
++### C11 术语表「试改」（glossary.py / server.py / web）
++
++- **代码位置**：`glossary.preview`、`POST /api/glossary/preview`、
++  `web/index.html` `#glossTest`
++- **原始问题**：用户反复问「术语表改了，字幕清理到底用不用」，只能靠文字解释。
++- **修改思路**：复用 `load_corrections` / `load_glossary` / `TF.expand_aliases`
++  / `TF.complete`，输入一句话返回三步改动与建议；界面直接展示。
++- **代码片段**：
++
++```python
++stage, alog = TF.expand_aliases(stage, aliases)
++stage, changes, suggestions = TF.complete(stage, terms, auto=True)
++return {"before": text, "after": stage, "steps": steps, ...}
++```
++
++### C12 队列与内存（server.py）
++
++- **代码位置**：`_remove_task`、`_prune_tasks`
++- **原始问题**：删任务不清 deque，出现幽灵条目；结果载荷无上限。
++- **修改思路**：`JOB_Q.remove(tid)`（兼容标准 `queue.Queue`）；终态任务
++  只保留最近 20 份 `result`，其余置空，打开时由 `_rehydrate` 重建。
++
++### C13 备份完整性（backup.py）
++
++- **代码位置**：`import_zip`
++- **原始问题**：manifest 有 sha256 但导入不校验；无解压总量上限；
++  同一秒两次导入快照目录互相覆盖。
++- **修改思路**：逐项比对 sha256；`MAX_TOTAL=24MB`；快照目录撞名加 `_2`。
++
++### C14 参数与输入校验（server.py / transcribe.py）
++
++- `/api/queue`、`/api/queue/move` 非数字 → 400；
++- 上传先取扩展名再截断文件名；
++- `_enqueue_upload` 的 `stat()` 包 try；
++- 热词权重只接受 1–100，坏后缀按整行当词；
++- `_units` 对无标点超长段按字数硬切。
++
++### C15 日志与健康检查
++
++- `_quiet_third_party()` 把 root / funasr / modelscope / qwen_asr 压到 WARNING；
++- `/api/health` 版本 2.4→2.7。
++
++---
++
++## 六、完整整合后的全部源代码
++
++完整源码即当前项目目录（未删减、未拆分）。改动文件与角色：
++
++| 文件 | 角色 | 本轮改动 |
++|---|---|---|
++| `transcribe.py` | 识别主流程、切片、并行 | 911→约 1010 行；本地切片、自适应并行、线程隔离、日志压制 |
++| `clean_transcript.py` | 规则清理、字幕/讲稿共用 | 词表热更新、BOM/GBK 兼容 |
++| `glossary.py` | 术语表读写 | BOM/GBK、试改、缓存刷新返回值 |
++| `termfix.py` | 简称膨胀 / 漏字补全 | `read_text_any` 编码兼容 |
++| `llm_polish.py` | 讲稿润色、红线、diff | 云端大块、术语组、回显分级、末句、fuzzy 兜底 |
++| `cloud_llm.py` | 云端客户端 | 不思考、模型/价格迁移、8192 |
++| `server.py` | FastAPI 服务 | 落盘、队列、内存、校验、试改接口 |
++| `backup.py` | 备份迁移 | sha256、总量、快照 |
++| `learn.py` | 修订学习 | 临时文件随机名 |
++| `rules/filler_words.json` | 口语规则 | 我们/咱们 交由自称判别 |
++| `terms/hotwords.txt` | 热词/术语基准 | 151→331 条 |
++| `terms/aliases.txt` | 简称表 | 6 条通用缩写 + 语境 GMP |
++| `terms/corrections.txt` | 错词表 | 39 条新增、11 条停用 |
++| `web/index.html` | 前端 | 试改、思考开关、文案 |
++| `使用说明书.md` / `web/说明书.html` | 文档 | 2.7 口径 |
++| `samples/test_v27.py` | 新增回归 | 55 项 |
++| `samples/probe_v27_bench.py` | 新增基准 | 2/3/4 路对比 |
++
++- 全量差异：`审计报告_v2.7.diff`（`git diff` 原样输出，含每一行改动）；
++- 所有改动行均带 `# modified(v2.7)` 或 `【新增/修复 v2.7】` 注释；
++- 未提交的运行时产物（`out/`、`media/`、`config/`、`backups/`）不在源码内，
++  已由 `.gitignore` 排除。
++
++---
++
++## 七、风险提示
++
++| 风险 | 影响 | 缓解 |
++|---|---|---|
++| 4 路并行内存 | 每路约 2–4GB，长片叠加；小内存机器可能吃紧 | 自适应已按内存 GB//4 限流；不确定设 `ASR_FUNASR_WORKERS=2`，逐字精确设 1 |
++| 分片切点字差异 | 每片独立 VAD/标点，切点附近约 1–3% 字差异 | 600 秒大片、低能量切点；法规条文设 1 回退整段 |
++| 简称膨胀改写字幕 | 字幕变长（UDI→医疗器械唯一标识），屏显可能更挤 | 不需要时取消「术语修复」勾选；错词校正仍生效 |
++| 云端 3000 字块 | 输出上限 8192，极端长句可能截断 | 已有 `TruncatedOutput` + 对半自愈；失败块保留原文 |
++| 关闭思考 | 极复杂改写可能略弱于思考模式 | 可取消勾选恢复；讲稿整理本身是低推理任务 |
++| 模型名再变 | 旧名可能未来失效 | 集中在 `PRESETS` 一处；改一行即可 |
++| 错词表全局替换 | 仍可能误伤未预见的正常表达 | 仅保留「几乎不可能正确」条目；文末列出复核清单；建议先跑小样本 |
++| GBK 词表新增罕见字 | GBK 编码失败 | 明确报错并提示另存 UTF-8，不写半个文件 |
++| 结果载荷回收 | 第 21 份以前的旧任务打开时需从磁盘重建 | `out/` 产物仍在即可；磁盘被清则无法恢复（与旧行为一致） |
++| 测试依赖实时服务 | `test_api` / `test_api_v11` 需要 7870 在跑 | 文档已注明；纯单元测试不受影响 |
++
++**兼容性**：
++
++- 所有原有 API 路径、参数、返回字段保持不变；新增字段只增不减；
++- 原有 `ASR_FUNASR_WORKERS=2` 仍完全有效；
++- 旧配置文件可无损读取（模型名/价格/额度仅在等于旧默认值时迁移）；
++- 旧任务产物（`*.json` / `*.srt`）格式未变，历史任务仍可打开。
++
++---
++
++## 八、验证方案
++
++### 8.1 自动回归（5 分钟）
++
++```bat
++cd /d D:\fnOS\WorkBuddy经验仓\06-Tools\网课转字幕
++set PY=C:\Users\guiker\.workbuddy\binaries\python\envs\default\Scripts\python.exe
++"%PY%" -m py_compile *.py
++"%PY%" samples\test_v27.py
++```
++
++预期：`55/55 通过`。再跑其余 22 个脚本（`test_qwen3` 需加载大模型，略过）：
++
++```bat
++for %f in (samples\test_*.py) do "%PY%" %f
++```
++
++> `test_api.py` / `test_api_v11.py` 需要服务在 7870 运行；其余为离线测试。
++
++### 8.2 术语表与字幕（3 分钟）
++
++1. 启动服务，顶栏「术语表」→ 点「试改」，输入：
++   `依据药品经营质量规范，管代负责质量管理体系，UDI也要做。`
++   预期：改后为「依据药品经营质量管理规范，管理者代表负责质量管理体系，
++   医疗器械唯一标识也要做。」，并显示「简称膨胀 / 术语补全」两步。
++2. 打开任一已完成任务，点「重新清理」。
++   预期：含「管代 / 医疗器械GMP / UDI」的字幕句被展开，逐条 diff 可见；
++   不含这些词的字幕不受影响。
++3. 用记事本在 `terms/aliases.txt` 末尾加 `测试简称=>测试全称`，保存；
++   不重启，再点「重新清理」，含「测试简称」的句子应被展开。
++   （验证完请删除该行。）
++
++### 8.3 并行度（10 分钟，可选）
++
++```bat
++"%PY%" samples\probe_v27_bench.py
++```
++
++预期（20 核 / 63GB）：4 路 16–18s、CPU ≥90%，相对 2 路 ≥1.4×。
++若内存紧张或想逐字精确，设 `ASR_FUNASR_WORKERS=2` 或 `1` 重启。
++
++### 8.4 DeepSeek 不思考（2 分钟）
++
++1. 「润色模型设置」→ 预设 DeepSeek → 确认「关闭思考」已勾选 → 保存；
++2. 点「测试连接」，预期 1–2 秒返回「正常」；
++3. 拿一段 200–500 字讲稿点「LLM 润色」，预期几秒内返回，界面显示
++   token 用量明显低于开启思考时（200 字稿通常 <100 completion tokens）。
++
++### 8.5 稳定性（夜间批量）
++
++1. 排 3 节课，设「定时开始」为 2 分钟后；
++2. 任务跑起来后重启服务（关闭窗口再启动）；
++3. 预期：排队中的任务自动续跑；正在跑的那条变「中断」，可点重试；
++   `out/_jobs/*.json` 里不再出现假的 `running`。
++
++### 8.6 回滚
++
++```bat
++git stash            # 或 git checkout -- <文件>
++```
++
++词表回滚：顶栏「备份」→ 导入本轮之前的 zip；或从
++`backups/import_<时间>/` 取回上一份快照。
++
++---
++
++## 附：本轮实测数据
++
++| 场景 | 结果 |
++|---|---|
++| 600s 音频 2 路 / 8 线程 | 26.4s，CPU 75% |
++| 600s 音频 3 路 / 5 线程 | 22.9s，CPU 74%（1.15×） |
++| 600s 音频 4 路 / 4 线程 | 16.9s，CPU 92%（1.56×） |
++| 79 分钟整课 4 路（含加载） | 185.6s；基线 222.7s；扣 31.6s 加载约 154s（1.45×） |
++| 79 分钟切片 | 9 片，0.14s |
++| 术语表清洗 596 句 | 0.17s |
++| DeepSeek 连接测试 | 1.1s |
++| DeepSeek 210 字润色 | 0.8s，completion 29 token，¥0.0007 |
++| FunASR 日志 | 5MB → 12 行 |
++| 回归 | `test_v27` 55/55；其余 22 个脚本退出码全为 0 |

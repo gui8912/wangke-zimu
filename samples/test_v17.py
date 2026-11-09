@@ -75,15 +75,28 @@ def unit():
     assert any("术语" in x for x in LP.blocked(LP.audit(SRC, bad))), LP.blocked(LP.audit(SRC, bad))
     ok("术语被替换 → 拦住")
 
-    # 6. 条款号被改成阿拉伯数字 → 拦住
-    bad = GOOD.replace("第一百二十条", "第120条")
-    assert any("条款号" in x for x in LP.blocked(LP.audit(SRC, bad)))
-    ok("条款号被改 → 拦住")
+    # 6. 【修改 v2.8】写法等价不算改：第一百二十条 ↔ 第120条 都算保留
+    same_fmt = GOOD.replace("第一百二十条", "第120条")
+    a6 = LP.audit(SRC, same_fmt)
+    assert a6["条款号保留"]["pass"], a6["条款号保留"]
+    ok("条款号中/阿拉伯写法等价 → 不误报")
 
-    # 7. 数字被改 → 拦住（把汉字写法改成阿拉伯数字也算改，ITN 才该干这个）
-    bad = GOOD.replace("百分之九十八点五", "98.5%")
-    assert any("数字" in x for x in LP.blocked(LP.audit(SRC, bad)))
-    ok("数字表述被改 → 拦住")
+    # 6b. 真的改了条款数字 → 待复核（不再一票否决，可确认后采用）
+    bad = GOOD.replace("第一百二十条", "第一百二十一条")
+    a6b = LP.audit(SRC, bad)
+    assert not a6b["条款号保留"]["pass"] and a6b["条款号保留"]["level"] == "warn"
+    assert any("条款号" in x for x in LP.warnings(a6b))
+    ok("条款号数字被改 → 待复核（可确认采用）")
+
+    # 7. 数字表述等值（百分之九十八点五 ↔ 98.5%）不误报；真改数字才提示
+    same_num = GOOD.replace("百分之九十八点五", "98.5%")
+    a7 = LP.audit(SRC, same_num)
+    assert a7["数字保留"]["pass"], a7["数字保留"]
+    ok("数字中/阿拉伯写法等价 → 不误报")
+
+    bad = GOOD.replace("百分之九十八点五", "百分之九十五点八")
+    assert any("数字" in x for x in LP.warnings(LP.audit(SRC, bad)))
+    ok("数字被改 → 待复核")
 
     # 8. 末句被删 → 拦住（这是实测最容易发生的失败）
     bad = "\n".join(GOOD.splitlines()[:-1])

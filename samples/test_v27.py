@@ -40,7 +40,9 @@ def terms_content():
              (BASE / "terms" / "hotwords.txt").read_text(encoding="utf-8").splitlines()
              if ln.strip() and not ln.startswith("#")]
     words = [ln.split("|")[0].strip() for ln in lines]
-    ok("热词 200–400 条", 200 <= len(words) <= 400, len(words))
+    # 【修改 v2.8】第二轮按 GSP/GMP 附录与规章补遗后总量到 450 左右；
+    # 上限放到 520：再往上（>500）FunASR 解码会明显变慢，届时请分表。
+    ok("热词 400–520 条", 400 <= len(words) <= 520, len(words))
     ok("热词无重复", len(words) == len(set(words)),
        [w for w in words if words.count(w) > 1][:4])
     for must in ("医疗器械生产质量管理规范检查指导原则",
@@ -50,8 +52,14 @@ def terms_content():
         ok(f"含「{must}」", must in words)
 
     corr = dict(CT.load_corrections(BASE / "terms" / "corrections.txt"))
-    for bad in ("影片", "驻藏", "备安", "处于药品"):
-        ok(f"危险替换已停用：{bad}", bad not in corr)
+    # 【修改 v2.8】判据改为「域内出现概率」：这几个错写只在非监管语境成立，
+    # 已恢复启用（用户明确要求，见 corrections.txt 顶部说明）。
+    for bad, good in (("影片", "饮片"), ("印片", "饮片"), ("驻藏", "贮藏"),
+                      ("抽氧", "抽样"), ("去雾剂", "气雾剂")):
+        ok(f"域内安全替换已启用：{bad}=>{good}", corr.get(bad) == good)
+    # 这些在监管语料里仍有正常含义，继续保持停用
+    for bad in ("备安", "处于药品", "泡制", "炮炙", "列要", "储备"):
+        ok(f"仍有歧义的替换未启用：{bad}", bad not in corr)
     ok("管带→管代仍启用", corr.get("管带") == "管代")
 
     aliases = TF.load_aliases(BASE / "terms" / "aliases.txt")
