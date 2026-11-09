@@ -231,7 +231,8 @@
 - 文稿对齐：讲义 / PPT 文字稿 → 按文稿 / 按识别双结果，差异句高亮
 
 【文件清单】
-（本目录 = D:\fnOS\WorkBuddy经验仓\06-Tools\网课转字幕，是工程真身；
+（本目录 = D:\WorkBuddy\网课转字幕，是工程真身；media 与 out 是目录联接，
+ 实体在 D:\temp\网课转字幕\（约 2.4 GB，不进 NAS 同步）；
  D:\Tools\服务台\apps\asr-pipeline 是指向本目录的「目录联接」，零拷贝、两边改同一份）
 - server.py            FastAPI 后端，默认 7870；被占自动顺延
 - ports.py             端口发现 / 单实例保护
@@ -312,13 +313,15 @@
 - 云端整理稿只进讲稿轨，绝不写进字幕；字幕与时间戳始终是识别原文
 - 云端接入前需开通账号并配环境变量；本版云端 HTTP 调用尚未接入，
   字段映射已可离线验证（见 asr_providers.py）
-- 本目录是「真身」：D:\fnOS\WorkBuddy经验仓\06-Tools\网课转字幕
-  （NAS 同步盘，办公室 / 笔记本共用）；服务台入口
-  D:\Tools\服务台\apps\asr-pipeline 是指向本目录的目录联接，两边改同一份
+- 本目录是「真身」：D:\WorkBuddy\网课转字幕（本机 D 盘，不再进 NAS 同步）；
+  media / out 是目录联接，实体在 D:\temp\网课转字幕\；
+  服务台入口 D:\Tools\服务台\apps\asr-pipeline 是指向本目录的目录联接，两边改同一份
 - 服务台只认 services.json，不关心目录在哪；路径带中文没问题
 
 【根治或备份建议】
-- 备份：本目录已在 NAS 同步盘（fnOS 自动同步），也可整目录拷贝（含 out\ 产物）
+- 备份：代码目录可直接整目录拷贝；大文件在 D:\temp\网课转字幕\
+  （media 1.4G、out 1G），用界面「备份与迁移」导出词表与配置即可，不必搬音视频。
+  别用不带 /XJ 的 robocopy 复制项目目录（会把目录联接展开成实体）。
 - 模型备份：D:\AI\models\modelscope 较大，建议单独备份或重新拉取
 - 服务台注册信息集中在 D:\Tools\服务台\services.json，换机时优先带走这一个文件
 - 历史副本：D:\WorkBuddy\2026-10-26-22-09-38\asr-pipeline 是迁移前的旧副本，

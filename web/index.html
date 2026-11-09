@@ -109,6 +109,13 @@
   #mediaWrap.video{background:var(--media-bg);min-height:220px}
   #mediaWrap video{width:100%;display:block}
   #mediaWrap audio{width:calc(100% - 32px);height:46px;margin:12px 16px}
+  /* 【新增 v2.10】续播提示条：说清「从哪继续」，并给一键「从头开始」 */
+  .resumeTip{display:flex;align-items:center;gap:10px;padding:7px 12px;
+             border-top:1px solid var(--line);background:var(--primary-weak);
+             font-size:var(--fs-12);color:var(--text);flex-wrap:wrap}
+  .resumeTip b{color:var(--primary);font-variant-numeric:tabular-nums}
+  .resumeTip .sp{margin-left:auto}
+  .resumeTip button{padding:2px 9px;font-size:var(--fs-12)}
   .player{display:flex;align-items:center;gap:8px;padding:9px 10px;border-top:1px solid var(--line);
           flex-wrap:wrap;background:var(--card)}
   .tcode{font-variant-numeric:tabular-nums;font-size:var(--fs-12);color:var(--muted);
@@ -592,6 +599,13 @@
         <input type="file" id="fileInput" accept="audio/*,video/*" multiple hidden>
       </div>
       <div id="mediaWrap" hidden></div>
+      <!-- 【新增 v2.10】从上次位置继续时的提示条 -->
+      <div class="resumeTip" id="resumeTip" hidden>
+        <span>已从 <b id="resumeAt">00:00</b> 继续播放</span>
+        <span class="sp"></span>
+        <button id="resumeHead" type="button" title="回到开头，并清掉这条进度记录">从头开始</button>
+        <button id="resumeClose" type="button" title="只关掉提示，不影响继续播放">✕</button>
+      </div>
       <div class="player" id="playerBar" hidden>
         <button id="btnPrev" title="上一句 (↑)">⟨ 上一句</button>
         <button id="btnPlay" title="播放/暂停 (空格)">播放</button>
@@ -1188,6 +1202,7 @@ const state = {
   fileId:null, kind:null, taskId:null, timer:null,
   stem:'', cues:[], raw:[], dirty:false, mode:'clean',
   cur:-1, player:null, playing:false, reportText:'',
+  posKey:'', posDone:false, posFetching:false,   // 【新增 v2.10】进度身份 / 已续播 / 正在问服务端
   demo: location.search.includes('demo=1'),
   fileName:'', fileSize:0, filePath:'',
   peaks:null, waveBase:null, waveView:{start:0, end:0}, waveDragging:false,
@@ -1346,7 +1361,8 @@ function onUploaded(d, note){
   renderFileCard(d);
   setStatus('已登记，可以开始转写','done');
   setFileStatus('就绪','done');
-  mountPlayer(d.media_url, d.kind);
+  // 【修改 v2.10】上传/导入后就带上身份，下次打开同一文件能接着看
+  mountPlayer(d.media_url, d.kind, {name: d.name, size: d.size, fileId: d.file_id});
   loadPeaks();
   if(note) toast(note);
 }
@@ -1520,7 +1536,8 @@ function initQueuePanel(){
   if(qb) qb.ontoggle = ()=>{ if(qb.open) refreshQueue(); };
 }
 
-function mountPlayer(url, kind){
+function mountPlayer(url, kind, ident){
+  posSave(true);                        // 【新增 v2.10】换课前先把上一节看到的位置落一次
   const wrap = $('#mediaWrap');
   wrap.hidden = false; wrap.innerHTML = '';
   wrap.classList.toggle('video', kind === 'video');
@@ -1529,12 +1546,18 @@ function mountPlayer(url, kind){
   el.controls = true; el.preload = 'metadata';
   wrap.appendChild(el);
   state.player = el;
+  state.posKey = posKeyOf(ident);       // 【新增 v2.10】没有身份就不记忆，不影响播放
+  state.posDone = false;
+  state.posFetching = false;
+  $('#resumeTip').hidden = true;
   $('#playerBar').hidden = false;
   el.ontimeupdate = onTick;
   el.onplay = ()=>{ state.playing = true; $('#btnPlay').textContent='暂停'; };
-  el.onpause = ()=>{ state.playing = false; $('#btnPlay').textContent='播放'; };
+  el.onpause = ()=>{ state.playing = false; $('#btnPlay').textContent='播放'; posSave(true); };
   el.onloadedmetadata = ()=>{ $('#tcode').textContent =
-      '00:00 / ' + fmtTime(el.duration); };
+      fmtTime(el.currentTime) + ' / ' + fmtTime(el.duration); posRestore(el); };
+  // 【新增 v2.10】有些容器 loadedmetadata 很晚甚至不来，durationchange 再兜一层
+  el.ondurationchange = ()=>posRestore(el);
   // 【新增 v2.4】服务重启后上传态地址会 404，别只留一个黑屏：
   // 自动按任务记录重新挂载视频，并在确实找不到时说明原因。
   el.onerror = ()=>{
@@ -1550,6 +1573,121 @@ function mountPlayer(url, kind){
   };
   $('#btnShot').disabled = (kind !== 'video');
   if(state.peaks) drawWave();
+  // 【新增 v2.10】不等元数据事件：本地文件/无头浏览器可能压根不触发它。
+  // 在 HAVE_NOTHING 阶段设置 currentTime，浏览器会记为「默认起播位置」，
+  // 媒体一就绪就自动落到位；posRestore 幂等，后面两个事件再触发也不重复。
+  posRestore(el);
+}
+
+/* ---------- 【新增 v2.10】播放位置记忆 ----------
+   一节课动辄一小时，校对字幕常要分几次做。身份用「文件名+大小」而不是
+   file_id / task_id：同一节课重新导入、重新排队后 id 会变，文件还是那个文件。
+   本地 localStorage 立即生效，同时回写服务端 config/playpos.json——v2.9 起
+   端口占用会自动顺延，而 localStorage 按「协议+主机+端口」隔离，只存本地的话
+   换个端口记录就找不到了。 */
+const POS_KEY = 'asrPlayPos_v1';
+const POS_LOCAL_MAX = 200;
+let posSavedAt = 0;
+
+function posKeyOf(ident){
+  if(!ident) return '';
+  const name = String(ident.name || '').trim();
+  if(name) return 'f:' + name + '|' + (Number(ident.size) || 0);
+  if(ident.taskId) return 't:' + ident.taskId;
+  if(ident.fileId) return 'u:' + ident.fileId;
+  return '';
+}
+
+function posLoad(){
+  try{
+    const d = JSON.parse(localStorage.getItem(POS_KEY) || '{}');
+    return d && typeof d === 'object' ? d : {};
+  }catch(e){ return {}; }
+}
+
+function posStore(map){
+  try{
+    const keys = Object.keys(map);
+    if(keys.length > POS_LOCAL_MAX){
+      keys.sort((a,b)=>((map[a]||{}).at||0) - ((map[b]||{}).at||0));
+      keys.slice(0, keys.length - POS_LOCAL_MAX).forEach(k=>{ delete map[k]; });
+    }
+    localStorage.setItem(POS_KEY, JSON.stringify(map));
+  }catch(e){ /* 隐私模式或配额满：不影响正常播放 */ }
+}
+
+function posRecord(t, dur){
+  if(!isFinite(dur) || dur <= 1) return null;
+  // 开头 5 秒 / 距结尾 15 秒内都不记：一个等于没看，一个等于看完了
+  if(!isFinite(t) || t < 5 || t > dur - 15) return null;
+  return {t: Math.round(t * 10) / 10, d: Math.round(dur), at: Date.now()};
+}
+
+function posSave(force){
+  const p = state.player;
+  if(!p || !state.posKey) return;
+  const dur = p.duration;
+  if(!isFinite(dur) || dur <= 1) return;      // 元数据还没到，别把已有记录删了
+  const now = Date.now();
+  if(!force && now - posSavedAt < 4000) return;   // 播放中每 4 秒记一次足够
+  posSavedAt = now;
+  const rec = posRecord(p.currentTime, dur);
+  const map = posLoad();
+  if(rec){ map[state.posKey] = rec; } else { delete map[state.posKey]; }
+  posStore(map);
+  try{
+    // keepalive：关页面 / 切标签时这一枪也要发出去
+    fetch('/api/playpos', {
+      method:'POST', keepalive:true,
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key: state.posKey, t: rec ? rec.t : 0,
+                            d: Math.round(dur)})
+    }).catch(()=>{});
+  }catch(e){}
+}
+
+function showResumeTip(t){
+  const box = $('#resumeTip');
+  if(!box) return;
+  $('#resumeAt').textContent = fmtTime(t);
+  box.hidden = false;
+}
+
+function posApply(el, rec){
+  if(!rec || !(Number(rec.t) >= 5)) return false;
+  const dur = isFinite(el.duration) && el.duration > 0
+    ? el.duration : (Number(rec.d) || 0);
+  if(dur && Number(rec.t) > dur - 15) return false;   // 记的是「快看完了」，不如从头
+  el.currentTime = Number(rec.t);
+  // 【新增 v2.10】暂停状态下设置 currentTime 不保证触发 timeupdate，
+  // 控制条上的时间码会一直停在 00:00，与播放器原生进度不一致，这里直接对齐。
+  const tc = $('#tcode');
+  if(tc) tc.textContent = fmtTime(rec.t) + ' / ' + fmtTime(dur || rec.d || 0);
+  showResumeTip(rec.t);
+  requestAnimationFrame(()=>{ paintWave(); setTimeout(paintWave, 120); });
+  return true;
+}
+
+function posRestore(el){
+  // 幂等：只有「成功应用过」才算 done。原先一进来就置 true，异步问服务端的结果
+  // 还没回来时，后面 durationchange 再触发会被误挡，续播就静默失效了。
+  if(!state.posKey || state.posDone || state.posFetching) return;
+  const local = posLoad()[state.posKey];
+  if(local && posApply(el, local)){ state.posDone = true; return; }
+  // 本地没有（换端口 / 换浏览器 / 清过缓存）→ 问一次服务端
+  state.posFetching = true;
+  fetch('/api/playpos?key=' + encodeURIComponent(state.posKey), {cache:'no-store'})
+    .then(r=>r.json())
+    .then(d=>{
+      const rec = d && d.position;
+      if(!rec || state.posDone) return;
+      if(el.currentTime > 1 || state.playing){  // 用户已经自己动过，别抢
+        state.posDone = true; return;
+      }
+      if(posApply(el, rec)){ state.posDone = true; toast('已从上次的位置继续播放'); }
+    })
+    .catch(()=>{})
+    .finally(()=>{ state.posFetching = false; });
 }
 
 /* ---------- 波形 ---------- */
@@ -1713,6 +1851,7 @@ function seek(t){
   state.player.currentTime = Math.max(0, t);
   // modified(v1.2): currentTime 异步生效，立即 paintWave 常把播放头画在旧位置
   requestAnimationFrame(()=>{ paintWave(); setTimeout(paintWave, 80); });
+  posSave(false);            // 【新增 v2.10】点字幕跳句也算改进度
 }
 function onTick(){
   const p = state.player; if(!p) return;
@@ -1721,6 +1860,7 @@ function onTick(){
   let idx = state.cues.findIndex(c => t >= c.start && t < c.end);
   if(idx !== state.cur){ setActive(idx); }
   paintWave();
+  posSave(false);            // 【新增 v2.10】节流记录播放位置（4 秒一次）
 }
 function setActive(idx){
   state.cur = idx;
@@ -1754,6 +1894,22 @@ function jump(dir){
   if(p.paused) p.play();
 }
 $('#rate').onchange = e=>{ if(state.player) state.player.playbackRate = parseFloat(e.target.value); };
+
+/* 【新增 v2.10】续播提示条的两个按钮 */
+$('#resumeHead').onclick = ()=>{
+  const p = state.player; if(!p) return;
+  p.currentTime = 0; p.play();
+  posSavedAt = 0; posSave(true);          // t=0，服务端会顺手删掉这条记录
+  $('#resumeTip').hidden = true;
+  toast('已回到开头');
+};
+$('#resumeClose').onclick = ()=>{ $('#resumeTip').hidden = true; };
+
+/* 【新增 v2.10】离开页面 / 切到后台时立刻落一次，别等下一个 4 秒节流点 */
+window.addEventListener('pagehide', ()=>posSave(true));
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) posSave(true);
+});
 
 /* ---------- 截图 ---------- */
 $('#btnShot').onclick = ()=>{
@@ -2970,7 +3126,10 @@ async function taskAct(id, action){
         $('#fileChip').textContent = d.name +
           (d.size ? ' · ' + (d.size/1048576).toFixed(1) + ' MB' : '');
       }
-      mountPlayer('/api/task/'+id+'/media', d.kind || 'audio');
+      // 【修改 v2.10】带上身份（文件名+大小），与上传路径用同一个 key，重传也能续播
+      mountPlayer('/api/task/'+id+'/media', d.kind || 'audio',
+                  {name: d.name || (d.result && d.result.stem) || '',
+                   size: d.size || 0, taskId: id});
       if(state.peaks) drawWave();
       // 【新增 v2.4-p3】记住这条任务：字幕只活在页面内存里，刷新就"看起来
       // 丢了"，其实 out/ 里的 srt 好好的，只差一个自动载回的入口。

@@ -44,6 +44,16 @@ DEFAULT_PORT = 7870
 PORT_SPAN = 30
 PORT_FILE = OUT / "_port.txt"
 
+# 【新增 v2.10】播放位置记忆：按「文件名+大小」记录看到第几秒，下次打开接着看。
+# 只存秒数/时长/时间戳，不含课件内容；config/ 已在 .gitignore 内，不进仓库。
+# 之所以还要落服务端：v2.9 起端口会自动顺延，localStorage 按「协议+主机+端口」
+# 隔离，端口一变记录就"消失"；服务端文件是跨端口、跨浏览器的同一份。
+POS_FILE = BASE / "config" / "playpos.json"
+POS_MAX = 500           # 最多记 500 个课件，超出按最近使用淘汰
+POS_MIN = 5             # 开头 5 秒内不记，免得存一堆 0
+POS_TAIL = 15           # 距结尾 15 秒内视为看完，下次从头
+POS_LOCK = threading.Lock()
+
 for d in (MEDIA, OUT, WEB, JOBS, PEAKS):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -1155,6 +1165,65 @@ async def task_media(tid: str):
     return FileResponse(p, filename=t.get("name") or p.name)
 
 
+# ---------------------------------------------------------------- 播放位置
+def _pos_load() -> dict:
+    """读播放位置表。文件损坏/不存在一律当空表，绝不让它把服务带崩。"""
+    try:
+        d = json.loads(POS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+@app.get("/api/playpos")
+def api_playpos_get(key: str = ""):
+    """不带 key 返回整表（排查用）；带 key 只返回这一条。"""
+    d = _pos_load()
+    if key:
+        rec = d.get(key)
+        return {"position": rec if isinstance(rec, dict) else None}
+    return {"positions": d, "count": len(d)}
+
+
+@app.post("/api/playpos")
+def api_playpos_set(payload: dict):
+    """记一条播放位置。
+
+    约定：`t < 5` 或 `t > 时长-15` 表示「从头开始 / 已看完」，直接删掉这条——
+    否则下次打开会卡在结尾几秒，等于没记住。
+    """
+    key = str(payload.get("key") or "").strip()[:300]
+    if not key:
+        return JSONResponse({"error": "缺少 key"}, status_code=400)
+    try:
+        t = float(payload.get("t") or 0)
+        dur = float(payload.get("d") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "时间必须是数字"}, status_code=400)
+    if not (math.isfinite(t) and math.isfinite(dur)):
+        return JSONResponse({"error": "时间不合法"}, status_code=400)
+
+    with POS_LOCK:
+        d = _pos_load()
+        drop = t < POS_MIN or (dur > 0 and t > dur - POS_TAIL)
+        old = d.get(key) if isinstance(d.get(key), dict) else None
+        # 播放中每 4 秒会来一次，位置没变就别重复写盘（暂停时前端还会补发）
+        if not drop and old and abs((old.get("t") or 0) - t) < 1.0:
+            return {"ok": True, "unchanged": True, "count": len(d)}
+        if drop:
+            if old is None:
+                return {"ok": True, "count": len(d)}
+            d.pop(key, None)
+        else:
+            d[key] = {"t": round(t, 1), "d": round(dur, 1),
+                      "at": round(time.time(), 1)}
+        if len(d) > POS_MAX:
+            keep = sorted(d.items(), key=lambda kv: (kv[1] or {}).get("at") or 0)
+            d = dict(keep[-POS_MAX:])
+        _atomic_write(POS_FILE, json.dumps(d, ensure_ascii=False))
+    return {"ok": True, "count": len(d)}
+
+
 @app.get("/api/tasks")
 async def task_list():
     items = []
@@ -1679,7 +1748,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.9",       # modified(v2.9): 端口自动分配 / 已在运行则复用 / 实际端口落盘
+    return {"ok": True, "version": "2.10",      # modified(v2.10): 播放位置记忆（跨端口/跨浏览器）
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
