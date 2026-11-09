@@ -82,6 +82,6 @@ for s in d.get("suggestions", []):
     print("    -", s)
 
 assert len(d.get("suggestions", [])) >= 2, "应至少返回 2 条建议"
-assert any("我局" in s for s in d["suggestions"]), "单位自称应给出「我局」建议"
+assert not any("我局" in s for s in d["suggestions"]), "「我们」已按用户命令无条件删除，不应再产生自称建议"
 assert any("回听" in s for s in d["suggestions"]), "含数字的约量应提示回听"
 print("\n全部通过")
