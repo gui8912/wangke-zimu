@@ -17,7 +17,8 @@ import uuid
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-API = "http://127.0.0.1:7870"
+import apibase                    # 【新增 v2.9】端口可能不是 7870
+API = apibase.base()
 sys.path.insert(0, str(BASE))
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 

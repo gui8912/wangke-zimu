@@ -5,7 +5,8 @@ import urllib.parse
 import urllib.request
 
 OP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-BASE = "http://127.0.0.1:7870"
+import apibase                    # 【新增 v2.9】端口可能不是 7870
+BASE = apibase.base()
 
 SAMPLE = "\n".join([
     "呃，各位同事啊，大家好。",

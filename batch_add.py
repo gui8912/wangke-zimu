@@ -26,9 +26,30 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 INBOX = BASE / "media" / "inbox"
-API = os.environ.get("ASR_API", "http://127.0.0.1:7870")
 EXT = {".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm",
        ".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".wma"}
+
+
+def api_base() -> str:
+    """服务地址：ASR_API 优先，其次自动发现（端口文件探活 + 常用端口扫描）。
+
+    【新增 v2.9】端口不再写死 7870（被占会自动顺延），所以这里必须跟着发现，
+    否则批处理会一直敲一个空端口。端口文件可能是强杀留下的，必须探活后再信。
+    """
+    env = (os.environ.get("ASR_API") or "").strip()
+    if env:
+        return env.rstrip("/")
+    try:
+        import ports
+        port = ports.discover(BASE / "out" / "_port.txt")
+        if port:
+            return f"http://127.0.0.1:{port}"
+    except Exception:
+        pass
+    return "http://127.0.0.1:7870"
+
+
+API = api_base()
 
 
 def call(path, payload=None, method=None):

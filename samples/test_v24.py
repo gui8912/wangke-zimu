@@ -169,7 +169,7 @@ def guards():
     manual = BASE / "web" / "说明书.html"
     ok("顶栏有使用说明按钮", 'id="btnManual"' in web)
     ok("说明书静态页存在", manual.exists())
-    ok("说明书已更新到 2.8", manual.exists() and "版本 2.8" in manual.read_text(encoding="utf-8"))
+    ok("说明书已更新到 2.9", manual.exists() and "版本 2.9" in manual.read_text(encoding="utf-8"))
     ok("说明书无旧删源表述", manual.exists() and "连源文件一起删" not in manual.read_text(encoding="utf-8"))
     ok("前端无删源复选框", 'id="purgeMedia"' not in web)
     ok("后端强制不删源", "purge = False" in srv)

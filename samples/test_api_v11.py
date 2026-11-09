@@ -6,7 +6,8 @@ import urllib.request
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-API = "http://127.0.0.1:7870"
+import apibase                    # 【新增 v2.9】端口可能不是 7870
+API = apibase.base()
 # 【修改 v2.7】不再写死任务 ID：从 /api/tasks 取最近一条已完成任务，
 # 否则换机器/清过任务记录就 404，看起来像接口坏了。
 TID = sys.argv[1] if len(sys.argv) > 1 else ""

@@ -287,6 +287,16 @@
 
   .cardhead{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;
             border-bottom:1px solid var(--line);font-size:var(--fs-13)}
+  /* 【新增 v2.9】任务卡右上角手动刷新：轮询在后台标签页会暂停，
+     切回来/点一下就能立刻对齐，不必等下一个周期 */
+  .cardhead .chead-right{display:flex;align-items:center;gap:8px;min-width:0}
+  .trefresh{background:transparent;border:1px solid var(--line);color:var(--muted);
+            border-radius:var(--r-6);font-size:var(--fs-11);padding:2px 8px;
+            cursor:pointer;line-height:1.6;white-space:nowrap}
+  .trefresh:hover{color:var(--text);border-color:var(--faint)}
+  .trefresh[disabled]{opacity:.55;cursor:default}
+  .trefresh.spin i{display:inline-block;animation:tspin .8s linear infinite}
+  @keyframes tspin{to{transform:rotate(360deg)}}
   .tasklist{max-height:230px;overflow-y:auto}
   .taskrow{display:flex;align-items:center;gap:8px;padding:7px 12px;
            border-bottom:1px solid var(--line);font-size:var(--fs-12)}
@@ -607,7 +617,13 @@
       <div id="log" hidden></div>
     </div>
     <div class="card" style="margin-top:14px" id="taskCard">
-      <div class="cardhead"><b>任务</b><span id="taskCount" style="color:var(--muted);font-size:var(--fs-11)"></span></div>
+      <div class="cardhead"><b>任务</b>
+        <span class="chead-right">
+          <span id="taskCount" style="color:var(--muted);font-size:var(--fs-11)"></span>
+          <span id="taskUpdated" style="color:var(--faint);font-size:var(--fs-11)"></span>
+          <button id="btnTaskRefresh" class="trefresh" title="立即刷新任务状态（切回本标签页时也会自动刷新）"><i>↻</i> 刷新</button>
+        </span>
+      </div>
       <!-- 【新增 v2.0】批量操作条：全选/反选 + 重试/取消/删除/清空 -->
       <div class="taskbar" id="taskBar">
         <label class="chk" title="全选 / 取消全选"><input type="checkbox" id="selAll">全选</label>
@@ -1472,6 +1488,9 @@ async function queueMove(id, delta){
 }
 function initQueuePanel(){
   const b = $('#btnBatchAdd'); if(b) b.onclick = ()=>$('#fileInput').click();
+  // 【新增 v2.9】任务卡手动刷新
+  const rf = $('#btnTaskRefresh');
+  if(rf) rf.onclick = ()=>refreshTasks(true);
   const p = $('#btnQueuePause');
   if(p) p.onclick = async ()=>{
     const cur = await (await fetch('/api/queue')).json();
@@ -2906,14 +2925,32 @@ function initTaskBar(){
     clear:true,
     confirm:'确定清空全部「已完成 / 失败 / 中断 / 已取消」的任务吗？\n正在识别与排队中的任务不会动；out/ 里的字幕稿会保留。'});
 }
-async function refreshTasks(){
+async function refreshTasks(manual){
   if(state.demo) return;
+  const btn = $('#btnTaskRefresh');
+  // 【新增 v2.9】手动刷新：转圈 + 禁用，避免连点堆请求
+  if(manual && btn){ btn.classList.add('spin'); btn.disabled = true; }
   try{
-    const r = await fetch('/api/tasks');
+    const r = await fetch('/api/tasks', {cache:'no-store'});
     const d = await r.json();
+    state.tasksAt = Date.now();
     renderTasks(d.tasks || []);
+    const up = $('#taskUpdated');
+    if(up){
+      up.textContent = new Date(state.tasksAt)
+        .toLocaleTimeString('zh-CN', {hour12: false});
+    }
+    if(btn){
+      btn.title = '最后刷新 ' + new Date(state.tasksAt)
+        .toLocaleTimeString('zh-CN', {hour12: false})
+        + ' · 有任务时每 2 秒自动刷新，切回本标签页也会立即刷新';
+    }
     if($('#queueBox') && $('#queueBox').open) refreshQueue();
-  }catch(e){}
+  }catch(e){
+    if(manual) toast('刷新失败：' + (e && e.message ? e.message : e));
+  }finally{
+    if(manual && btn){ btn.classList.remove('spin'); btn.disabled = false; }
+  }
 }
 async function taskAct(id, action){
   try{
@@ -4594,6 +4631,11 @@ if(!state.demo){
     if(!busy && tick % 3 !== 0) return;      // 空闲时降到 6 秒一刷
     refreshTasks();
   }, 2000);
+  // 【新增 v2.9】后台标签页里浏览器会停掉定时器，切回来先补一次，
+  // 否则看起来像「一直不更新」，要等下一个 2–6 秒周期。
+  document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden && !state.demo){ refreshTasks(); refreshQueue(); }
+  });
 }
 
 /* 有未保存的校对稿时离开，提醒一下 */

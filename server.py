@@ -6,6 +6,8 @@
 提供：上传、转写（后台任务）、媒体流、口语词维护、重新清理、保存校对稿。
 
 启动：python server.py      → http://127.0.0.1:7870
+     端口被占用时自动往上找（7871、7872…），实际地址见启动行；
+     想固定端口：设 ASR_PORT=7900。
 """
 
 import json
@@ -14,9 +16,12 @@ import os
 import queue
 import re
 import shutil
+import socket                   # 【新增 v2.9】端口占用探测
+import sys                      # 【新增 v2.9】端口被显式占用时以非 0 退出
 import threading
 import time
 import traceback
+import urllib.request           # 【新增 v2.9】识别「本程序已在运行」
 import uuid
 from pathlib import Path
 
@@ -33,8 +38,21 @@ RULES = BASE / "rules" / "filler_words.json"
 JOBS = OUT / "_jobs"
 PEAKS = OUT / "_peaks"
 
+# 【新增 v2.9】端口：默认 7870；被占用就顺延，最多试 30 个。
+# 实际端口写进 out/_port.txt，供 batch_add.py / 测试脚本发现。
+DEFAULT_PORT = 7870
+PORT_SPAN = 30
+PORT_FILE = OUT / "_port.txt"
+
 for d in (MEDIA, OUT, WEB, JOBS, PEAKS):
     d.mkdir(parents=True, exist_ok=True)
+
+# 【新增 v2.9】端口决策必须放在导入 transcribe / funasr 之前：
+# 那些模块一导入就会拉起队列与监控线程，第二次启动的进程会在「发现已有实例」
+# 之前先跑起 worker，可能抢走一条排队任务再退出，留下一条假的 running。
+if __name__ == "__main__":
+    import ports                 # 只依赖标准库，导入开销可忽略
+    PORT = ports.resolve(PORT_FILE, DEFAULT_PORT, PORT_SPAN)
 
 # 【新增 v1.9】原生层崩溃（段错误 / abort）在 Python 侧完全无声：进程直接消失，
 # 任务状态永远停在 running，日志也断在半句。开启 faulthandler 后，崩溃瞬间会把
@@ -747,7 +765,10 @@ def upload(file: UploadFile = File(...)):
     # 【修复 v2.7】先取扩展名再截断文件名。原来先截到 120 字再取后缀，
     # 超长中文文件名会把「.mp4」截掉，前端收到「不支持的文件类型」。
     ext = Path(raw_name).suffix.lower()
-    safe = (_safe(raw_name)[:max(1, 120 - len(ext))] or "upload") + ext
+    # 【修复 v2.9】截断时先把扩展名摘掉，否则长名截到 118 字后仍带着
+    # 原来的「.mp4」，再拼一次就成了「xxx.mp4.mp4」（实测 100MB 课件躺枪）。
+    stem = raw_name[:-len(ext)] if ext else raw_name
+    safe = (_safe(stem)[:max(1, 120 - len(ext))] or "upload") + ext
     if ext not in ALLOWED_MEDIA_EXT:
         return JSONResponse(
             {"error": f"不支持的文件类型：{ext or '无扩展名'}"}, status_code=400)
@@ -830,20 +851,32 @@ async def api_link(payload: dict):
             "linked": not copied, "copied": copied}
 
 
+def _recover_upload(fid: str):
+    """UPLOADS 是内存表，服务重启就清空；按上传命名 `<fid>_<原名>` 在 media/ 找回。
+
+    【新增 v2.9】实测场景：用户批量选了 3 个 100MB 课件，上传完成、还没点
+    「入队」时服务重启（端口调整），内存登记没了，再点就是「请先上传文件」——
+    文件明明在盘上，逼用户重传 300MB。这里按 fid 前缀找回并重新登记。
+
+    只接受 6–32 位字母数字，避免被当成 glob 通配符扫全盘。
+    """
+    if not (fid.isalnum() and 6 <= len(fid) <= 32):
+        return None
+    for cand in MEDIA.glob(f"{fid}_*"):
+        if cand.is_file():
+            info = {"name": cand.name.split("_", 1)[-1],
+                    "path": str(cand), "kind": media_type_of(cand.name)}
+            UPLOADS[fid] = info
+            _prune(UPLOADS, MAX_UPLOADS)
+            return info
+    return None
+
+
 @app.get("/api/media/{fid}")
 async def media(fid: str):
-    info = UPLOADS.get(fid)
-    if not info and fid.isalnum() and 6 <= len(fid) <= 32:
-        # 【修复 v2.4】UPLOADS 是纯内存表，服务一重启就清空，旧页面里
-        # 的 /api/media/<fid> 立刻 404，视频看起来「不能播了」。
-        # 按上传时的命名规则 <fid>_<原名> 在 media/ 里找回并重新登记，
-        # 不用重新上传、也不用改前端持有的 URL。
-        for cand in MEDIA.glob(f"{fid}_*"):
-            if cand.is_file():
-                info = {"name": cand.name.split("_", 1)[-1],
-                        "path": str(cand), "kind": media_type_of(cand.name)}
-                UPLOADS[fid] = info
-                break
+    # 【修复 v2.4】重启后旧页面里的 /api/media/<fid> 会 404，视频看起来「不能播」。
+    # 找回逻辑抽到 _recover_upload()，入队接口同样受益。
+    info = UPLOADS.get(fid) or _recover_upload(fid)
     if not info:
         return JSONResponse({"error": "文件不存在"}, status_code=404)
     if not Path(info["path"]).exists():          # modified: 记录还在但文件已被删
@@ -883,7 +916,11 @@ def _enqueue_upload(file_id: str, opt: dict):
     """建任务的唯一入口：单次转写、批量入队、文件夹监控都走这里。"""
     info = UPLOADS.get(file_id)
     if not info:
-        return None, "请先上传文件"
+        # 【新增 v2.9】服务在「上传完成 → 点入队」之间重启过：内存登记没了，
+        # 但文件还在 media/<fid>_* 里。找回再入队，别让用户白传几百 MB。
+        info = _recover_upload(file_id)
+    if not info:
+        return None, "上传记录已失效且磁盘上找不到该文件，请重新选择"
     model = opt.get("model") or "qwen3-asr"
     if model not in T.MODELS:
         return None, f"未知模型：{model}（可选：{'、'.join(T.MODELS)}）"
@@ -1642,7 +1679,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.8",       # modified(v2.8): 红线分级可确认采用 / 术语表二轮补遗 / 错词按域内概率恢复
+    return {"ok": True, "version": "2.9",       # modified(v2.9): 端口自动分配 / 已在运行则复用 / 实际端口落盘
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),
@@ -2204,9 +2241,25 @@ def _keep_awake_loop():
 threading.Thread(target=_watch_loop, daemon=True, name="asr-watch").start()
 threading.Thread(target=_keep_awake_loop, daemon=True, name="asr-awake").start()
 
-if __name__ == "__main__":
+# ---------------------------------------------------------------- 启动
+def _start(port: int) -> None:
     import webbrowser
-    # modified: 设 ASR_NO_BROWSER=1 可跳过自动开浏览器（无头验证/自动化场景）
+    url = f"http://127.0.0.1:{port}/"
+    # 中文给人看；下面那行 ASCII 给「服务台」抓端口——
+    # 服务台把 stdout 重定向到日志后按 UTF-8 读，中文在管道里是 GBK 字节，
+    # 正则匹配不到「服务已启动」。机器识别的锚点必须是纯 ASCII。
+    print(f"[server] 服务已启动：{url}", flush=True)
+    print(f"[server] listening on http://127.0.0.1:{port}/", flush=True)
+    if port != DEFAULT_PORT and not (os.environ.get("ASR_PORT") or "").strip():
+        print(f"[server] 默认端口 {DEFAULT_PORT} 被占用，已自动改用 {port}", flush=True)
+    ports.write_file(PORT_FILE, port)
     if not os.environ.get("ASR_NO_BROWSER"):
-        threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:7870")).start()
-    uvicorn.run(app, host="127.0.0.1", port=7870, log_level="warning")
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    try:
+        _start(PORT)
+    finally:
+        ports.drop_file(PORT_FILE, PORT)

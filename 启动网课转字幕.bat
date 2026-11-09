@@ -13,7 +13,7 @@ exit /b 1
 echo.
 echo   Drug-Regulatory Course Speech-to-Subtitle
 echo   Starting web UI...
-echo   URL: http://127.0.0.1:7870  (browser opens automatically)
+echo   URL: see the line below (default 7870, picks a free port if busy)
 echo   Close this window to stop the service.
 echo.
 "%PY%" server.py

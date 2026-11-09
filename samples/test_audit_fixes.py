@@ -7,7 +7,8 @@ from pathlib import Path
 
 import requests
 
-BASE = "http://127.0.0.1:7870"
+import apibase                    # 【新增 v2.9】端口可能不是 7870
+BASE = apibase.base()
 S = requests.Session()
 S.trust_env = False        # 本机有代理环境变量，走代理会丢 POST body
 
