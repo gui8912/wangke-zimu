@@ -6,6 +6,7 @@
 """
 import json
 import math
+import re
 import struct
 import sys
 import tempfile
@@ -169,7 +170,12 @@ def guards():
     manual = BASE / "web" / "说明书.html"
     ok("顶栏有使用说明按钮", 'id="btnManual"' in web)
     ok("说明书静态页存在", manual.exists())
-    ok("说明书已更新到 2.11", manual.exists() and "版本 2.11" in manual.read_text(encoding="utf-8"))
+    # 【修改 v2.12】原先写死「版本 2.11」，每升一次版就误报一次。
+    # 改成解析版本号、断言不低于 2.11（与 test_v210 的口径一致）。
+    mtext = manual.read_text(encoding="utf-8") if manual.exists() else ""
+    m = re.search(r"版本\s*(\d+)\.(\d+)", mtext)
+    ver = (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+    ok("说明书版本不低于 2.11", ver >= (2, 11), f"当前 {ver}")
     ok("说明书无旧删源表述", manual.exists() and "连源文件一起删" not in manual.read_text(encoding="utf-8"))
     ok("前端无删源复选框", 'id="purgeMedia"' not in web)
     ok("后端强制不删源", "purge = False" in srv)

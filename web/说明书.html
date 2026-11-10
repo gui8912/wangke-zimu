@@ -44,7 +44,7 @@ a{color:var(--accent)}
 <body>
 <div class="wrap">
 <h1>网课转字幕 · 使用说明书</h1>
-<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.11 ｜ 2026-11-09 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
+<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.12 ｜ 2026-11-10 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
 <hr>
 <nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a><a href="#s9">九、备份与迁移（重装电脑 / 换机）</a></nav>
 <h2 id="s1">一、三分钟上手</h2>
@@ -146,11 +146,11 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <p>「改稿」页 → <strong>「润色模型设置」</strong>（就在「LLM 润色」按钮旁边）：</p>
 <table><thead><tr><th>项</th><th>填什么</th></tr></thead><tbody>
 <tr><td>后端</td><td>本地模型（默认） / 云端 OpenAI 兼容模型</td></tr>
-<tr><td>预设</td><td>智谱 GLM-4-Flash（永久免费） / DeepSeek V4.1-Flash（低价 · 默认不思考） / 自定义</td></tr>
-<tr><td>接口地址</td><td>智谱 <code>https://open.bigmodel.cn/api/paas/v4</code>；DeepSeek <code>https://api.deepseek.com</code></td></tr>
-<tr><td>模型名</td><td><code>glm-4-flash</code>；<code>deepseek-flash</code>（旧名 <code>deepseek-v4-flash</code> 仍可用，<code>deepseek-chat</code> 已于 2026-07 停用）</td></tr>
-<tr><td>API Key</td><td>到 <code>open.bigmodel.cn</code> 或 <code>platform.deepseek.com</code> 注册后在控制台创建，粘贴一次即可</td></tr>
-<tr><td>思考模式</td><td>仅 DeepSeek 显示；默认勾选「关闭思考」（更快、更省、讲稿整理不需要思维链）</td></tr>
+<tr><td>预设</td><td>智谱 GLM-4-Flash（免费） / 硅基流动 Qwen3-8B（免费） / DeepSeek V4.1-Flash（低价） / 美团 LongCat-2.5（1M 上下文） / 自定义</td></tr>
+<tr><td>接口地址</td><td>智谱 <code>https://open.bigmodel.cn/api/paas/v4</code>；硅基流动 <code>https://api.siliconflow.cn/v1</code>；DeepSeek <code>https://api.deepseek.com</code>；LongCat <code>https://api.longcat.chat/openai/v1</code></td></tr>
+<tr><td>模型名</td><td><code>glm-4-flash</code>；<code>Qwen/Qwen3-8B</code>；<code>deepseek-flash</code>；<code>LongCat-2.5</code>（后两家都<strong>大小写敏感</strong>，详见 4.2）</td></tr>
+<tr><td>API Key</td><td>到各家控制台创建（<code>sk-…</code> / <code>ak_…</code>），在输入框粘贴一次即可；每个预设分开保存</td></tr>
+<tr><td>思考模式</td><td>硅基流动 / DeepSeek / LongCat 显示，默认勾选「关闭思考」；GLM 与自定义端点不显示</td></tr>
 <tr><td>单价</td><td>预设自动填好，只用于界面估算费用</td></tr>
 </tbody></table>
 <p>点「测试连接」确认通了，再点「保存」。不填 Key 或把后端切回「本地模型」</p>
@@ -161,7 +161,9 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <p>而且思维链也算 <code>max_tokens</code>——实测 746 字一块的 reasoning 吃掉 1033 token，</p>
 <p>正文容易被截断。现在 DeepSeek 预设<strong>默认勾选「关闭思考」</strong>，请求体传</p>
 <p><code>thinking: {"type": "disabled"}</code>；实测 210 字短稿 0.8 秒返回、输出仅 29 token。</p>
-<p>想恢复思考就去掉勾选（仅 DeepSeek 端点会显示这个开关，GLM / Ollama 不发送该字段）。</p>
+<p>想恢复思考就去掉勾选。v2.12 起这个开关覆盖三家：DeepSeek / LongCat 发</p>
+<p><code>thinking: {"type": "disabled"}</code>，硅基流动 Qwen3 发 <code>enable_thinking: false</code></p>
+<p>（官方字段不同，不能混用）；GLM / Ollama 等端点一律不发送额外字段，避免 400。</p>
 <p><strong>本地模型实际怎么调用</strong>（不用填任何 Key、不联网）：把「后端」选成</p>
 <p><strong>「本地模型（默认）」</strong>保存，回改稿页点「LLM 润色」即可。模型是</p>
 <p><code>D:\AI\models\llm\Qwen\Qwen3-4B-GGUF\Qwen3-4B-Q4_K_M.gguf</code>（2.4GB），</p>
@@ -176,15 +178,39 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <p>并在提示里报数量；<strong>原文真正的最后一句</strong>仍由界面「补回原末句」交给你决定，</p>
 <p>红线闸门不会失效。前端与服务端超时按块数自动放宽（3 万字本地约 43 块，</p>
 <p>可能跑 20 分钟左右），整体硬上限 20 万字（<code>ASR_LLM_MAX_CHARS</code>）。</p>
-<blockquote>想更快：在设置里切到 GLM-4-Flash（免费）或 DeepSeek，云端 3 万字约 10 块，<br>通常两三分钟跑完；想零外传就保持本地模型，晚上挂着跑即可。</blockquote>
+<blockquote>想更快：在设置里切到 GLM-4-Flash / 硅基流动 Qwen3-8B（都免费）或 DeepSeek / LongCat，<br>云端 3 万字约 10 块，<br>通常两三分钟跑完；想零外传就保持本地模型，晚上挂着跑即可。</blockquote>
 <p><strong>安全边界</strong>：音视频识别<strong>永远在本机</strong>，云端模型只接收「讲稿文字」做润色；</p>
 <p>字幕与时间轴一个字都不上云。API Key 只存本机 <code>config/cloud_llm.json</code>，</p>
 <p>该目录已加入 <code>.gitignore</code>，界面只显示脱敏串。</p>
-<h3>4.2 成本账（1 小时中文课，约 1.2 万字）</h3>
+<h3>4.2 硅基流动 / 美团 LongCat 怎么申请（v2.12 新增）</h3>
+<p>两家的参数与 LobeChat 等客户端通用。在本工具里只需选对应「预设」→ 粘贴 Key →</p>
+<p>「测试连接」→「保存」，<strong>不用手填接口地址和模型名</strong>；设置弹窗里也放了一份同样的折叠说明。</p>
+<p><strong>一、硅基流动 SiliconFlow（免费模型）</strong></p>
+<ul><li>官网 <code>https://siliconflow.cn</code>（控制台 <code>cloud.siliconflow.cn</code>）：注册、手机号实名 →</li></ul>
+<p>【API 密钥】→ 复制 <code>sk-…</code> 密钥。</p>
+<ul><li>接口地址 <code>https://api.siliconflow.cn/v1</code>；模型名 <strong><code>Qwen/Qwen3-8B</code></strong>。</li><li>⚠️ <strong>模型名要写「厂商/模型名」全称</strong>：只写 <code>qwen3-8b</code> 会报</li></ul>
+<p><code>400 Model does not exist</code>（2026-11-10 实测）；正确名同一次实测返回 200、回复「正常」。</p>
+<ul><li>其它免费模型可在「自定义」里换：<code>deepseek-ai/DeepSeek-R1-0528-Qwen3-8B</code>、</li></ul>
+<p><code>THUDM/glm-4-9b-chat</code>、<code>Qwen/Qwen2.5-7B-Instruct</code>。</p>
+<ul><li>Qwen3 默认开思考，本工具自动传 <code>enable_thinking=false</code>，无需手动加参数。</li></ul>
+<p><strong>二、美团 LongCat</strong></p>
+<ul><li>官网 <code>https://longcat.chat/platform</code>：手机号实名登录 →【API 密钥管理】</li></ul>
+<p>（<code>/platform/api_keys</code>）→ 复制 <code>ak_…</code> 密钥。</p>
+<ul><li>接口地址 <code>https://api.longcat.chat/openai/v1</code>；模型名 <strong><code>LongCat-2.5</code></strong>。</li><li>⚠️ <strong>大小写敏感</strong>：写 <code>longcat-2.5</code> 会报 <code>400 Unsupported model</code>。</li></ul>
+<p>平台 <code>GET /openai/v1/models</code> 现列出 <code>LongCat-2.5</code>、<code>LongCat-2.5-Preview</code>、<code>LongCat-2.0</code>。</p>
+<ul><li>1M 上下文、最大输出 128K，本工具自动关闭思考。</li><li>2.5 是 2026-11-02 新发布的旗舰模型，<strong>是否在每日免费额度内以平台「用量」页为准</strong>；</li></ul>
+<p>界面费用按 0 估算，不代表账单。Flash 系列此前有每日免费额度。</p>
+<ul><li>若「测试连接」返回 <code>401 invalid_api_key / 无效的 AppId</code>，是 Key 本身的问题</li></ul>
+<p>（复制不全、已删除或停用），到密钥页重新创建后覆盖粘贴即可；</p>
+<p><code>/models</code> 不校验 Key，能列出模型不代表 Key 有效。</p>
+<blockquote>密钥只写进本机 <code>config/cloud_llm.json</code>；说明书与网页里都不放明文。</blockquote>
+<h3>4.3 成本账（1 小时中文课，约 1.2 万字）</h3>
 <table><thead><tr><th>方案</th><th>花多少钱</th><th>耗时</th><th>说明</th></tr></thead><tbody>
 <tr><td>本地 Qwen3-ASR 识别</td><td><strong>¥0</strong></td><td>约 30–45 分钟</td><td>2 路分片并行后实测 1.8–2.2× 实时</td></tr>
 <tr><td>本地 Qwen3-4B 润色</td><td><strong>¥0</strong></td><td>数分钟</td><td>纯 CPU，稿子不出机</td></tr>
 <tr><td>智谱 GLM-4-Flash 润色</td><td><strong>¥0</strong></td><td>十几秒</td><td>官方长期免费，限 30 并发 / 约 3 次每秒</td></tr>
+<tr><td>硅基流动 Qwen3-8B 润色</td><td><strong>¥0</strong></td><td>十几秒</td><td>官方免费模型；v2.12 自动关思考</td></tr>
+<tr><td>美团 LongCat-2.5 润色</td><td>视免费额度</td><td>几秒</td><td>1M 上下文；额度以平台「用量」页为准，界面按 0 估算</td></tr>
 <tr><td>DeepSeek V4.1-Flash 润色</td><td><strong>约 ¥0.07</strong></td><td>几秒</td><td>输入 $0.15/M + 输出 $0.60/M；关闭思考后输出 token 大幅下降</td></tr>
 <tr><td>云端 ASR（腾讯云/火山）</td><td>约 ¥1–2 / 小时</td><td>几分钟</td><td><strong>本项目不走这条路</strong>，仅供对照</td></tr>
 </tbody></table>
@@ -192,7 +218,7 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <p>不是文字润色**；把识别留在本地、只让文字上云，几十节课的成本也接近零。</p>
 <p>v2.7 起云端长稿按 <strong>3000 字一块</strong>（本地仍 700 字），3 万字约 10 次请求，</p>
 <p>提示词重复开销比原来的 43 次少约 3/4。</p>
-<h3>4.3 再省一点的六个习惯</h3>
+<h3>4.4 再省一点的六个习惯</h3>
 <ol><li>识别一律本地；云端只开「LLM 润色」。</li><li>「LLM 润色」一稿只跑一次，之后的修改用本地七遍改稿 / 查找替换，不重复调模型。</li><li>批量任务勾「跳过已转录」，重复拖入同一批课件不白跑。</li><li>DeepSeek 避开<strong>工作日 09:00–17:00</strong>（官方高峰价，约为低谷的 2 倍）；晚上、清晨、周末都是低谷。</li><li>专业术语、简称、漏字交给本地术语表与「术语补全」，不用花钱让模型猜。</li><li>先批量跑完识别，第二天集中校对时再统一润色，避免边跑边改造成重复调用。</li></ol>
 <p>润色结果会过<strong>三级检查</strong>（v2.8）：</p>
 <table><thead><tr><th>级别</th><th>项目</th><th>能不能采用</th></tr></thead><tbody>
@@ -294,7 +320,10 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <tr><td>「管带 / 管道」被识别成别的词</td><td>顶栏「<strong>术语表</strong>」→ 错词校正已有 <code>管带 =&gt; 管代</code>，简称表已有 <code>管代 =&gt; 管理者代表</code>；保存即生效。也可直接改 <code>terms/*.txt</code>，v2.7 起改完不用重启，点「重新清理」就生效</td></tr>
 <tr><td>术语表 / 错词表在哪里设置</td><td>顶栏「术语表」按钮：错词校正（错→对）、简称表（简称→全称）、识别热词（词+权重）三页签，可增删改；<strong>「试改」输入框</strong>可现场验证一句话会被怎么改；文件本体在 <code>terms/corrections.txt</code>、<code>aliases.txt</code>、<code>hotwords.txt</code></td></tr>
 <tr><td>术语表改了，字幕清理用不用得上</td><td>用得上。错词 / 简称 / 术语补全同时作用于<strong>字幕清理与讲稿清理</strong>；老任务点一次「重新清理」。弹窗里的「试改」显示的就是这条链路</td></tr>
-<tr><td>DeepSeek 能不能不推理</td><td>能。v2.7 起 DeepSeek 预设默认关思考，请求体传 <code>thinking: {"type": "disabled"}</code>；实测短稿 0.8 秒、输出 29 token。想恢复思考去掉勾选即可（仅 DeepSeek 端点有该开关）</td></tr>
+<tr><td>DeepSeek 能不能不推理</td><td>能。v2.7 起 DeepSeek 预设默认关思考，请求体传 <code>thinking: {"type": "disabled"}</code>；实测短稿 0.8 秒、输出 29 token。想恢复思考去掉勾选即可。v2.12 起 LongCat 同参数、硅基流动 Qwen3 用 <code>enable_thinking: false</code></td></tr>
+<tr><td>硅基流动报 <code>400 Model does not exist</code></td><td>模型名要写完整 ID <code>Qwen/Qwen3-8B</code>，只写 <code>qwen3-8b</code> 不行；直接选「硅基流动 Qwen3-8B」预设就不会填错</td></tr>
+<tr><td>LongCat 报 <code>400 Unsupported model</code> / <code>401 invalid_api_key</code></td><td>前者是模型名大小写：必须 <code>LongCat-2.5</code>；后者是 Key 本身失效（复制不全 / 已停用），到 <code>longcat.chat/platform/api_keys</code> 重新创建覆盖粘贴。<code>GET /models</code> 能列出模型不代表 Key 有效</td></tr>
+<tr><td>新加的两家要不要手动填接口地址</td><td>不用。选预设即自动带出 Base URL、模型名与关思考参数；只粘贴一次 Key，各预设分开保存</td></tr>
 <tr><td>重装电脑后词表和设置要重配一遍？</td><td>顶栏「备份」→ 导出 zip（可含 API Key，注意别外发）；新机装好工具后同一入口导入。导入前会自动快照，导错可退回。详见第九节</td></tr>
 <tr><td>填了 GLM 的 Key，再填 DeepSeek 存不上</td><td>2.4 起每个预设分开存 Key；切换下拉会自动带出本模型的 Key，留空即沿用</td></tr>
 <tr><td>填了 Key 但润色还是本地模型</td><td>要把「后端」选成「云端 OpenAI 兼容模型」，只存 Key 不会自动切换</td></tr>

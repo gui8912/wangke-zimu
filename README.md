@@ -3,6 +3,38 @@
 **默认纯本地**（音视频不出本机）；自 1.3 起可选云端识别源，内容不涉密时可用。
 适配药品、医疗器械监督管理专业术语。自 1.7 起可选**本地 LLM 润色讲稿**（模型也在本机）。
 
+## 2.12 润色模型设置新增硅基流动 / 美团 LongCat（2026-11-10）
+
+用户给了两家的接入参数，逐条核对（官方文档 + 用给定 Key 真机实测）：
+
+| 项 | 用户原文 | 核对结果 | 实测 |
+|---|---|---|---|
+| 硅基流动官网 | `siliconflow.cn` | ✅ 正确；控制台在 `cloud.siliconflow.cn` | — |
+| 硅基流动 Base URL | `https://api.siliconflow.cn/v1` | ✅ 正确 | — |
+| 硅基流动模型名 | `qwen3-8b` | ❌ 应为 `Qwen/Qwen3-8B`，「厂商/模型名」全称且大小写敏感 | 正确名 HTTP 200 回复「正常」且 `reasoning_tokens=0`；原名 HTTP 400 `Model does not exist` |
+| LongCat 官网 | `longcat.chat/platform` | ✅ 正确（API 开放平台，密钥页 `/platform/api_keys`） | — |
+| LongCat Base URL | `https://api.longcat.chat/openai/v1` | ✅ 正确 | `GET /models` 返回 200，列出 `LongCat-2.5` / `LongCat-2.5-Preview` / `LongCat-2.0` |
+| LongCat 模型名 | `longcat-2.5` | ⚠️ 官方写法 `LongCat-2.5`，大小写敏感 | 小写写法 HTTP 400 `Unsupported model` |
+| LongCat Key | `ak_…` | ❌ 本次给的那把实测 **401 `invalid_api_key`（无效的 AppId）** | `/models` 不校验 Key 所以能列模型，`chat/completions` 被拒；需到平台重新创建/复制 |
+
+落地内容：
+
+- `cloud_llm.PRESETS` 新增 `siliconflow-qwen3-8b`、`longcat-2.5` 两个可直接选的预设，
+  「改稿」页 →「润色模型设置」→ 预设下拉里选一下即可；两把 Key 已按预设分别写入
+  仅本机的 `config/cloud_llm.json`（已在 `.gitignore`，界面只显示脱敏串）。
+- **三家的「关闭思考」字段不统一**，统一收敛到 `thinking_off_payload()`：
+  DeepSeek / LongCat 发 `thinking={"type":"disabled"}`，硅基流动 Qwen3 发
+  `enable_thinking=false`（官方默认 True）。不关的话 Qwen3 的思维链会吃掉
+  `max_tokens`、正文被静默截断，和 v2.7 DeepSeek 踩的是同一个坑。
+  GLM / Ollama 等不认识的端点一律不发额外字段，避免 400。
+- 前端「预设」下拉、提示文案、思考开关可见性改为**后端下发**（`note` /
+  `thinking_supported`），以后再加服务商只改 `PRESETS` 一处，前端不用加 else if。
+- 设置弹窗新增折叠说明：官网、注册实名、密钥位置、Base URL、模型名以及上面的实测订正；
+  **说明里不放任何明文密钥**，Key 只在输入框粘贴一次。
+- LongCat-2.5 是 2026-11-02 新发布的旗舰模型，是否在每日免费额度内以平台
+  「用量」页为准；界面单价按 0 估算（第三方报价约 $0.30/$1.20 每百万 token，未获官方确认）。
+- 新增 `samples/test_v212.py`；全量回归通过。
+
 ## 2.11 批量导入本机课件：拖放弹窗 / 剪贴板（2026-11-10）
 
 网页受浏览器安全限制，**永远拿不到拖入文件的本地绝对路径**（File 对象只有
@@ -347,9 +379,11 @@ CPU 只占约 4 核但比 Qwen3（用满 20 核也要 40+ 分钟）快得多。
 而是单步自回归解码喂不满核心，得靠**多片并行**。
 
 **免费 / 低价模型在哪设**：「改稿」页 →「润色模型设置」。预设了
-智谱 GLM-4-Flash（永久免费、`https://open.bigmodel.cn/api/paas/v4`）与
-DeepSeek V4-Flash（`https://api.deepseek.com`，旧名 deepseek-chat 已停用）；
-也支持任意 OpenAI 兼容端点。识别始终本地，只有讲稿文字上云。
+智谱 GLM-4-Flash（永久免费、`https://open.bigmodel.cn/api/paas/v4`）、
+硅基流动 Qwen3-8B（免费、`https://api.siliconflow.cn/v1`，模型 `Qwen/Qwen3-8B`）、
+DeepSeek V4-Flash（`https://api.deepseek.com`，旧名 deepseek-chat 已停用）与
+美团 LongCat-2.5（`https://api.longcat.chat/openai/v1`，模型 `LongCat-2.5`）；
+也支持任意 OpenAI 兼容端点。识别始终本地，只有讲稿文字上云。详见 2.12。
 1 小时课：本地识别 ¥0、GLM-4-Flash 润色 ¥0、DeepSeek 约 ¥0.05（夜间低谷约半价）；
 对照组云端 ASR 约 ¥1–2/小时，**本项目不走那条路**。`config/` 已排除出 git。
 

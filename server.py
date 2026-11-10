@@ -1832,7 +1832,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.11",      # modified(v2.11): 本机拖放弹窗批量零拷贝导入
+    return {"ok": True, "version": "2.12",      # modified(v2.12): 新增两家润色模型预设 + 各家关思考适配
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

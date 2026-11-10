@@ -2,7 +2,8 @@
 """云端润色模型（OpenAI 兼容 /chat/completions）。
 
 只用于**讲稿轨的文字整理**，音频始终不出本机；字幕轨、字级时间戳一个字不碰。
-支持国内两家低成本/免费服务，也支持任意 OpenAI 兼容端点（含本机 Ollama）。
+支持智谱、DeepSeek、硅基流动、美团 LongCat 等国内服务，
+也支持任意 OpenAI 兼容端点（含本机 Ollama）。
 
 设计要点：
   · 只用标准库 urllib，不装 openai SDK，避免给本地环境再加依赖；
@@ -48,6 +49,34 @@ PRESETS = {
                 "默认关闭思考：讲稿整理不需要思维链，关掉后更快、更省、"
                 "也不会把 max_tokens 吃在 reasoning 上。",
     },
+    # 【新增 v2.12】硅基流动。2026-11-10 实测：
+    #   Qwen/Qwen3-8B → HTTP 200；写成 qwen3-8b → HTTP 400 Model does not exist。
+    # 模型 ID 必须是「厂商/模型名」全称且大小写敏感，界面里要写清楚。
+    "siliconflow-qwen3-8b": {
+        "label": "硅基流动 Qwen3-8B（免费）",
+        "base_url": "https://api.siliconflow.cn/v1",
+        "model": "Qwen/Qwen3-8B",
+        "price_in": 0.0, "price_out": 0.0, "currency": "CNY",
+        "note": "官网 siliconflow.cn，手机号实名后进【API 密钥】复制 sk- 开头 Key。"
+                "模型名必须写完整 ID Qwen/Qwen3-8B（只写 qwen3-8b 会报 400 模型不存在）。"
+                "官方免费模型，另有 deepseek-ai/DeepSeek-R1-0528-Qwen3-8B、"
+                "THUDM/glm-4-9b-chat 等可在「自定义」里换。"
+                "Qwen3 默认开思考，本程序自动传 enable_thinking=false，避免思维链吃掉正文额度。",
+    },
+    # 【新增 v2.12】美团 LongCat。2026-11-10 实测 GET /openai/v1/models 返回
+    # LongCat-2.5 / LongCat-2.5-Preview / LongCat-2.0；写成 longcat-2.5 会报
+    # 400 Unsupported model（大小写敏感）。2.5 支持 thinking:{"type":"disabled"}。
+    "longcat-2.5": {
+        "label": "美团 LongCat-2.5（1M 上下文）",
+        "base_url": "https://api.longcat.chat/openai/v1",
+        "model": "LongCat-2.5",
+        "price_in": 0.0, "price_out": 0.0, "currency": "CNY",
+        "note": "官网 longcat.chat/platform，手机号实名后进【API 密钥管理】复制 ak_ 开头 Key。"
+                "模型名 LongCat-2.5 大小写敏感（写 longcat-2.5 会报 400）。"
+                "1M 上下文、最大输出 128K；本程序自动关闭思考。"
+                "新模型是否计入每日免费额度以平台「用量」页为准，"
+                "界面费用按 0 估算（第三方报价约 $0.30/$1.20 每百万 token，未获官方确认）。",
+    },
     "custom": {
         "label": "自定义（OpenAI 兼容）",
         "base_url": "",
@@ -55,6 +84,13 @@ PRESETS = {
         "price_in": 0.0, "price_out": 0.0, "currency": "CNY",
         "note": "可填本机 Ollama（http://127.0.0.1:11434/v1）等任意兼容端点。",
     },
+}
+
+# 【新增 v2.12】这几个预设默认关思考：讲稿整理不需要思维链，
+# 开着会更慢、更贵，还会把 max_tokens 吃在 reasoning 上导致正文截断。
+DEFAULT_NO_THINK = {
+    "deepseek-v4-flash", "deepseek-flash",
+    "siliconflow-qwen3-8b", "longcat-2.5",
 }
 
 DEFAULTS = {
@@ -218,8 +254,8 @@ def apply_preset(key):
         "price_in": p["price_in"], "price_out": p["price_out"],
         "currency": p["currency"],
         "enabled": bool(saved.get("enabled")),
-        # 【新增 v2.7】DeepSeek 预设默认不思考；其它预设不带这个字段
-        "thinking": "off" if key in ("deepseek-v4-flash", "deepseek-flash") else "auto",
+        # 【修改 v2.12】DeepSeek / 硅基流动 Qwen3 / LongCat 都默认不思考
+        "thinking": "off" if key in DEFAULT_NO_THINK else "auto",
     })
     own = str((saved.get("keys") or {}).get(key) or "")
     if not own and saved.get("preset") == key:       # 旧配置无损迁移兜底
@@ -227,14 +263,38 @@ def apply_preset(key):
     cfg["api_key"] = own
     cfg["masked_key"] = mask(own)
     cfg["has_key"] = bool(own)
+    # 【新增 v2.12】界面不再硬编码每家的提示文案与开关可见性，统一由后端下发，
+    # 以后再加服务商只改 PRESETS 一处，前端不用跟着加 else if。
+    cfg["note"] = p["note"]
+    cfg["thinking_supported"] = supports_thinking(cfg)
     return cfg
 
 
+def thinking_off_payload(cfg) -> dict:
+    """【新增 v2.12】返回「关闭思考」要追加到请求体的字段，端点不支持则 {}。
+
+    各家字段名不统一，不能一律发 thinking，否则 GLM / Ollama 会 400：
+      · DeepSeek、LongCat：thinking={"type":"disabled"}（2026-11-10 实测 LongCat 接受）
+      · 硅基流动 Qwen3  ：enable_thinking=false（官方文档字段，默认 True）
+        只对官方列明支持该字段的 Qwen3 系模型发送，自定义端点不乱发。
+    """
+    cfg = cfg or {}
+    base = str(cfg.get("base_url") or "").lower()
+    preset = str(cfg.get("preset") or "").lower()
+    model = str(cfg.get("model") or "").lower()
+    if "deepseek" in base or preset.startswith("deepseek"):
+        return {"thinking": {"type": "disabled"}}
+    if "longcat" in base or preset.startswith("longcat"):
+        return {"thinking": {"type": "disabled"}}
+    if "siliconflow" in base or preset.startswith("siliconflow"):
+        if preset.startswith("siliconflow") or "qwen3" in model:
+            return {"enable_thinking": False}
+    return {}
+
+
 def supports_thinking(cfg) -> bool:
-    """只有 DeepSeek 系端点认 `thinking` 参数；GLM / Ollama 发了可能 400。"""
-    base = str((cfg or {}).get("base_url") or "").lower()
-    preset = str((cfg or {}).get("preset") or "").lower()
-    return "deepseek" in base or preset.startswith("deepseek")
+    """界面据此显示「关闭思考」开关；GLM / Ollama 等不支持的端点不显示。"""
+    return bool(thinking_off_payload(cfg))
 
 
 def status():
@@ -253,7 +313,7 @@ def status():
         "price_in": cfg.get("price_in"), "price_out": cfg.get("price_out"),
         "currency": cfg.get("currency"), "usd_cny": USD_CNY,
         "max_tokens": cfg.get("max_tokens"),
-        # 【新增 v2.7】界面据此显示「不思考」开关；非 DeepSeek 端点不显示
+        # 【修改 v2.12】界面据此显示「关闭思考」开关；不支持的端点不显示
         "thinking": cfg.get("thinking") or "auto",
         "thinking_supported": supports_thinking(cfg),
         "presets": [{"id": k, "label": v["label"]} for k, v in PRESETS.items()],
@@ -310,13 +370,13 @@ class CloudChat:
             "max_tokens": int(max_tokens or cfg.get("max_tokens") or 8192),
             "stream": False,
         }
-        # 【新增 v2.7】按用户要求把 DeepSeek 设为「不推理」。
-        # 官方文档：请求体传 thinking={"type":"disabled"} 即关闭；
-        # 关闭后 temperature/top_p 才真正生效，max_tokens 也不会被
-        # reasoning_content 吃掉（实测 746 字一块 reasoning 占 1033 token）。
-        if supports_thinking(cfg) and str(cfg.get("thinking") or "auto") == "off":
-            payload["thinking"] = {"type": "disabled"}
-        self.thinking_off = payload.get("thinking", {}).get("type") == "disabled"
+        # 【修改 v2.12】按各家字段名关闭思考：DeepSeek / LongCat 发 thinking=disabled，
+        # 硅基流动 Qwen3 发 enable_thinking=false。不关的话思维链会吃掉
+        # max_tokens，正文被静默截断（实测 746 字一块 reasoning 占 1033 token）。
+        off = (thinking_off_payload(cfg)
+               if str(cfg.get("thinking") or "auto") == "off" else {})
+        payload.update(off)
+        self.thinking_off = bool(off)
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if cfg.get("api_key"):

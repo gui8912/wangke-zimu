@@ -38,6 +38,11 @@
   时间戳，整段改写会让 align.py 对不上、音画不同步
 - 2.6 顶栏「备份」：导出/导入词表与设置（重装、换机用），可不含 API Key；
   导入前自动快照到 backups/，导错可退回；顶栏「术语表」可可视化维护三张词表
+- 2.12 「润色模型设置」新增两家可直选的预设：硅基流动 Qwen3-8B（免费）、
+  美团 LongCat-2.5（1M 上下文）；设置弹窗里附官网、实名注册、密钥位置与参数说明。
+  核对后订正：硅基流动模型名必须是 Qwen/Qwen3-8B（写 qwen3-8b 报 400）、
+  LongCat 必须是 LongCat-2.5（写 longcat-2.5 报 400）；三家关思考字段各不相同，
+  已按各家官方文档自动适配。详见 README 2.12 / 说明书 4.2
 - 完整操作请看《使用说明书.md》：单节课流程、批量夜间、成本账、参数速查、故障排查
 
 【2.4 首页说明书 / 源文件禁删 / 队列修复】
@@ -63,8 +68,10 @@
   云端 ASR 每小时 1–2 元，本项目不用
 - 免费模型设置：改稿页「润色模型设置」→ 选预设 → 填 API Key → 测试连接 → 保存
   智谱 https://open.bigmodel.cn/api/paas/v4 模型 glm-4-flash
-  DeepSeek https://api.deepseek.com 模型 deepseek-v4-flash
-  API Key 只存本机 config/，已排除出 git
+  硅基流动 https://api.siliconflow.cn/v1 模型 Qwen/Qwen3-8B（免费）
+  DeepSeek https://api.deepseek.com 模型 deepseek-flash
+  美团 LongCat https://api.longcat.chat/openai/v1 模型 LongCat-2.5
+  模型名大小写敏感，不要简写；API Key 只存本机 config/，已排除出 git
 
 【1.9 长音频段错误修复（2026-11-08）】
 - 现场：服务空闲跑了 9 小时后接到一个 79 分钟课程，模型加载完 15 秒，进程直接

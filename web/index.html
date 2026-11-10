@@ -1127,8 +1127,11 @@
     <div class="body">
       <div class="note" style="margin-bottom:12px">
         默认用<b>本地 Qwen3-4B</b>（零成本、零外传，但 1 小时课件的润色要跑几分钟）。
-        要更快或想省本机 CPU，可切到<b>智谱 GLM-4-Flash（永久免费）</b>或
-        <b>DeepSeek V4.1-Flash（低价）</b>。切换只影响「LLM 润色」这一遍，字幕与时间轴不受影响。
+        要更快或想省本机 CPU，可在「预设」里选<b>智谱 GLM-4-Flash（免费）</b>、
+        <b>硅基流动 Qwen3-8B（免费）</b>、<b>DeepSeek V4.1-Flash（低价）</b>或
+        <b>美团 LongCat-2.5（1M 上下文）</b>。
+        切换只影响「LLM 润色」这一遍，字幕与时间轴不受影响。
+        新服务商的申请步骤见下方「硅基流动 / 美团 LongCat：怎么申请、怎么填」。
       </div>
       <div class="cfgrow"><label>后端</label>
         <select id="cloudEnabled">
@@ -1159,9 +1162,13 @@
         <div class="qhint" style="padding:8px 4px;line-height:1.8">
           · 1 小时中文课约 1.2 万字，润色输入+输出合计约 2–3 万 token。<br>
           · GLM-4-Flash：<b>0 元</b>（官方长期免费，限 30 并发 / 约 3 次每秒）。<br>
+          · 【v2.12】硅基流动 Qwen3-8B：<b>0 元</b>（官方免费模型）；
+            Qwen3 默认开思考，本程序自动传 <code>enable_thinking=false</code>。<br>
+          · 【v2.12】美团 LongCat-2.5：1M 上下文，本程序自动关闭思考；
+            是否计入每日免费额度以平台「用量」页为准，界面按 0 估算，不代表账单。<br>
           · DeepSeek V4.1-Flash：输入 $0.15/M + 输出 $0.60/M，一小时课约 <b>¥0.07</b>；
             工作日 09:00–17:00 为高峰价（翻倍），其余时段为低谷价。<br>
-          · <b>默认关闭思考</b>：DeepSeek V4 默认先输出思维链，整理讲稿不需要，
+          · <b>默认关闭思考</b>：DeepSeek / LongCat / Qwen3 默认先输出思维链，整理讲稿不需要，
             关掉后同样的稿子更快、更省，也不会把 max_tokens 吃在 reasoning 上。<br>
           · 云端长稿按 3000 字一块（本地 700 字），3 万字约 10 次请求，
             比原来 43 次少了 3/4 的提示词重复开销。<br>
@@ -1171,6 +1178,37 @@
           · 【新增 v2.4】<b>每个预设的 Key 分开保存</b>：填了智谱的再填 DeepSeek 的，
             互不影响；切换下拉会自动带出该模型自己的 Key，留空即沿用。<br>
           · 不填 Key 或关掉开关，随时回到纯本地模式。
+        </div>
+      </details>
+      <!-- 【新增 v2.12】两家新服务商的申请步骤与实测订正后的参数。
+           只放官网与公开参数，绝不放明文 API Key；密钥由用户在上面输入框粘贴。 -->
+      <details style="margin-top:10px">
+        <summary class="qhint">【v2.12 新增】硅基流动 / 美团 LongCat：怎么申请、怎么填</summary>
+        <div class="qhint" style="padding:8px 4px;line-height:1.9">
+          <b>一、硅基流动 SiliconFlow（免费模型）</b><br>
+          官网 <a href="https://siliconflow.cn" target="_blank" rel="noopener">siliconflow.cn</a>：
+          注册并完成手机号实名 → 进入【API 密钥】，复制 <code>sk-…</code> 开头的密钥。<br>
+          · 接口地址（Base URL）：<code>https://api.siliconflow.cn/v1</code><br>
+          · 模型名称：必须填完整 ID <code>Qwen/Qwen3-8B</code>。
+            <b>只写 <code>qwen3-8b</code> 会报 400「Model does not exist」</b>（2026-11-10 实测）。<br>
+          · 其它同样免费的模型可在「自定义」里换：
+            <code>deepseek-ai/DeepSeek-R1-0528-Qwen3-8B</code>、
+            <code>THUDM/glm-4-9b-chat</code>、<code>Qwen/Qwen2.5-7B-Instruct</code>。<br>
+          · Qwen3 默认开思考，选此预设后本程序自动传 <code>enable_thinking=false</code>，
+            不用手动加任何参数。<br><br>
+          <b>二、美团 LongCat</b><br>
+          官网 <a href="https://longcat.chat/platform" target="_blank" rel="noopener">longcat.chat/platform</a>：
+          手机号实名登录 → 前往【API 密钥管理】复制 <code>ak_…</code> 开头的密钥。<br>
+          · 接口地址（Base URL）：<code>https://api.longcat.chat/openai/v1</code><br>
+          · 模型名称：<code>LongCat-2.5</code>，
+            <b>大小写敏感</b>；写成 <code>longcat-2.5</code> 会报 400「Unsupported model」。
+            平台 <code>/models</code> 还列出 <code>LongCat-2.5-Preview</code>、<code>LongCat-2.0</code>。<br>
+          · 1M 上下文、最大输出 128K；本程序自动关闭思考（<code>thinking: disabled</code>）。<br>
+          · <b>该新模型是否在每日免费额度内，以平台「用量」页为准</b>；
+            Flash 系列此前有每日免费额度，2.5 是 2026-11-02 新发布的旗舰模型。<br><br>
+          上面两组参数与 LobeChat 等客户端通用；在本工具里直接选对应「预设」即可，
+          再把密钥粘贴到上方 <b>API Key</b> 输入框、点「测试连接」→「保存」。
+          每个预设的 Key 分开保存，互不覆盖；<b>本说明不含任何明文密钥</b>。
         </div>
       </details>
     </div>
@@ -2680,8 +2718,8 @@ $('#cloudPreset').onchange = async ()=>{
     $('#cloudPriceIn').value = d.price_in ?? 0;
     $('#cloudPriceOut').value = d.price_out ?? 0;
     $('#cloudCurrency').value = d.currency || 'CNY';
-    // 【新增 v2.7】切到 DeepSeek 自动勾上「不思考」，切回 GLM 则隐藏该行
-    $('#cloudThinkRow').style.display = (d.base_url || '').includes('deepseek') ? '' : 'none';
+    // 【修改 v2.12】开关可见性由后端统一下发，不再按 base_url 硬编码 deepseek
+    $('#cloudThinkRow').style.display = d.thinking_supported ? '' : 'none';
     $('#cloudNoThink').checked = (d.thinking || 'auto') === 'off';
     // 【修改 v2.4】切换预设要清掉上一个模型残留的输入，并提示该模型自己的
     // 密钥状态；保存时后端会自动从该预设的槽位取 Key，不会串到别的模型。
@@ -2689,9 +2727,8 @@ $('#cloudPreset').onchange = async ()=>{
     $('#cloudNow').textContent = d.has_key
       ? `本模型已保存密钥：${d.masked_key}（留空即沿用）`
       : '本模型尚未保存密钥，请粘贴后点「保存」';
-    $('#cloudNote').textContent = (d.preset === 'glm-4-flash')
-      ? '智谱 GLM-4-Flash 永久免费；到 open.bigmodel.cn 注册后在「API 密钥」里创建 Key。'
-      : 'DeepSeek V4.1-Flash：输入 $0.15/M、输出 $0.60/M；工作日 09:00–17:00 为高峰价。默认已关闭思考。';
+    // 【修改 v2.12】提示文案统一取后端 PRESETS 的 note，新增服务商不必改前端
+    $('#cloudNote').textContent = d.note || '';
   }catch(e){}
 };
 $('#cloudTest').onclick = async ()=>{
