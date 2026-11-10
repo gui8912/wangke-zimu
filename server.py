@@ -17,6 +17,7 @@ import queue
 import re
 import shutil
 import socket                   # 【新增 v2.9】端口占用探测
+import subprocess               # 【新增 v2.11】独立进程调起本机拖放面板
 import sys                      # 【新增 v2.9】端口被显式占用时以非 0 退出
 import threading
 import time
@@ -816,29 +817,25 @@ def upload(file: UploadFile = File(...)):
             "size": size, "path": str(dst), "media_url": f"/api/media/{fid}"}
 
 
-@app.post("/api/link")
-async def api_link(payload: dict):
-    """【新增 v2.4】登记本机已有的课件，**不复制字节**。
+def _link_one(raw):
+    """【v2.4】登记一个本机路径：同卷用 NTFS 硬链接（零额外空间），跨卷才复制。
 
-    浏览器上传拿不到本机原路径，只能把 HTTP 流落成 media/ 副本；
-    这里让用户直接填原始路径，同一块盘用 NTFS 硬链接（零额外空间），
-    跨盘或权限不允许时才退回复制，并在返回里明确标出 copied。
+    返回 (结果 dict, 错误字符串)。【修改 v2.11】从 /api/link 抽出来，
+    让单个导入与批量导入共用同一套校验，避免两处规则慢慢走偏。
     """
-    raw = str(payload.get("path") or "").strip().strip('"').strip("'")
+    raw = str(raw or "").strip().strip('"').strip("'")
     if not raw:
-        return JSONResponse({"error": "请填本机课件的完整路径"}, status_code=400)
+        return None, "请填本机课件的完整路径"
     try:
         src = Path(raw).resolve()
     except (OSError, ValueError):
-        return JSONResponse({"error": "路径不合法"}, status_code=400)
+        return None, "路径不合法"
     if not src.is_file():
-        return JSONResponse({"error": "文件不存在或不是普通文件"}, status_code=400)
+        return None, "文件不存在或不是普通文件"
     if src.suffix.lower() not in ALLOWED_MEDIA_EXT:
-        return JSONResponse({"error": f"不支持的文件类型：{src.suffix}"}, status_code=400)
+        return None, f"不支持的文件类型：{src.suffix}"
     if _inside(src, BASE):
-        return JSONResponse(
-            {"error": "请直接指向工程目录外的原始课件（media/ 里的副本不用再导入）"},
-            status_code=400)
+        return None, "请直接指向工程目录外的原始课件（media/ 里的副本不用再导入）"
     safe = _safe(src.name)[:120] or "lesson"
     fid = uuid.uuid4().hex[:12]
     dst = MEDIA / f"{fid}_{safe}"
@@ -850,7 +847,7 @@ async def api_link(payload: dict):
             shutil.copy2(src, dst)      # 跨卷 / 权限不足才真复制
         except OSError as exc:
             dst.unlink(missing_ok=True)
-            return JSONResponse({"error": f"导入失败：{exc}"}, status_code=400)
+            return None, f"导入失败：{exc}"
         copied = True
     info = {"name": safe, "path": str(dst), "kind": media_type_of(safe)}
     UPLOADS[fid] = info
@@ -858,7 +855,94 @@ async def api_link(payload: dict):
     return {"file_id": fid, "name": safe, "kind": info["kind"],
             "size": src.stat().st_size, "path": str(dst),
             "media_url": f"/api/media/{fid}",
-            "linked": not copied, "copied": copied}
+            "linked": not copied, "copied": copied}, None
+
+
+@app.post("/api/link")
+async def api_link(payload: dict):
+    """单路径零拷贝导入（手动填路径的兼容通道）。"""
+    data, err = _link_one(payload.get("path"))
+    return JSONResponse({"error": err}, status_code=400) if err else data
+
+
+@app.post("/api/link/batch")
+def api_link_batch(payload: dict):
+    """【新增 v2.11】一次登记多个本机路径，供拖放面板 / 文件对话框 / 剪贴板共用。
+
+    单个失败不影响其余：errors 里逐条给原因，前端照常把成功的 file_ids 入队。
+    """
+    paths = payload.get("paths")
+    if not isinstance(paths, list):
+        return JSONResponse({"error": "paths 必须是数组"}, status_code=400)
+    if len(paths) > 300:
+        return JSONResponse({"error": "一次最多 300 个文件，请分批导入"}, status_code=400)
+    items, errors = [], []
+    for p in paths:
+        d, err = _link_one(p)
+        if err:
+            errors.append({"path": str(p)[:200], "error": err})
+        else:
+            items.append(d)
+    return {"items": items, "errors": errors,
+            "file_ids": [x["file_id"] for x in items],
+            "linked": sum(1 for x in items if x.get("linked")),
+            "copied": sum(1 for x in items if x.get("copied"))}
+
+
+# ---------------------------------------------------------------- 本机路径获取
+# 浏览器网页拿不到拖入文件的本地绝对路径（File 对象只有 name/size/type），
+# 所以由本机独立进程弹窗 / 读剪贴板拿路径，再回写网页走上面的批量硬链接。
+_NATIVE_LOCK = threading.Lock()
+
+
+def _native_paths(mode: str) -> list:
+    """mode='pick'：专用拖放面板（失败回退原生多选对话框）；'clipboard'：剪贴板。"""
+    import native_io
+    env = os.environ.copy()
+    env.pop("ASR_NATIVE_FAKE", None)      # 测试后门不传给真实调用
+    if mode == "pick":
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass",
+                 "-File", str(BASE / "native_dropbox.ps1")],
+                capture_output=True, timeout=310, cwd=str(BASE), env=env)
+            paths = native_io.parse_stdout(r.stdout)
+            if paths or r.returncode == 0:
+                return paths
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        arg = "--pick"                   # 回退：纯 ctypes 原生多选对话框
+    else:
+        arg = "--clipboard"
+    try:
+        r = subprocess.run([sys.executable, str(BASE / "native_io.py"), arg],
+                           capture_output=True, timeout=310, cwd=str(BASE), env=env)
+        d = json.loads(r.stdout.decode("utf-8", errors="replace").strip() or "{}")
+        return [str(x) for x in (d.get("paths") or [])]
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return []
+
+
+@app.post("/api/native/pick")
+def api_native_pick():
+    """弹本机拖放面板：拖文件 / 拖文件夹 / 浏览多选，返回完整路径列表。"""
+    if os.name != "nt":
+        return JSONResponse({"error": "仅 Windows 支持本机弹窗"}, status_code=400)
+    if not _NATIVE_LOCK.acquire(blocking=False):
+        return JSONResponse({"error": "已有一个导入窗口开着，请先完成或关闭它"},
+                            status_code=409)
+    try:
+        return {"paths": _native_paths("pick")}
+    finally:
+        _NATIVE_LOCK.release()
+
+
+@app.get("/api/native/clipboard")
+def api_native_clipboard():
+    """读剪贴板里的文件路径（资源管理器 Ctrl+C 复制文件，或「复制为路径」文本）。"""
+    if os.name != "nt":
+        return {"paths": []}
+    return {"paths": _native_paths("clipboard")}
 
 
 def _recover_upload(fid: str):
@@ -1748,7 +1832,7 @@ def api_health():
     这里不会被 CPU 任务阻塞。
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
-    return {"ok": True, "version": "2.10",      # modified(v2.10): 播放位置记忆（跨端口/跨浏览器）
+    return {"ok": True, "version": "2.11",      # modified(v2.11): 本机拖放弹窗批量零拷贝导入
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

@@ -128,7 +128,8 @@ def server_api():
     if st != 200:
         print("  SKIP 服务未启动，接口部分跳过")
         return
-    ok("服务版本 2.10", health.get("version") == "2.10", health.get("version"))
+    ver = tuple(int(x) for x in str(health.get("version") or "0").split(".") if x.isdigit())
+    ok("服务版本不低于 2.10", ver >= (2, 10), health.get("version"))
 
     st, d = http_json("/api/playpos", {"key": TEST_KEY, "t": 123.4, "d": 3600})
     ok("写入有效位置", st == 200 and d.get("ok"), (st, d))

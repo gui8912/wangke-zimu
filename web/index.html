@@ -572,14 +572,26 @@
         <div id="drop">
           <div style="font-size:var(--fs-15)"><b>把音视频拖到这里</b>，或点击选择</div>
           <div style="font-size:var(--fs-12);margin-top:6px">支持 mp4 / mkv / mov / mp3 / wav / m4a 等；<b>可一次拖入多个</b>直接排进夜间队列</div>
+          <div style="font-size:var(--fs-11);margin-top:6px;color:var(--muted)">
+            浏览器不向网页提供本地路径，拖进来会上传一份副本；下面「批量导入本机课件」才是零拷贝通道。
+          </div>
         </div>
-        <!-- 【新增 v2.4】网页上传必然落一份副本；这条通道用 NTFS 硬链接零拷贝 -->
+        <!-- 【新增 v2.11】网页拿不到拖入文件的绝对路径，改由本机弹窗 / 剪贴板拿路径 -->
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:9px">
-          <span class="qhint" style="white-space:nowrap">或填本机路径（同盘零拷贝，不额外占空间）：</span>
-          <input id="linkPath" class="lo-tx" placeholder="D:\课程\第一课.mp4"
-                 style="flex:1;min-width:180px" title="原始课件的完整路径，服务端用硬链接登记，不复制字节">
-          <button id="btnLink" title="同盘用 NTFS 硬链接，两个名字指向同一份数据">零拷贝导入</button>
+          <button id="btnNativePick" class="primary"
+                  title="弹本机窗口：把文件或整个文件夹拖进去，或点「浏览文件…」一次多选；识别到完整路径后写回网页，批量硬链接零拷贝">批量导入本机课件…（拖放 / 多选）</button>
+          <button id="btnClipImport"
+                  title="在资源管理器选中多个文件按 Ctrl+C，再点这里；从剪贴板一次读出全部完整路径">从剪贴板导入（Ctrl+C 复制文件）</button>
+          <span class="qhint">同盘零拷贝，不额外占空间</span>
         </div>
+        <details style="margin-top:7px">
+          <summary class="qhint" style="cursor:pointer">高级：手动填单个路径</summary>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">
+            <input id="linkPath" class="lo-tx" placeholder="D:\课程\第一课.mp4"
+                   style="flex:1;min-width:180px" title="原始课件的完整路径，服务端用硬链接登记，不复制字节">
+            <button id="btnLink" title="同盘用 NTFS 硬链接，两个名字指向同一份数据">零拷贝导入</button>
+          </div>
+        </details>
         <div id="fileCard" class="filecard" hidden>
           <div class="fc-top">
             <div class="fc-icon" id="fcIcon">♪</div>
@@ -1303,8 +1315,31 @@ const drop = $('#drop'), fileInput = $('#fileInput');
 drop.onclick = ()=>fileInput.click();
 drop.ondragover = e=>{e.preventDefault();drop.classList.add('over');};
 drop.ondragleave = ()=>drop.classList.remove('over');
+/* 【新增 v2.11】多数浏览器拖入文件时不给本地路径（安全限制），
+   但少数来源（文件管理器 / 复制为路径）会在 text/uri-list 或 text/plain
+   里带 file:/// 或绝对路径。能拿到就走零拷贝，拿不到仍按原上传通道。 */
+function pathsFromDrop(e){
+  const dt = e.dataTransfer, out = [];
+  for(const kind of ['text/uri-list','text/plain']){
+    let s = '';
+    try{ s = dt.getData(kind) || ''; }catch(_){}
+    for(let line of s.split(/[\r\n]+/)){
+      line = line.trim();
+      if(!line || line.startsWith('#')) continue;
+      let p = line;
+      if(p.toLowerCase().startsWith('file://')){
+        try{ p = decodeURIComponent(new URL(p).pathname); }catch(_){ continue; }
+        p = p.replace(/^\/([A-Za-z]):/, '$1:').replace(/\//g,'\\');
+      }
+      if(/^[A-Za-z]:[\\/]|^\\\\/.test(p)) out.push(p.replace(/\//g,'\\'));
+    }
+  }
+  return [...new Set(out)];
+}
 drop.ondrop = e=>{
   e.preventDefault(); drop.classList.remove('over');
+  const paths = pathsFromDrop(e);
+  if(paths.length){ importPaths(paths, '（拖入）'); return; }
   const files = Array.from(e.dataTransfer.files || []);
   if(files.length > 1) batchAdd(files);
   else if(files[0]) upload(files[0]);
@@ -1394,6 +1429,70 @@ async function linkLocal(){
 if($('#btnLink')) $('#btnLink').onclick = linkLocal;
 if($('#linkPath')) $('#linkPath').onkeydown = e=>{ if(e.key === 'Enter') linkLocal(); };
 
+/* ---------- 【新增 v2.11】本机弹窗 / 剪贴板 → 批量零拷贝导入 ----------
+   网页拿不到拖入文件的绝对路径，所以由本机独立进程弹一个窗口：
+   用户把文件（或整个文件夹）拖进去、或点「浏览文件…」多选，窗口把完整
+   路径写回网页，这里一次性交给 /api/link/batch 做 NTFS 硬链接并入队。 */
+async function importPaths(paths, emptyHint){
+  if(state.demo){ toast('演示模式不能批量导入'); return; }
+  paths = (paths || []).filter(Boolean);
+  if(!paths.length){
+    toast(emptyHint || '没有识别到文件；可在本机窗口里拖入，或先 Ctrl+C 复制文件');
+    return;
+  }
+  setStatus(`零拷贝登记 0/${paths.length}`, 'run');
+  let d;
+  try{
+    const r = await fetch('/api/link/batch', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({paths: paths})});
+    d = await r.json();
+    if(d.error) throw new Error(d.error);
+  }catch(e){
+    setStatus('批量导入失败：' + e.message, 'err');
+    toast('批量导入失败：' + e.message);
+    return;
+  }
+  const fails = (d.errors || []).map(x =>
+    (x.path || '').split(/[\\/]/).pop() + '：' + x.error);
+  if(!(d.file_ids || []).length){
+    setStatus('全部导入失败', 'err');
+    toast(fails[0] || '没有可用的音视频文件');
+    return;
+  }
+  setStatus(`已登记 ${d.file_ids.length} 个，正在入队…`, 'run');
+  const prefix = `零拷贝 ${d.linked || 0} 个`
+    + ((d.copied || 0) ? `、跨盘复制 ${d.copied} 个` : '');
+  await enqueueIds(d.file_ids, fails, prefix);
+}
+
+if($('#btnNativePick')) $('#btnNativePick').onclick = async ()=>{
+  const b = $('#btnNativePick'), old = b.textContent;
+  b.disabled = true; b.textContent = '等待本机窗口…';
+  setStatus('已弹出本机导入窗口：拖入文件/文件夹，或点「浏览文件…」多选', 'run');
+  try{
+    const r = await fetch('/api/native/pick', {method:'POST'});
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    await importPaths(d.paths, '本机窗口未选择文件；下次可把文件直接拖进弹窗');
+  }catch(e){
+    setStatus('导入窗口失败：' + e.message, 'err');
+    toast('导入窗口失败：' + e.message);
+  }finally{
+    b.disabled = false; b.textContent = old;
+  }
+};
+
+if($('#btnClipImport')) $('#btnClipImport').onclick = async ()=>{
+  try{
+    const r = await fetch('/api/native/clipboard', {cache:'no-store'});
+    const d = await r.json();
+    if(d.error) toast(d.error);
+    await importPaths(d.paths,
+      '剪贴板里没有文件路径：先在资源管理器选中文件按 Ctrl+C（可多选）');
+  }catch(e){ toast('读取剪贴板失败：' + e.message); }
+};
+
 /* ---------- 【新增 v2.3】批量入队 + 夜间无人值守 ---------- */
 function taskOptions(){
   return {
@@ -1422,6 +1521,12 @@ async function batchAdd(files){
   if(!ids.length){
     setStatus('批量上传全部失败', 'err'); toast(fails[0] || '上传失败'); return;
   }
+  await enqueueIds(ids, fails, '');
+}
+
+/* 【新增 v2.11】网页上传通道与本机路径通道共用同一段入队逻辑 */
+async function enqueueIds(ids, fails, prefix){
+  fails = fails || [];
   try{
     const r = await fetch('/api/tasks/enqueue', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -1431,13 +1536,16 @@ async function batchAdd(files){
     const d = await r.json();
     if(d.error) throw new Error(d.error);
     const skip = (d.skipped || []).length;
-    let msg = `已入队 ${(d.created || []).length} 节课`;
+    let msg = (prefix ? prefix + '，' : '')
+      + `已入队 ${(d.created || []).length} 节课`;
     if(skip) msg += `，跳过 ${skip} 个（重复 / 已完成）`;
-    if(fails.length) msg += `，上传失败 ${fails.length} 个`;
+    if(fails.length) msg += `，失败 ${fails.length} 个`;
     toast(msg); setStatus(msg, 'done');
+    if(fails.length) console.warn('导入失败明细：', fails);
     refreshTasks(); refreshQueue();
   }catch(e){
-    setStatus('批量入队失败：' + e.message, 'err'); toast('批量入队失败');
+    setStatus('批量入队失败：' + e.message, 'err');
+    toast('批量入队失败：' + e.message);
   }
 }
 async function refreshQueue(){

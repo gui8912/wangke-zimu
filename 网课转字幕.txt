@@ -236,6 +236,8 @@
  D:\Tools\服务台\apps\asr-pipeline 是指向本目录的「目录联接」，零拷贝、两边改同一份）
 - server.py            FastAPI 后端，默认 7870；被占自动顺延
 - ports.py             端口发现 / 单实例保护
+- native_io.py         本机路径获取（多选对话框 / 剪贴板 CF_HDROP）
+- native_dropbox.ps1   本机拖放弹窗（拖文件/文件夹，路径回写网页）
 - web/index.html       单文件前端（原生 JS，无需构建）
 - transcribe.py        识别 + 字级时间戳（CLI 也可单独用）
 - clean_transcript.py  口语词清理（规则库 rules/filler_words.json）
