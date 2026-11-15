@@ -99,15 +99,7 @@
   .pad{padding:12px}
 
   /* 上传 */
-  /* 【修改 v2.12-p2】暗色主题下 --line-strong(#3c444c) 与背景 --soft2(#232830)
-     几乎同色，2px 虚线看不出来，用户会问「虚线框在哪里」。
-     改用明暗两套主题都够清楚的 --faint，并补 hover 高亮。
-     【修改 v2.12-p3】提示行按用户要求删除，随之失效的定位闪烁代码一并清掉。 */
-  #drop{border:2px dashed var(--faint);border-radius:var(--r-8);padding:26px 16px;text-align:center;
-        color:var(--muted);cursor:pointer;background:var(--soft2);
-        transition:border-color .15s,background .15s}
-  #drop:hover,#drop.over{border-color:var(--primary);background:var(--primary-weak);color:var(--primary)}
-  #drop b{color:var(--text)}
+  /* 【修改 v2.12-p4】网页拖放虚线框整块删除（连同它的 CSS），不再占左侧首屏空间。 */
 
   /* 播放器 */
   #mediaWrap{background:var(--soft);display:flex;align-items:center;justify-content:center}
@@ -574,15 +566,11 @@
   <div>
     <div class="card">
       <div class="pad">
-        <div id="drop">
-          <div style="font-size:var(--fs-15)"><b>把音视频拖到这里</b>，或点击选择</div>
-          <div style="font-size:var(--fs-12);margin-top:6px">支持 mp4 / mkv / mov / mp3 / wav / m4a 等；<b>可一次拖入多个</b>直接排进夜间队列</div>
-          <div style="font-size:var(--fs-11);margin-top:6px;color:var(--muted)">
-            浏览器不向网页提供本地路径，拖进来会上传一份副本；下面「批量导入本机课件」才是零拷贝通道。
-          </div>
-        </div>
+        <!-- 【修改 v2.12-p4】按用户要求删掉占地方的网页拖放虚线框：
+             浏览器拖入本来也拿不到本地路径、只会上传一份副本，零拷贝走下面两个按钮。
+             单个课件仍可用左下「批量添加课件…」或文件卡里的「重新选择」。 -->
         <!-- 【新增 v2.11】网页拿不到拖入文件的绝对路径，改由本机弹窗 / 剪贴板拿路径 -->
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:9px">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
           <button id="btnNativePick" class="primary"
                   title="弹本机窗口：把文件或整个文件夹拖进去，或点「浏览文件…」一次多选；识别到完整路径后写回网页，批量硬链接零拷贝">批量导入本机课件…（拖放 / 多选）</button>
           <button id="btnClipImport"
@@ -1353,44 +1341,16 @@ function logLine(msg){
 }
 
 /* ---------- 上传 ---------- */
-const drop = $('#drop'), fileInput = $('#fileInput');
-/* 【修复 v2.12-p1】区分「点虚线框选单文件」与「批量添加课件…」：
+/* 【修改 v2.12-p4】网页拖放虚线框已删，连带清掉 drop.onclick / dragover /
+   dragleave / ondrop 与 pathsFromDrop —— 否则 $('#drop') 为 null 会让整段脚本
+   直接报错、页面功能全废。零拷贝导入仍走「批量导入本机课件…」(本机弹窗) 与
+   「从剪贴板导入」；网页选文件走下面的 fileInput（批量添加课件… / 重新选择）。 */
+const fileInput = $('#fileInput');
+/* 【修复 v2.12-p1】区分「单文件选择」与「批量添加课件…」：
    两者复用同一个 fileInput，但后者选 1 个文件也要进夜间队列，
    不能只停在预览卡让人以为没反应。 */
 let batchPick = false;
-drop.onclick = ()=>{ batchPick = false; fileInput.click(); };
 fileInput.addEventListener('cancel', ()=>{ batchPick = false; });
-drop.ondragover = e=>{e.preventDefault();drop.classList.add('over');};
-drop.ondragleave = ()=>drop.classList.remove('over');
-/* 【新增 v2.11】多数浏览器拖入文件时不给本地路径（安全限制），
-   但少数来源（文件管理器 / 复制为路径）会在 text/uri-list 或 text/plain
-   里带 file:/// 或绝对路径。能拿到就走零拷贝，拿不到仍按原上传通道。 */
-function pathsFromDrop(e){
-  const dt = e.dataTransfer, out = [];
-  for(const kind of ['text/uri-list','text/plain']){
-    let s = '';
-    try{ s = dt.getData(kind) || ''; }catch(_){}
-    for(let line of s.split(/[\r\n]+/)){
-      line = line.trim();
-      if(!line || line.startsWith('#')) continue;
-      let p = line;
-      if(p.toLowerCase().startsWith('file://')){
-        try{ p = decodeURIComponent(new URL(p).pathname); }catch(_){ continue; }
-        p = p.replace(/^\/([A-Za-z]):/, '$1:').replace(/\//g,'\\');
-      }
-      if(/^[A-Za-z]:[\\/]|^\\\\/.test(p)) out.push(p.replace(/\//g,'\\'));
-    }
-  }
-  return [...new Set(out)];
-}
-drop.ondrop = e=>{
-  e.preventDefault(); drop.classList.remove('over');
-  const paths = pathsFromDrop(e);
-  if(paths.length){ importPaths(paths, '（拖入）'); return; }
-  const files = Array.from(e.dataTransfer.files || []);
-  if(files.length > 1) batchAdd(files);
-  else if(files[0]) upload(files[0]);
-};
 fileInput.onchange = ()=>{
   const files = Array.from(fileInput.files || []);
   const fromBatch = batchPick; batchPick = false;
@@ -1422,10 +1382,8 @@ function renderFileCard(d){
   $('#fcPath').textContent = d.path || '（本机缓存）';
   $('#fcPath').title = d.path || '';
   $('#fcIcon').textContent = d.kind === 'video' ? '▶' : '♪';
-  /* 【修复 v2.12-p3】原来这里把拖放框 hidden 掉、只留文件卡，且没有恢复入口：
-     只要打开过 / 自动载回过一节课，刷新后左上角就再也看不到虚线框
-     （ego 实测：刷新瞬间 drop 可见，1.5 秒后 restoreLastTask 完成即被隐藏）。
-     现在让拖放框常驻，文件卡作为「当前课件」信息叠加显示，随时可继续拖入新课件。 */
+  /* 【修改 v2.12-p4】虚线框已整体删除，这里只负责显示「当前课件」信息卡。
+     （p3 曾修过「自动载回任务把拖放框隐藏」，现在已无该元素。） */
   $('#fileCard').hidden = false;
   setFileStatus('待识别','');
   $('#fcStart').hidden = false;

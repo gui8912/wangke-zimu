@@ -73,7 +73,7 @@ def main():
     ok("批量按钮点击会置标记",
        re.search(r"btnBatchAdd[\s\S]{0,160}batchPick\s*=\s*true", web) is not None)
     ok("onchange 按来源分流", "if(fromBatch || files.length > 1) batchAdd(files);" in web)
-    ok("drop 单选会清标记", "drop.onclick = ()=>{ batchPick = false;" in web)
+    ok("虚线框点击入口已随元素移除", "drop.onclick =" not in web)
     ok("重新选择会清标记", "$('#fcReselect').onclick = ()=>{ batchPick = false;" in web)
     ok("文件对话框取消会清标记",
        "fileInput.addEventListener('cancel', ()=>{ batchPick = false; });" in web)
@@ -90,12 +90,17 @@ def main():
        re.search(r'DEFAULT_TASK_OPTS\s*=\s*\{\s*"model":\s*"qwen3-asr"', srv) is not None)
     ok("入队仍逐条返回 reason", '"reason": err' in srv)
 
-    print("[v2.12-p2 拖放框可找性 / p3 面板精简]")
-    ok("暗色主题虚线改用更亮的 --faint",
-       "#drop{border:2px dashed var(--faint)" in web)
-    ok("不再用几乎同色的 --line-strong",
-       "#drop{border:2px dashed var(--line-strong)" not in web)
-    ok("hover 有高亮反馈", "#drop:hover,#drop.over{border-color:var(--primary)" in web)
+    print("[v2.12-p3 面板精简 / p4 删除虚线框]")
+    ok("虚线框 DOM 已删除", '<div id="drop">' not in web)
+    ok("拖放框 CSS 已删除", "#drop{" not in web and "#drop:hover" not in web)
+    ok("页面不再出现「把音视频拖到这里」", "把音视频拖到这里" not in web)
+    ok("JS 不再引用 drop 元素（否则整段脚本会崩）",
+       "const drop = $('#drop')" not in web and "drop.ondrop" not in web
+       and "function pathsFromDrop" not in web)
+    ok("fileInput 保留（按钮还要用）",
+       'id="fileInput"' in web and "const fileInput = $('#fileInput')" in web)
+    ok("零拷贝两个入口仍在", "btnNativePick" in web and "btnClipImport" in web)
+    ok("importPaths 仍在（弹窗 / 剪贴板共用）", "async function importPaths(" in web)
     rows = re.findall(r'<div class="qrow">([\s\S]*?)</div>', web)
     first = rows[0] if rows else ""
     ok("批量添加与暂停队列合并进同一行",
@@ -103,16 +108,14 @@ def main():
     ok("定时 / 重试控件也在同一行",
        "queueAt" in first and "queueRetry" in first)
     ok("「一次可多选…」提示文字已删除", "一次可多选" not in web)
-    ok("定位链接与闪烁死代码已清掉",
-       "goDrop" not in web and "@keyframes dropflash" not in web
-       and "d.classList.add('flash')" not in web)
-    ok("刷新载回课件后拖放框不再被隐藏", "$('#drop').hidden = true" not in web)
     ok("文件卡仍照常显示", "$('#fileCard').hidden = false" in web)
     ok("自动载回逻辑仍保留", "async function restoreLastTask()" in web)
     manual = (BASE / "使用说明书.md").read_text(encoding="utf-8")
     quick = (BASE / "网课转字幕.txt").read_text(encoding="utf-8-sig")
     ok("说明书不再写含糊的「上方虚线框」", "上方虚线框" not in manual)
-    ok("速查指明了左上角拖放框", "页面左上角写着「把音视频拖到这里」" in quick)
+    ok("说明书改按按钮指路", "点「批量导入本机课件…（拖放 / 多选）」选一节课" in manual)
+    ok("速查不再提左上角拖放框",
+       "页面左上角写着「把音视频拖到这里」" not in quick)
 
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
