@@ -575,7 +575,7 @@
                   title="弹本机窗口：把文件或整个文件夹拖进去，或点「浏览文件…」一次多选；识别到完整路径后写回网页，批量硬链接零拷贝">批量导入本机课件…（拖放 / 多选）</button>
           <button id="btnClipImport"
                   title="在资源管理器选中多个文件按 Ctrl+C，再点这里；从剪贴板一次读出全部完整路径">从剪贴板导入（Ctrl+C 复制文件）</button>
-          <span class="qhint">同盘零拷贝，不额外占空间</span>
+          <span class="qhint">本机路径硬链接，不复制文件</span>
         </div>
         <details style="margin-top:7px">
           <summary class="qhint" style="cursor:pointer">高级：手动填单个路径</summary>
@@ -661,10 +661,11 @@
       <details class="queuebox" id="queueBox">
         <summary>批量 · 夜间无人值守 <span id="queueSummary"></span></summary>
         <div class="qwrap">
-          <!-- 【修改 v2.12-p3】按用户要求：删掉原先的多选 / 拖放提示整句，
-               把「批量添加课件…」与暂停队列那一行合并为一行。 -->
+          <!-- 【修改 v2.12-p5】「批量添加课件…」走网页上传，会把每个文件
+               完整复制一份到 media/（实测 media 里 80 个文件全是独立副本）。
+               按用户「不要产生副本」的要求，把这个入口挪到面板最下方并标清风险；
+               零拷贝入口（本机弹窗 / 剪贴板 / 手动填路径）保持在页面上方主位。 -->
           <div class="qrow">
-            <button id="btnBatchAdd" class="primary">批量添加课件…</button>
             <button id="btnQueuePause">暂停队列</button>
             <label class="qf">定时开始 <input type="datetime-local" id="queueAt"></label>
             <button id="btnQueueAt">设定</button>
@@ -681,6 +682,10 @@
             <span class="qhint" id="inboxPath"></span>
           </div>
           <div class="qrow" id="queueOrder"></div>
+          <div class="qrow">
+            <button id="btnBatchAdd">批量添加课件…（网页上传，会复制副本）</button>
+            <span class="qhint">会把文件复制一份到 media/ 占磁盘；不想要副本请用上方「批量导入本机课件…」或「从剪贴板导入」</span>
+          </div>
         </div>
       </details>
     </div>

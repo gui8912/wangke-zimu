@@ -103,10 +103,15 @@ def main():
     ok("importPaths 仍在（弹窗 / 剪贴板共用）", "async function importPaths(" in web)
     rows = re.findall(r'<div class="qrow">([\s\S]*?)</div>', web)
     first = rows[0] if rows else ""
-    ok("批量添加与暂停队列合并进同一行",
-       "btnBatchAdd" in first and "btnQueuePause" in first, first[:120])
-    ok("定时 / 重试控件也在同一行",
-       "queueAt" in first and "queueRetry" in first)
+    last = rows[-1] if rows else ""
+    ok("队列控制仍在第一行",
+       "btnQueuePause" in first and "queueRetry" in first)
+    ok("会复制副本的批量添加已移到面板最后一行",
+       "btnBatchAdd" in last and "btnBatchAdd" not in first)
+    ok("批量按钮明确标注会复制副本", "网页上传，会复制副本" in web)
+    ok("零拷贝入口仍在页面上方主位",
+       0 < web.find('id="btnNativePick"') < web.find('id="queueBox"'))
+    ok("零拷贝说明写明不复制文件", "本机路径硬链接，不复制文件" in web)
     ok("「一次可多选…」提示文字已删除", "一次可多选" not in web)
     ok("文件卡仍照常显示", "$('#fileCard').hidden = false" in web)
     ok("自动载回逻辑仍保留", "async function restoreLastTask()" in web)
