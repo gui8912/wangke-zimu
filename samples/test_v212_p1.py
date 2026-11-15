@@ -90,19 +90,25 @@ def main():
        re.search(r'DEFAULT_TASK_OPTS\s*=\s*\{\s*"model":\s*"qwen3-asr"', srv) is not None)
     ok("入队仍逐条返回 reason", '"reason": err' in srv)
 
-    print("[v2.12-p2 拖放框可找性]")
+    print("[v2.12-p2 拖放框可找性 / p3 面板精简]")
     ok("暗色主题虚线改用更亮的 --faint",
        "#drop{border:2px dashed var(--faint)" in web)
     ok("不再用几乎同色的 --line-strong",
        "#drop{border:2px dashed var(--line-strong)" not in web)
     ok("hover 有高亮反馈", "#drop:hover,#drop.over{border-color:var(--primary)" in web)
-    ok("定位闪烁动画存在", "#drop.flash" in web and "@keyframes dropflash" in web)
-    ok("批量面板给出可点击定位链接", 'id="goDrop"' in web)
-    ok("链接文案指明左上角", "页面左上角「把音视频拖到这里」那个框" in web)
-    ok("点击后滚动并闪烁", "d.scrollIntoView({behavior:'smooth'" in web
-       and "d.classList.add('flash')" in web)
-    ok("自动载回课件导致拖放框被隐藏时可调回",
-       "if(d.hidden){\n      d.hidden = false;" in web)
+    rows = re.findall(r'<div class="qrow">([\s\S]*?)</div>', web)
+    first = rows[0] if rows else ""
+    ok("批量添加与暂停队列合并进同一行",
+       "btnBatchAdd" in first and "btnQueuePause" in first, first[:120])
+    ok("定时 / 重试控件也在同一行",
+       "queueAt" in first and "queueRetry" in first)
+    ok("「一次可多选…」提示文字已删除", "一次可多选" not in web)
+    ok("定位链接与闪烁死代码已清掉",
+       "goDrop" not in web and "@keyframes dropflash" not in web
+       and "d.classList.add('flash')" not in web)
+    ok("刷新载回课件后拖放框不再被隐藏", "$('#drop').hidden = true" not in web)
+    ok("文件卡仍照常显示", "$('#fileCard').hidden = false" in web)
+    ok("自动载回逻辑仍保留", "async function restoreLastTask()" in web)
     manual = (BASE / "使用说明书.md").read_text(encoding="utf-8")
     quick = (BASE / "网课转字幕.txt").read_text(encoding="utf-8-sig")
     ok("说明书不再写含糊的「上方虚线框」", "上方虚线框" not in manual)

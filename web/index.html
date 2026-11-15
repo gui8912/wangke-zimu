@@ -101,17 +101,12 @@
   /* 上传 */
   /* 【修改 v2.12-p2】暗色主题下 --line-strong(#3c444c) 与背景 --soft2(#232830)
      几乎同色，2px 虚线看不出来，用户会问「虚线框在哪里」。
-     改用明暗两套主题都够清楚的 --faint，并补 hover / 定位闪烁反馈。 */
+     改用明暗两套主题都够清楚的 --faint，并补 hover 高亮。
+     【修改 v2.12-p3】提示行按用户要求删除，随之失效的定位闪烁代码一并清掉。 */
   #drop{border:2px dashed var(--faint);border-radius:var(--r-8);padding:26px 16px;text-align:center;
         color:var(--muted);cursor:pointer;background:var(--soft2);
         transition:border-color .15s,background .15s}
   #drop:hover,#drop.over{border-color:var(--primary);background:var(--primary-weak);color:var(--primary)}
-  #drop.flash{border-color:var(--primary);animation:dropflash 1.7s ease-out}
-  @keyframes dropflash{
-    0%{box-shadow:0 0 0 0 var(--primary)}
-    20%,70%{box-shadow:0 0 0 5px var(--primary-weak),0 0 20px var(--primary)}
-    100%{box-shadow:0 0 0 0 transparent}
-  }
   #drop b{color:var(--text)}
 
   /* 播放器 */
@@ -678,16 +673,10 @@
       <details class="queuebox" id="queueBox">
         <summary>批量 · 夜间无人值守 <span id="queueSummary"></span></summary>
         <div class="qwrap">
+          <!-- 【修改 v2.12-p3】按用户要求：删掉原先的多选 / 拖放提示整句，
+               把「批量添加课件…」与暂停队列那一行合并为一行。 -->
           <div class="qrow">
             <button id="btnBatchAdd" class="primary">批量添加课件…</button>
-            <span class="qhint">一次可多选；也可拖到
-              <a href="#drop" id="goDrop"
-                 style="color:var(--primary);text-decoration:underline;text-underline-offset:2px"
-                 title="跳到页面左上角「把音视频拖到这里」那个框并高亮一下">页面左上角「把音视频拖到这里」那个框</a>
-              （点链接可定位）
-            </span>
-          </div>
-          <div class="qrow">
             <button id="btnQueuePause">暂停队列</button>
             <label class="qf">定时开始 <input type="datetime-local" id="queueAt"></label>
             <button id="btnQueueAt">设定</button>
@@ -1433,7 +1422,10 @@ function renderFileCard(d){
   $('#fcPath').textContent = d.path || '（本机缓存）';
   $('#fcPath').title = d.path || '';
   $('#fcIcon').textContent = d.kind === 'video' ? '▶' : '♪';
-  $('#drop').hidden = true;
+  /* 【修复 v2.12-p3】原来这里把拖放框 hidden 掉、只留文件卡，且没有恢复入口：
+     只要打开过 / 自动载回过一节课，刷新后左上角就再也看不到虚线框
+     （ego 实测：刷新瞬间 drop 可见，1.5 秒后 restoreLastTask 完成即被隐藏）。
+     现在让拖放框常驻，文件卡作为「当前课件」信息叠加显示，随时可继续拖入新课件。 */
   $('#fileCard').hidden = false;
   setFileStatus('待识别','');
   $('#fcStart').hidden = false;
@@ -1690,23 +1682,6 @@ function initQueuePanel(){
   // 【修复 v2.12-p1】标记来源：即使只选 1 个课件，也要按批量入队处理
   const b = $('#btnBatchAdd');
   if(b) b.onclick = ()=>{ batchPick = true; $('#fileInput').click(); };
-  // 【新增 v2.12-p2】「上方虚线框」到底在哪：点一下滚过去并闪一下边框，
-  // 免得用户在左下角面板里抬头找半天（暗色主题下虚线本来就淡）。
-  const gd = $('#goDrop');
-  if(gd) gd.onclick = (e)=>{
-    e.preventDefault();
-    const d = $('#drop');
-    if(!d) return;
-    // 页面自动载回上次课件时 renderFileCard 会把拖放框隐藏，左上角只剩「文件卡」，
-    // 这时用户是真的找不到虚线框。只把显示状态调回来，不动任何任务数据。
-    if(d.hidden){
-      d.hidden = false;
-      toast('已把拖放框调回左上角，可直接拖入多个文件');
-    }
-    d.scrollIntoView({behavior:'smooth', block:'center'});
-    d.classList.remove('flash'); void d.offsetWidth; d.classList.add('flash');
-    setTimeout(()=>d.classList.remove('flash'), 1800);
-  };
   // 【新增 v2.9】任务卡手动刷新
   const rf = $('#btnTaskRefresh');
   if(rf) rf.onclick = ()=>refreshTasks(true);
