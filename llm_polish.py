@@ -156,13 +156,20 @@ def _extract_out(raw: str) -> str:
     return body
 
 
+# 【修复 v2.12-p7】「长度塌陷」阈值只留一个来源：_sanity 与
+# _polish_with_split 的自动细分必须用同一个数，否则会出现「判废却没自愈」。
+# 实测 GLM-4-Flash 在 3000 字大块下把 3203 字压成 1248～1294 字（约 40%），
+# 正好撞线；同一段落切成 1000 字块后保留率升到约 71%。
+SHORT_RATIO = 0.45
+
+
 def _sanity(src: str, out: str):
     """块级健康检查：复述提示词 / 长度塌陷 / 没有中文，任一命中即判废。"""
     if not (out or "").strip():
         return False, "输出为空"
     if _looks_echoed(out):
         return False, "复述了提示词规则"
-    if len(out) < len(src) * 0.45:
+    if len(out) < len(src) * SHORT_RATIO:
         return False, f"输出过短（{len(src)} → {len(out)} 字）"
     if not re.search(r"[\u4e00-\u9fff]", out):
         return False, "没有中文正文"
@@ -389,28 +396,45 @@ def _polish_chunk(llm, text):
     return out
 
 
+def _halves(text):
+    """把一块按整句对半切；切不开（一整句超长）才按字数硬分。"""
+    parts = chunk_text(text, limit=max(160, len(text) // 2))
+    if len(parts) < 2:
+        mid = len(text) // 2
+        parts = [text[:mid], text[mid:]]
+    return parts
+
+
 def _polish_with_split(llm, text, depth=0):
-    """单块润色；被截断就把这块对半切开重试。
+    """单块润色；被截断 / 被概括压缩就把这块对半切开重试。
 
     截断的根因是「输出比输入长」，通常说明这段密度高（术语多、句子长）。
     对半切是最省事的自愈：每半的输出自然减半，不会再撞上限。
     递归上限 2 层（最多切成 4 份）；再切句子就太碎、模型反而改得差，
     这时直接报错让人知道，而不是继续产出半截稿。
+
+    【修复 v2.12-p7】新增「长度塌陷」自愈：GLM-4-Flash 这类轻量模型在
+    3000 字大块下会无视提示词第 3/9 条，把整段概括成四成篇幅。提示词是
+    用户固定下来的，不能改；但把同一段切成小块后模型明显更忠实
+    （实测 3000 字块 53% → 1000 字块 71%）。所以一旦检测到输出过短，
+    先自动细分重跑，而不是把整稿判废。细分后仍不合格才交给 polish()
+    按「保留原文」处理。
     """
     try:
-        return _polish_chunk(llm, text)
+        out = _polish_chunk(llm, text)
     except EchoOutput:
-        # 复述提示词多为采样偶发，原样重试一次；仍复述就交给上层判定，
-        # 由 polish() 决定「首块直接中止」还是「这一块保留原文」
+        # 复述提示词多为采样偶发，原样重试一次；仍复述就交给上层判定
         return _polish_chunk(llm, text)
     except TruncatedOutput:
         if depth >= 2 or len(text) < 240:
             raise
-        parts = chunk_text(text, limit=max(160, len(text) // 2))
-        if len(parts) < 2:                      # 一整句超长、切不开：按字数硬分
-            mid = len(text) // 2
-            parts = [text[:mid], text[mid:]]
-        return "\n".join(_polish_with_split(llm, p, depth + 1) for p in parts)
+        return "\n".join(_polish_with_split(llm, p, depth + 1)
+                         for p in _halves(text))
+    if (depth < 2 and len(text) >= 480
+            and len(out) < len(text) * SHORT_RATIO):
+        return "\n".join(_polish_with_split(llm, p, depth + 1)
+                         for p in _halves(text))
+    return out
 
 
 def last_sentence(text):
@@ -477,28 +501,27 @@ def polish(text, log=print, progress=None):
     total = len(chunks)
     emit(0, total, "开始分块润色")
     fallback = 0
+    first_fallback = ""
     with _RUN_LOCK:
         for i, ck in enumerate(chunks, 1):
             emit(i - 1, total, f"润色第 {i}/{total} 块")
             log(f"润色第 {i}/{len(chunks)} 块（{len(ck)} 字）")
-            # 【修复 v2.5】首块先验收：模型若在复述提示词 / 大段丢内容，
-            # 立刻中止，别让 32 块、十几分钟全部白跑（今天就白跑过两次）。
+            # 【修复 v2.12-p7】首块不再「整稿中止」。用户明确说过「花长时间
+            # 生成后不能采用 = 白跑」，而 GLM-4-Flash 在长块下会稳定把
+            # 3203 字压成 1248 字，首块必挂、后面再好的块也拿不到。
+            # 现在任何一块不合格都只把**这一块**保留原文，其余块照常润色，
+            # 结果一定返回；首块原因单独带回界面，提醒换模型或重跑。
             try:
                 part = _polish_with_split(llm, ck)   # modified(v1.8):截断自愈
             except EchoOutput as exc:
-                if i == 1:
-                    raise RuntimeError(
-                        f"第 1 块输出异常（{exc}），已中止以免整稿白跑。"
-                        f"请重试一次；若反复出现，换本地模型或稍后再试") from exc
+                log(f"第 {i} 块复述提示词（{exc}），保留原文")
                 part = ""
             okk, why = _sanity(ck, part)
             if not okk:
                 if i == 1:
-                    raise RuntimeError(
-                        f"第 1 块输出异常（{why}），已中止以免整稿白跑。"
-                        f"请重试一次；若反复出现，换本地模型或稍后再试")
-                # 单块出问题不拖垮整稿：这一块保留原文，宁可略生硬也不丢内容
+                    first_fallback = why
                 fallback += 1
+                # 单块出问题不拖垮整稿：这一块保留原文，宁可略生硬也不丢内容
                 log(f"第 {i} 块未通过检查（{why}），保留原文")
                 part = ck
             # 【新增 v2.4】块是人为切的，模型常把块尾客套句删掉。
@@ -528,6 +551,9 @@ def polish(text, log=print, progress=None):
         "chunk_chars": limit,
         "tail_restored": restored,     # 【新增 v2.4】自动补回的块尾句数量
         "fallback_chunks": fallback,   # 【新增 v2.5】保留原文、未润色的块数
+        # 【新增 v2.12-p7】首块不合格的原因；空串表示首块正常。
+        # 前端据此给更醒目的提示（首块往往是整稿最长、最容易概括的一块）。
+        "first_chunk_fallback": first_fallback,
         "elapsed": round(time.time() - t0, 1),
         "model": getattr(llm, "model_name", None) or (m.name if m else ""),
         "backend": "cloud" if usage else "local",

@@ -2453,7 +2453,13 @@ $('#btnRevLlm').onclick = async ()=>{
     markLlmAgain(true);          // 结果已在服务端落盘，入口点亮
     renderLlmPreview();
     $('#llmMask').classList.add('show');
-    if(d.fallback_chunks)
+    /* 【修复 v2.12-p7】首块（最长的一块）被 GLM-4-Flash 概括压缩时，
+       后端已保留该块原文、其余块照常润色；这里给出比通用回退更醒目的原因，
+       并点名更忠实的替代模型，避免用户以为「润色又白跑了」。 */
+    if(d.first_chunk_fallback)
+      toast(`第 1 块模型概括过度（${d.first_chunk_fallback}），已保留该块原文、其余块正常润色；`
+            + '建议换 DeepSeek V4-Flash / 硅基流动 Qwen3-8B，或重跑一次');
+    else if(d.fallback_chunks)
       toast(`已完成，但其中 ${d.fallback_chunks} 块未通过检查、已保留原文；`
             + '建议重跑一次，或先看 diff 再决定');
     else if(chunks > 1)
