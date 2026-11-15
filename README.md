@@ -3,6 +3,40 @@
 **默认纯本地**（音视频不出本机）；自 1.3 起可选云端识别源，内容不涉密时可用。
 适配药品、医疗器械监督管理专业术语。自 1.7 起可选**本地 LLM 润色讲稿**（模型也在本机）。
 
+## 2.12 补丁：批量添加课件「上传成功却一个都入不了队」（2026-11-15）
+
+用 ego 浏览器抓真实请求复现：`/api/upload` 两次都 200、文件都落盘，
+但 `/api/tasks/enqueue` 返回 `created: []`，
+`skipped[].reason = 未知模型：local-qwen3（可选：paraformer、sensevoice、qwen3-asr）`；
+界面还把 skipped 一律写成「跳过 N 个（重复 / 已完成）」，真因被藏得严严实实。
+这解释了 `media/` 里一堆上传副本却没有对应任务。
+
+**根因**：`#model` 下拉存的是**识别源 ID**（`local-qwen3` / `local-paraformer` /
+`tencent-cloud` / `volcengine-doubao`），后端 `T.MODELS` 只认**模型 key**
+（`qwen3-asr` / `paraformer` / `sensevoice`）。单文件转写（`btnStart`）用
+`PROVIDER_MODEL` 做了映射所以一直正常，而批量通道的 `taskOptions()` 把识别源 ID
+原样当 `model` 传、`provider` 还传空串，于是每个文件都被判「未知模型」跳过。
+**所有批量入口共用它**：左下「批量添加课件…」、拖多个文件到虚线框、
+v2.11 本机弹窗 / 剪贴板零拷贝导入，全部受影响；文件夹监控走
+`DEFAULT_TASK_OPTS`（本来就是 `qwen3-asr`），不受影响。
+
+修复（只动 `web/index.html`，静态页 F5 即生效，**不用重启、不打断识别任务**）：
+
+- `taskOptions()` 与单文件转写共用同一张 `PROVIDER_MODEL` 映射表，
+  并显式传 `provider` 与 `use_script_track`。
+- `enqueueIds()` 把服务端 `skipped[].reason` 原样显示；
+  「未知模型 / 未配置密钥 / 记录失效」这类硬错误标红并打到控制台，
+  不再伪装成「重复 / 已完成」。
+- 「批量添加课件…」复用单文件 `fileInput`，原来**只选 1 个文件**会走预览卡、
+  根本不入队。新增 `batchPick` 来源标记：该按钮无论选几个都走批量入队；
+  点虚线框 / 重新选择 / 对话框取消都会复位标记。
+- 新增 `samples/test_v212_p1.py`（25/25）。用 ego 端到端验证：
+  修复前 `created=[] / skipped=2`，修复后 `created=2 / skipped=[]`，
+  单文件点批量按钮也「已入队 1 节课」；验证任务已取消并删除，队列恢复原状。
+
+> 这次没跑全量回归：当时有一节 79 分钟课程正在识别（43%），
+> 部分老测试会往真实队列里塞 api_smoke 任务。等任务跑完再补跑即可。
+
 ## 2.12 润色模型设置新增硅基流动 / 美团 LongCat（2026-11-10）
 
 用户给了两家的接入参数，逐条核对（官方文档 + 用给定 Key 真机实测）：

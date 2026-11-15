@@ -1350,7 +1350,12 @@ function logLine(msg){
 
 /* ---------- 上传 ---------- */
 const drop = $('#drop'), fileInput = $('#fileInput');
-drop.onclick = ()=>fileInput.click();
+/* 【修复 v2.12-p1】区分「点虚线框选单文件」与「批量添加课件…」：
+   两者复用同一个 fileInput，但后者选 1 个文件也要进夜间队列，
+   不能只停在预览卡让人以为没反应。 */
+let batchPick = false;
+drop.onclick = ()=>{ batchPick = false; fileInput.click(); };
+fileInput.addEventListener('cancel', ()=>{ batchPick = false; });
 drop.ondragover = e=>{e.preventDefault();drop.classList.add('over');};
 drop.ondragleave = ()=>drop.classList.remove('over');
 /* 【新增 v2.11】多数浏览器拖入文件时不给本地路径（安全限制），
@@ -1384,11 +1389,12 @@ drop.ondrop = e=>{
 };
 fileInput.onchange = ()=>{
   const files = Array.from(fileInput.files || []);
-  if(files.length > 1) batchAdd(files);
+  const fromBatch = batchPick; batchPick = false;
+  if(fromBatch || files.length > 1) batchAdd(files);
   else if(files[0]) upload(files[0]);
   fileInput.value = '';             // 允许再次选同一批文件
 };
-$('#fcReselect').onclick = ()=>fileInput.click();
+$('#fcReselect').onclick = ()=>{ batchPick = false; fileInput.click(); };
 $('#fcStart').onclick = ()=>$('#btnStart').click();
 $('#fcPath').onclick = async ()=>{
   if(!state.filePath) return;
@@ -1533,13 +1539,23 @@ if($('#btnClipImport')) $('#btnClipImport').onclick = async ()=>{
 
 /* ---------- 【新增 v2.3】批量入队 + 夜间无人值守 ---------- */
 function taskOptions(){
+  /* 【修复 v2.12-p1】批量入队全军覆没的根因：
+     #model 下拉存的是「识别源 ID」（local-qwen3 / local-paraformer / …），
+     但后端 T.MODELS 只认模型 key（qwen3-asr / paraformer / sensevoice）。
+     原来这里把 provider id 原样当 model 传，/api/tasks/enqueue 会把每个文件
+     判成「未知模型」并跳过；界面又笼统显示「重复 / 已完成」，完全看不出原因。
+     与单文件转写（btnStart）共用同一张 PROVIDER_MODEL 映射表，别再各写一份。 */
+  const pid = $('#model') ? $('#model').value : 'local-qwen3';
+  const scriptTrack = $('#useScriptTrack');
   return {
-    model: $('#model') ? $('#model').value : 'qwen3-asr',
+    model: PROVIDER_MODEL[pid] || 'qwen3-asr',
     language: $('#lang') ? $('#lang').value : 'Chinese',
     clean: $('#clean') ? $('#clean').checked : true,
     itn: $('#itn') ? $('#itn').checked : true,
     termfix: $('#termfix') ? $('#termfix').checked : true,
-    termfix_auto: true, provider: '', use_script_track: false
+    termfix_auto: true,
+    provider: pid,
+    use_script_track: !!(scriptTrack && !scriptTrack.disabled && scriptTrack.checked)
   };
 }
 async function batchAdd(files){
@@ -1576,9 +1592,16 @@ async function enqueueIds(ids, fails, prefix){
     const skip = (d.skipped || []).length;
     let msg = (prefix ? prefix + '，' : '')
       + `已入队 ${(d.created || []).length} 节课`;
-    if(skip) msg += `，跳过 ${skip} 个（重复 / 已完成）`;
+    if(skip) msg += `，跳过 ${skip} 个`;
     if(fails.length) msg += `，失败 ${fails.length} 个`;
-    toast(msg); setStatus(msg, 'done');
+    /* 【修复 v2.12-p1】skipped 不一定都是「重复」：未知模型、未配置密钥、
+       记录失效都会走这里。原来一律写「重复 / 已完成」，把真故障藏了起来，
+       用户只能看到「已入队 0 节课」。现在把服务端 reason 原样带出来并标红。 */
+    const reasons = [...new Set((d.skipped || []).map(x => x.reason).filter(Boolean))];
+    const hard = reasons.filter(r => !/已完成|已跳过|重复/.test(r));
+    if(reasons.length) msg += `：${reasons.slice(0, 3).join('；')}`;
+    toast(msg); setStatus(msg, hard.length ? 'err' : 'done');
+    if(hard.length) console.error('批量入队被拒：', reasons);
     if(fails.length) console.warn('导入失败明细：', fails);
     refreshTasks(); refreshQueue();
   }catch(e){
@@ -1649,7 +1672,9 @@ async function queueMove(id, delta){
   }catch(e){ toast('调整顺序失败'); }
 }
 function initQueuePanel(){
-  const b = $('#btnBatchAdd'); if(b) b.onclick = ()=>$('#fileInput').click();
+  // 【修复 v2.12-p1】标记来源：即使只选 1 个课件，也要按批量入队处理
+  const b = $('#btnBatchAdd');
+  if(b) b.onclick = ()=>{ batchPick = true; $('#fileInput').click(); };
   // 【新增 v2.9】任务卡手动刷新
   const rf = $('#btnTaskRefresh');
   if(rf) rf.onclick = ()=>refreshTasks(true);
