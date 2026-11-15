@@ -3380,6 +3380,13 @@ function applyTimeEdit(inp, i, key){
 function drawCues(){
   const box = $('#cueList');
   box.innerHTML = '';
+  /* 【修复 v2.12-p6】纵深防御：任何调用方把 state.cues 弄成非数组时，
+     不再抛 TypeError 留下一个全空、也没有提示的字幕区。 */
+  if(!Array.isArray(state.cues)){
+    console.warn('drawCues：字幕数据不是数组', state.cues);
+    box.innerHTML = '<div class="empty">字幕数据异常，刷新页面或从任务里重新打开即可恢复</div>';
+    return;
+  }
   if(!state.cues.length){
     box.innerHTML = '<div class="empty">没有可显示的字幕</div>'; return;
   }
@@ -3854,24 +3861,46 @@ $('#btnReclean').onclick = async ()=>{
   if(edited && !confirm('校对区已有手工修改。\n重新清理会用原始字幕重跑，这些修改会被覆盖（之后可按 Ctrl+Z 撤销）。\n确定继续吗？')) return;
   setStatus('重新清理中…','run');
   const fd = new FormData();
-  fd.append('file_id', state.fileId || '');
+  /* 【修复 v2.12-p6】历史任务走「任务 → 打开」载入时 state.fileId = null，
+     而 /api/reclean 把 file_id 声明成必填 Form，空串也会被判 missing → HTTP 422。
+     后端其实没用到这个字段，但给个非空兜底值，老版本服务也能直接通过，
+     不用等重启。优先用真实 fileId，其次 taskId / stem。 */
+  fd.append('file_id', state.fileId || state.taskId || state.stem || 'reclean');
   fd.append('cues_json', JSON.stringify(state.raw));
   // 【新增 v1.4】重新清理同样遵守数字规整开关
   fd.append('itn', $('#itn').checked ? 'true' : 'false');
   // 【新增 v1.5】同样遵守术语修复开关
   fd.append('termfix', $('#termfix').checked ? 'true' : 'false');
   fd.append('termfix_auto', 'true');
-  const r = await fetch('/api/reclean', {method:'POST', body:fd});
-  const d = await r.json();
-  if(d.error){ setStatus(d.error,'err'); return; }
-  state.cues = d.cues; drawCues(); state.dirty = true;
-  // 【新增 v1.6】重新清理会重算逐条变更，直接刷新明细
-  state.cueChanges = d.diffs || [];
-  snapshot('重新清理');
-  renderTips(d.suggestions);
-  setStatus('重新清理完成','done');
-  const tip = (d.suggestions && d.suggestions.length) ? `，另有 ${d.suggestions.length} 条待你判断` : '';
-  toast(`已按新词表清理，${d.changed} 句有变化${tip}`);
+  try{
+    const r = await fetch('/api/reclean', {method:'POST', body:fd});
+    const d = await r.json().catch(()=>({}));
+    /* 【修复 v2.12-p6】原来只判断 d.error，422/500 返回的 {"detail":...}
+       会一路往下走：state.cues 被赋成 undefined → drawCues() 抛 TypeError →
+       字幕列表被清空、状态永远卡在「重新清理中…」，看起来就是「字幕没了」。
+       现在任何异常响应都原样保留现有字幕，并把真实原因显示出来。 */
+    if(!r.ok || d.error || !Array.isArray(d.cues)){
+      const why = d.error || (Array.isArray(d.detail)
+        ? d.detail.map(x=>x.msg || '').join('；')
+        : String(d.detail || `HTTP ${r.status}`));
+      setStatus('重新清理失败：' + why, 'err');
+      toast('重新清理失败，字幕保持原样：' + why);
+      console.warn('重新清理被拒绝：', r.status, d);
+      return;
+    }
+    state.cues = d.cues; drawCues(); state.dirty = true;
+    // 【新增 v1.6】重新清理会重算逐条变更，直接刷新明细
+    state.cueChanges = Array.isArray(d.diffs) ? d.diffs : [];
+    snapshot('重新清理');
+    renderTips(d.suggestions || []);
+    setStatus('重新清理完成','done');
+    const tip = (d.suggestions && d.suggestions.length) ? `，另有 ${d.suggestions.length} 条待你判断` : '';
+    toast(`已按新词表清理，${d.changed || 0} 句有变化${tip}`);
+  }catch(e){
+    const why = (e && e.message) ? e.message : String(e);
+    setStatus('重新清理失败：' + why, 'err');
+    toast('重新清理失败，字幕保持原样：' + why);
+  }
 };
 
 /* ---------- 保存 / 导出 ---------- */

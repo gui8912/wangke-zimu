@@ -1620,10 +1620,15 @@ def save_terms(payload: dict):
 
 
 @app.post("/api/reclean")
-def reclean(file_id: str = Form(...), cues_json: str = Form(...),
+def reclean(file_id: str = Form(""), cues_json: str = Form(...),
             itn: bool = Form(True), termfix: bool = Form(True),
             termfix_auto: bool = Form(True)):
     """用当前口语词表重新清理一份字幕（输入是前端当前的原始 cues）。
+
+    【修复 v2.12-p6】file_id 原来写成 Form(...) 必填，但本端点根本不用它；
+    历史任务从「任务 → 打开」载入时前端没有上传态 file_id，只能传空串，
+    multipart 空值被 Starlette 判成 missing → 422，前端又把 422 当成功结果，
+    于是字幕被清空。改为可选、默认空串，兼容任何没有 file_id 的调用方。
 
     【修改 v1.8】由 async def 改成 def：清理是纯 CPU 计算，几千条字幕要
     跑一两秒。放在 async def 里会占住唯一的事件循环，这期间首页、任务轮询、

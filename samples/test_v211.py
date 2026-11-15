@@ -108,7 +108,13 @@ def server_api():
     if st != 200:
         print("  SKIP 服务未启动，接口部分跳过")
         return
-    ok("服务版本 2.11", h.get("version") == "2.11", h.get("version"))
+    # 【修改 v2.12-p6】别把版本写死：2.12 / 2.13 之后的服务不该被老断言判失败。
+    v = str(h.get("version") or "0")
+    try:
+        vt = tuple(int(x) for x in v.split(".")[:2])
+    except ValueError:
+        vt = (0, 0)
+    ok("服务版本不低于 2.11", vt >= (2, 11), v)
 
     TMP.mkdir(parents=True, exist_ok=True)
     good = []
@@ -169,7 +175,10 @@ def source_contract():
     ok("前端批量导入按钮", 'id="btnNativePick"' in web)
     ok("前端剪贴板按钮", 'id="btnClipImport"' in web)
     ok("前端批量登记", "function importPaths" in web and "/api/link/batch" in web)
-    ok("前端拖入路径探测", "function pathsFromDrop" in web)
+    # 【修改 v2.12-p4】网页拖放框整块删掉（浏览器拖入拿不到绝对路径，
+    # 只会上传副本）；零拷贝改由本机弹窗 / 剪贴板承担，pathsFromDrop 随之移除。
+    ok("网页拖放框与路径探测已按 p4 移除",
+       "function pathsFromDrop" not in web and 'id="drop"' not in web)
     ok("两条通道共用入队", "function enqueueIds" in web)
     ok("手动填路径仍保留", 'id="linkPath"' in web and 'id="btnLink"' in web)
     ok("弹窗支持拖放", "Add_DragDrop" in ps1 and "FileDrop" in ps1)
