@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "_说明": "本机模型与运行资产的清单。自检脚本 tools/selfcheck.py 逐项核对：目录是否存在、必需文件是否齐全、体积是否达到下限。path 是登记位置；找不到时用 find 在 modelRoots 下按目录名兜底搜索（ModelScope 缓存目录名会把小数点转义成下划线，不能硬编码）。required=true 缺失算 FAIL，false 只算 WARN。sha256 留空表示未登记，跑 selfcheck.py --hash 时才校验已登记项。",
+  "generatedFor": "网课转字幕 2.12-p8",
+  "modelRoots": [
+    "D:/AI/models"
+  ],
+  "items": [
+    {
+      "id": "asr-qwen3-1.7b",
+      "kind": "asr",
+      "title": "Qwen3-ASR-1.7B",
+      "required": true,
+      "path": "D:/AI/models/modelscope/Qwen/Qwen3-ASR-1___7B",
+      "find": "Qwen3-ASR-1*",
+      "files": [
+        { "path": "config.json", "minBytes": 1000 },
+        { "path": "model-00001-of-00002.safetensors", "minBytes": 4000000000 },
+        { "path": "model-00002-of-00002.safetensors", "minBytes": 400000000 },
+        { "path": "model.safetensors.index.json", "minBytes": 1000 },
+        { "path": "tokenizer_config.json", "minBytes": 1000 },
+        { "path": "vocab.json", "minBytes": 100000 },
+        { "path": "merges.txt", "minBytes": 100000 },
+        { "path": "preprocessor_config.json", "minBytes": 100 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/Qwen/Qwen3-ASR-1.7B",
+      "license": "Apache-2.0",
+      "note": "默认识别源「本地 Qwen3-ASR · 精度优先」的主模型；缺文件时该识别源会直接失败"
+    },
+    {
+      "id": "asr-qwen3-aligner-0.6b",
+      "kind": "asr-aux",
+      "title": "Qwen3-ForcedAligner-0.6B",
+      "required": true,
+      "path": "D:/AI/models/modelscope/Qwen/Qwen3-ForcedAligner-0___6B",
+      "find": "Qwen3-ForcedAligner-0*",
+      "files": [
+        { "path": "config.json", "minBytes": 1000 },
+        { "path": "model.safetensors", "minBytes": 1700000000 },
+        { "path": "tokenizer_config.json", "minBytes": 1000 },
+        { "path": "vocab.json", "minBytes": 100000 },
+        { "path": "merges.txt", "minBytes": 100000 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/Qwen/Qwen3-ForcedAligner-0.6B",
+      "license": "Apache-2.0",
+      "note": "Qwen3-ASR 的字级时间戳靠它做强制对齐；缺了字幕能出但时间轴不准或报错"
+    },
+    {
+      "id": "asr-funasr-paraformer",
+      "kind": "asr",
+      "title": "FunASR Paraformer（中文主力）",
+      "required": true,
+      "path": "D:/AI/models/modelscope/models/iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+      "find": "speech_seaco_paraformer_large*",
+      "files": [
+        { "path": "model.pt", "minBytes": 900000000 },
+        { "path": "config.yaml", "minBytes": 100 },
+        { "path": "tokens.json", "minBytes": 1000 },
+        { "path": "am.mvn", "minBytes": 1000 },
+        { "path": "seg_dict", "minBytes": 1000 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+      "license": "Apache-2.0",
+      "note": "识别源「FunASR Paraformer」的主模型；同目录常有两份缓存（models/ 与 hub/models/），任一可用即可"
+    },
+    {
+      "id": "asr-funasr-vad",
+      "kind": "asr-aux",
+      "title": "FSMN-VAD 语音端点检测",
+      "required": true,
+      "path": "D:/AI/models/modelscope/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+      "find": "speech_fsmn_vad*",
+      "files": [
+        { "path": "model.pt", "minBytes": 500000 },
+        { "path": "config.yaml", "minBytes": 100 },
+        { "path": "am.mvn", "minBytes": 1000 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+      "license": "Apache-2.0",
+      "note": "FunASR 自动加载；缺了 Paraformer 无法按句切分"
+    },
+    {
+      "id": "asr-funasr-punc",
+      "kind": "asr-aux",
+      "title": "CT-Transformer 标点恢复",
+      "required": true,
+      "path": "D:/AI/models/modelscope/models/iic/punc_ct-transformer_cn-en-common-vocab471067-large",
+      "find": "punc_ct-transformer*",
+      "files": [
+        { "path": "model.pt", "minBytes": 1000000000 },
+        { "path": "config.yaml", "minBytes": 100 },
+        { "path": "tokens.json", "minBytes": 1000000 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/iic/punc_ct-transformer_cn-en-common-vocab471067-large",
+      "license": "Apache-2.0",
+      "note": "给 Paraformer 补标点；CT-Transformer 是纯文本模型，没有 am.mvn（别按 Paraformer 的文件清单套）"
+    },
+    {
+      "id": "asr-funasr-sensevoice",
+      "kind": "asr",
+      "title": "SenseVoiceSmall（最快档）",
+      "required": false,
+      "path": "D:/AI/models/modelscope/models/iic/SenseVoiceSmall",
+      "find": "SenseVoiceSmall*",
+      "files": [
+        { "path": "model.pt", "minBytes": 100000000 },
+        { "path": "config.yaml", "minBytes": 100 },
+        { "path": "tokens.json", "minBytes": 1000 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/iic/SenseVoiceSmall",
+      "license": "Apache-2.0",
+      "note": "可选识别源，本机当前未下载；选「SenseVoice」时会自动拉取，不用提前装"
+    },
+    {
+      "id": "llm-qwen3-4b-gguf",
+      "kind": "llm",
+      "title": "Qwen3-4B-GGUF（本地润色）",
+      "required": false,
+      "path": "D:/AI/models/llm/Qwen/Qwen3-4B-GGUF",
+      "find": "Qwen3-4B-GGUF",
+      "files": [
+        { "path": "Qwen3-4B-Q4_K_M.gguf", "minBytes": 2300000000 }
+      ],
+      "sha256": {},
+      "source": "https://modelscope.cn/models/Qwen/Qwen3-4B-GGUF",
+      "license": "Apache-2.0",
+      "note": "只在「润色后端=本地模型」时需要；用云端润色（GLM / DeepSeek / 硅基流动）时不加载"
+    }
+  ]
+}

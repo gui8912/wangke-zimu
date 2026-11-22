@@ -3,6 +3,34 @@
 **默认纯本地**（音视频不出本机）；自 1.3 起可选云端识别源，内容不涉密时可用。
 适配药品、医疗器械监督管理专业术语。自 1.7 起可选**本地 LLM 润色讲稿**（模型也在本机）。
 
+## 2.12-p8 环境自检 + 模型清单（2026-11-22）
+
+借鉴 AudioScript（GitHub 404★，MIT）的 `model-catalog` 做法：把「模型在哪、
+缺什么文件、至少要多大」写成可维护的清单，换机 / 重装 / 清缓存后不用再靠人逐目录翻。
+
+**新增四个文件**：
+
+| 文件 | 作用 |
+|---|---|
+| `assets/model-catalog.json` | 7 个模型条目（Qwen3-ASR、ForcedAligner、Paraformer、FSMN-VAD、CT-Transformer 标点、SenseVoice 可选、Qwen3-4B-GGUF 可选），声明必需文件 + 体积下限 + 来源 + 许可 + 缺失影响 |
+| `tools/selfcheck.py` | 只读检查 40 项：Python / CPU AVX2 / 内存 / 12 个依赖 / ffmpeg / 7 个模型 / 项目文件 / 词表编码与条数 / 「我们·咱们」硬规则 / 服务端口 / 磁盘 / 云端润色配置（只报 Key 数量，不打印明文） |
+| `自检.bat` | 双击运行（纯 ASCII + CRLF + 无 BOM），失败停住让人看原因 |
+| `tools/自检与模型清单.txt` | UTF-8 BOM 说明：用途 / 用法 / 判定 / 怎么补模型 |
+
+**关键设计**：清单的 `find` 字段兜底 ModelScope 的转义目录名
+（`Qwen3-ASR-1.7B` 实际缓存成 `Qwen3-ASR-1___7B`），不硬编码；`required=false`
+的条目（SenseVoice / 本地 GGUF）缺失只算 WARN；报告不含任何 API Key。
+
+**实测**：本机 40 项 → PASS 39 · WARN 1（SenseVoice 未下载，属可选）· FAIL 0，
+耗时 0.3 秒。顺手修了清单第一版的一个真错项：标点模型是纯文本 CT-Transformer，
+没有 `am.mvn`，原先按 Paraformer 的文件清单套过去会误报 FAIL。
+
+**用法**：双击 `自检.bat`，或 `python tools/selfcheck.py`；`--quiet` 只看异常，
+`--hash` 校验已登记 SHA-256，`--no-service` 跳过端口探测。报告写
+`out/_selfcheck.json`，退出码有 FAIL 时为 1。
+
+> 只读：不启动服务、不加载模型权重、不改配置；0.3 秒跑完，不会跟识别任务抢 CPU。
+
 ## 2.12-p7 GLM-4-Flash 长稿润色「首块概括压缩 → 整稿白跑」（2026-11-15）
 
 用户反馈「GLM-4-Flash 好像不能正常使用在润色功能上」。服务日志给出实锤：

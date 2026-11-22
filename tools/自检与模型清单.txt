@@ -1,0 +1,89 @@
+﻿网课转字幕 · 自检与模型清单 说明
+================================================
+
+一、用途
+------------------------------------------------
+换机、重装、清理缓存、模型丢失、识别突然报错时，先双击跑一次自检。
+它只读检查，不启动服务、不加载模型权重、不改任何业务文件。
+30 秒内就能回答：环境缺什么、模型缺哪个文件、词表和硬规则有没有被改坏。
+
+二、文件清单
+------------------------------------------------
+1. 自检.bat                     双击运行（纯 ASCII，失败会停住让你看原因）
+2. tools/selfcheck.py           自检脚本本体
+3. assets/model-catalog.json    模型与运行资产的清单（可手工维护）
+4. out/_selfcheck.json          每次运行生成的机器可读报告
+
+三、使用方法
+------------------------------------------------
+双击 自检.bat 即可。命令行也支持：
+
+  python tools/selfcheck.py                完整报告
+  python tools/selfcheck.py --quiet        只显示汇总与 WARN / FAIL
+  python tools/selfcheck.py --no-service   跳过服务端口探测
+  python tools/selfcheck.py --hash         额外校验清单里已登记的 sha256
+  python tools/selfcheck.py --json D:\x.json
+
+退出码：有 FAIL 返回 1，只有 WARN / PASS 返回 0，便于挂到别的脚本里。
+
+四、结果怎么读
+------------------------------------------------
+PASS  正常
+WARN  不影响主流程，但建议处理（例如可选模型没下载）
+FAIL  主流程会出问题，按 detail 里的提示补
+SKIP  环境不适用（例如非 Windows 跳过 AVX2 探测）
+
+报告同时写入 out/_selfcheck.json（实体在 D:\temp\网课转字幕\out）。
+JSON 里有 summary、env、models、checks 四段，便于以后接界面或定时巡检。
+
+五、检查哪些东西
+------------------------------------------------
+环境    Python 版本、系统与核数、AVX2 / AVX-512、物理内存
+依赖    fastapi / uvicorn / numpy / imageio_ffmpeg / rapidfuzz / torch /
+        funasr / modelscope / transformers；可选 qwen_asr / llama_cpp / gradio
+工具    imageio_ffmpeg 自带 ffmpeg 可执行文件是否存在
+模型    Qwen3-ASR-1.7B、Qwen3-ForcedAligner-0.6B、FunASR Paraformer、
+        FSMN-VAD、CT-Transformer 标点、SenseVoice（可选）、Qwen3-4B-GGUF（可选）
+项目    server.py、web/index.html、terms、rules、assets 等关键文件
+词表    terms/*.txt 的编码与有效条数（BOM / GB18030 会标出来）
+规则    「我们」「咱们」是否仍在「语气词」组且 mode=always（用户硬命令）
+服务    自动在 7870–7899 找本程序实例，报告端口与版本
+磁盘    D: 剩余空间（低于 5 GB 直接 FAIL）
+配置    cloud_llm.json 能否解析、当前预设、哪些预设已存 Key
+        （只报数量和预设名，绝不打印 Key 明文）
+
+六、模型清单怎么维护
+------------------------------------------------
+assets/model-catalog.json 里每一项：
+
+  path        登记位置（正斜杠）
+  find        path 失效时，在 modelRoots 下按这个目录名兜底搜索
+  files       必需文件 + minBytes 下限
+  required    true：缺了算 FAIL；false：只算 WARN
+  sha256      可选，登记后跑 --hash 才校验
+  source / license / note   来源、许可、缺文件时的影响
+
+ModelScope 缓存会把小数点转义成下划线（Qwen3-ASR-1.7B 实际目录叫
+Qwen3-ASR-1___7B），所以不要只写死 path，find 兜底很重要。
+清单路径与实际不一致时，自检会 PASS 但标出「清单路径已漂移，实际在 …」。
+
+七、常见问题
+------------------------------------------------
+模型未找到
+    先看 modelRoots 是否对；缓存被清理过就重新下载。
+文件过小
+    多半是下载中断，删掉该模型目录重下。
+CPU 不支持 AVX2
+    不要用本地 GGUF 润色，改用云端；FunASR 仍可用。
+词表编码 WARN
+    用记事本另存为 UTF-8（带 BOM），别存成 ANSI。
+服务未运行 WARN
+    自检不需要服务，双击「启动网课转字幕.bat」即可。
+
+八、设计取舍
+------------------------------------------------
+- 只用标准库 + 项目里的 ports / cloud_llm，不 import torch、funasr，
+  所以 0.3 秒左右跑完，不会和正在跑的识别任务抢 CPU / 内存。
+- 不自动下载、不自动删除、不自动改配置：自检只报告，处置由人决定。
+- 大文件默认不算哈希：13 GB 全量 SHA-256 要几十秒，日常自检没必要；
+  需要完整性校验时再跑 --hash。

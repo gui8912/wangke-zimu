@@ -44,9 +44,9 @@ a{color:var(--accent)}
 <body>
 <div class="wrap">
 <h1>网课转字幕 · 使用说明书</h1>
-<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.12 ｜ 2026-11-10 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
+<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.12-p8 ｜ 2026-11-22 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）、<br><code>tools/自检与模型清单.txt</code>（环境自检）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
 <hr>
-<nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a><a href="#s9">九、备份与迁移（重装电脑 / 换机）</a></nav>
+<nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a><a href="#s9">九、备份与迁移（重装电脑 / 换机）</a><a href="#s10">十、环境自检（换机 / 清理缓存 / 识别突然报错先跑它）</a></nav>
 <h2 id="s1">一、三分钟上手</h2>
 <ol><li>双击 <code>启动界面.bat</code>（或在「服务台」里启动「网课转字幕」），浏览器自动打开</li></ol>
 <p><code>http://127.0.0.1:7870/</code>（端口被占用会自动顺延，以启动行打印的地址为准）。</p>
@@ -338,6 +338,7 @@ python batch_add.py --scan                     :: 只扫描 inbox</code></pre>
 <tr><td>云端润色连不上</td><td>本机环境代理可能失效；默认已绕开，确需代理设 <code>ASR_LLM_PROXY</code></td></tr>
 <tr><td>润色后末句被删</td><td>界面有「补回原末句」；v2.8 起属「待复核」，可确认后采用</td></tr>
 <tr><td>润色跑了很久，最后按钮是灰的 / 不能采用</td><td>v2.8 起只有「严重截断 / 整篇复述」才禁用采用；其余只提示待复核，点两次按钮即可写入。即使真的不能采用，结果也已存盘，可「复制润色稿」或在「上次润色」里找回，不会白跑</td></tr>
+<tr><td>换机 / 清理缓存后提示「未找到 gguf 模型」或「模型加载失败」</td><td>先双击根目录 <strong><code>自检.bat</code></strong>：它会指出缺哪个模型、缺哪个文件、体积够不够，报告在 <code>out/_selfcheck.json</code>。清单在 <code>assets/model-catalog.json</code>，按提示补下即可；详见 <code>tools/自检与模型清单.txt</code></td></tr>
 <tr><td>术语、数字明明没改，却提示「丢失 / 缺数字」</td><td>先看 diff：v2.8 已把「第一百二十条 ↔ 第120条」「百分之九十八点五 ↔ 98.5%」判为等值，不再误报；仍提示时通常是模型确实改写或漏了，按提示核对那一句即可</td></tr>
 <tr><td>术语表为什么收「影片=&gt;饮片」这种词</td><td>本工具只处理监管网课，判据是「域内出现概率」：「影片」在 GSP/GMP 课里几乎不出现，而「饮片」是高频词。泡制、炮炙、备安这类在域内仍有正常含义的，保持停用</td></tr>
 <tr><td>术语表还能不能再加</td><td>能，热词已 452 条，接近 FunASR 建议的 500 条上限；再加建议同时精简低频词，避免拖慢识别</td></tr>
@@ -369,6 +370,25 @@ samples/          回归测试与真机验证脚本</code></pre>
 <p>「备份」→ 导入 → 刷新页面。词表保存即生效，不用重启。</p>
 <p>两个细节：队列导入后会自动<strong>解除暂停、清掉定时</strong>，避免「刚装好却一动不动」；</p>
 <p>导入包里的路径严格按白名单匹配，<code>../</code> 之类越权路径一律忽略。</p>
+<hr>
+<h2 id="s10">十、环境自检（换机 / 清理缓存 / 识别突然报错先跑它）</h2>
+<p>双击工具根目录的 <strong><code>自检.bat</code></strong>，或命令行 <code>python tools/selfcheck.py</code>。</p>
+<p>0.3 秒出结果，只读检查 40 项，不启动服务、不加载模型、不改任何配置。</p>
+<table><thead><tr><th>检查块</th><th>内容</th></tr></thead><tbody>
+<tr><td>环境</td><td>Python 版本、系统与核数、AVX2 / AVX-512、物理内存</td></tr>
+<tr><td>依赖</td><td>fastapi / uvicorn / numpy / imageio_ffmpeg / rapidfuzz / torch / funasr / modelscope / transformers；可选 qwen_asr / llama_cpp / gradio</td></tr>
+<tr><td>模型</td><td>Qwen3-ASR、ForcedAligner、Paraformer、FSMN-VAD、标点、SenseVoice（可选）、Qwen3-4B-GGUF（可选）—— 逐个核对必需文件与体积下限</td></tr>
+<tr><td>项目</td><td>server.py、web/index.html、terms、rules、assets 等关键文件</td></tr>
+<tr><td>词表与规则</td><td><code>terms/*.txt</code> 编码与条数；「我们」「咱们」是否仍在语气词组且 <code>mode=always</code></td></tr>
+<tr><td>其他</td><td>服务端口、磁盘剩余、云端润色配置（只报哪些预设存了 Key，<strong>不打印 Key</strong>）</td></tr>
+</tbody></table>
+<p>结果分四级：<strong>PASS / WARN / FAIL / SKIP</strong>。只有 FAIL 会让退出码变成 1，方便挂到</p>
+<p>计划任务里。报告同时写 <code>out/_selfcheck.json</code>（实体在 <code>D:\temp\网课转字幕\out</code>），</p>
+<p>里面有 <code>summary</code> / <code>env</code> / <code>models</code> / <code>checks</code> 四段。</p>
+<p>模型清单在 <code>assets/model-catalog.json</code>：每项写 <code>path</code>（登记位置）、<code>find</code>（目录名兜底搜索）、</p>
+<p><code>files</code>（必需文件 + <code>minBytes</code>）、<code>required</code>（缺了算 FAIL 还是 WARN）。换机器、换模型目录时</p>
+<p>只改这一处。详细说明见 <code>tools/自检与模型清单.txt</code>。</p>
+<blockquote>常见 WARN 都不是故障：SenseVoice 未下载（可选识别源，选了会自动拉）、服务未运行<br>（自检不需要它）、词表不是 UTF-8（能读，但建议统一另存为 UTF-8 带 BOM）。</blockquote>
 <p class="foot">本页由 samples/gen_manual.py 从 使用说明书.md 生成；修改说明书后重跑脚本即可。</p>
 </div>
 </body>
