@@ -291,6 +291,76 @@ def cues_with_time(sentences: list) -> list:
     return cues
 
 
+# ─────────────── 【新增 v2.12-p10】逐片实时预览 ───────────────
+# 设计约束（用户硬要求）：实时预览里的用词必须和成稿一致——错词校正、
+# 简称展开、数字规整、口语删除（含「我们 / 咱们」无条件删）都要在预览阶段生效，
+# 不能出现「预览里还是影片、成稿才变饮片」的割裂。
+#
+# 做法：预览用**独立的 Cleaner 实例**跑同一份词表与同一组开关。
+# 不复用最终清理那个实例，因为 Cleaner 内部有跨句计数 `seen_guide` 与
+# `last_suggestions`；两边共用会互相影响，等于悄悄改掉成稿。
+_LIVE_CLEAN_LOCK = threading.Lock()
+
+
+def _make_cleaner(itn: bool = True, termfix: bool = True,
+                  termfix_auto: bool = True):
+    """构造一份清理器（实时预览专用）。规则与最终清理完全同源。"""
+    import clean_transcript as ct
+    return ct.Cleaner(ct.load_rules(BASE / "rules" / "filler_words.json"),
+                      ct.load_corrections(BASE / "terms" / "corrections.txt"),
+                      itn=itn, termfix=termfix, termfix_auto=termfix_auto)
+
+
+def _live_cues(sentences: list) -> list:
+    """句子 → 前端可直接渲染的字幕（秒 + 文本），断句与成稿共用一套规则。"""
+    out = []
+    for st, et, body in cues_with_time(sentences):
+        body = str(body or "").strip()
+        if not body:
+            continue
+        out.append({"start": round(st / 1000.0, 3),
+                    "end": round(et / 1000.0, 3), "text": body})
+    return out
+
+
+def _publish_slice(on_slice, i: int, total: int, sentences: list):
+    """识别线程里上报一片原始句子；回调出错绝不能影响识别本身。"""
+    if on_slice is None or not sentences:
+        return
+    try:
+        on_slice(int(i), int(total), sentences)
+    except Exception:
+        pass
+
+
+def _emit_live(on_slice, i: int, total: int, sentences: list, cleaner=None):
+    """把一片句子清理后推给上层（服务端 live 缓冲）。
+
+    清理走与成稿相同的词表 / 开关，所以预览里就能看到「饮片」「贮藏」
+    「管理者代表」「2026 年」这些按行业语境处理过的写法；被口语规则整条
+    删空的字幕直接不展示，和 clean.srt 的取舍一致。
+    """
+    if on_slice is None:
+        return
+    try:
+        cues = _live_cues(sentences)
+        if cleaner is not None:
+            kept = []
+            for c in cues:
+                try:
+                    with _LIVE_CLEAN_LOCK:
+                        new, _chg, _warn = cleaner.clean(c["text"])
+                except Exception:
+                    new = c["text"]
+                if new.strip("，。、；：？！,.;:?! 　"):
+                    kept.append({**c, "text": new})
+            cues = kept
+        if cues:
+            on_slice(int(i), int(total), cues)
+    except Exception:
+        pass
+
+
 # ────────────────────────── 识别 ──────────────────────────
 
 def _emit(progress, pct: float, stage: str = ""):
@@ -308,19 +378,20 @@ def _emit(progress, pct: float, stage: str = ""):
 
 
 def transcribe(wav: Path, cfg: dict, hotword: str, device: str,
-               language: str = "Chinese", log=print, progress=None) -> dict:
+               language: str = "Chinese", log=print, progress=None,
+               on_slice=None) -> dict:
     t1 = time.time()
     if cfg.get("backend") == "qwen3":
-        item = _run_qwen3(wav, cfg, device, language, log, progress)
+        item = _run_qwen3(wav, cfg, device, language, log, progress, on_slice)
     else:
         _emit(progress, 12, "识别中")
-        item = _run_funasr(wav, cfg, hotword, device, log, progress)
+        item = _run_funasr(wav, cfg, hotword, device, log, progress, on_slice)
     item["_cost_s"] = round(time.time() - t1, 1)
     return item
 
 
 def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str,
-                log=print, progress=None) -> dict:
+                log=print, progress=None, on_slice=None) -> dict:
     _emit(progress, 11, "加载识别模型")
     model = get_model(cfg, device)
     gen = dict(batch_size_s=300, disable_pbar=True)
@@ -328,7 +399,7 @@ def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str,
         gen["hotword"] = hotword
 
     if FUNASR_WORKERS > 1:
-        return _run_funasr_parallel(wav, model, gen, log, progress)
+        return _run_funasr_parallel(wav, model, gen, log, progress, on_slice)
 
     # ASR_FUNASR_WORKERS=1：整段推理，零回归路径。
     # 【新增 v2.4】generate() 是阻塞调用，长课期间进度条会一直停在 12%，
@@ -351,11 +422,24 @@ def _run_funasr(wav: Path, cfg: dict, hotword: str, device: str,
     if isinstance(res, list):
         if not res:
             raise RuntimeError("识别返回空结果：音频可能是静音或过短（不足 1 秒）")
-        return res[0]
-    return res
+        item = res[0]
+    else:
+        item = res
+    # 【新增 v2.12-p10】整段推理没有中间结果，至少在完成时推一次，
+    # 让「实时预览」与其它识别源的交互一致（只差最后一步写入）。
+    if isinstance(item, dict):
+        # 实测 Paraformer 默认配置不返回 sentence_info，只有字级 timestamp；
+        # 这里用与 write_outputs 相同的 align_sentences 兜底，预览断句才与成稿一致。
+        sents = item.get("sentence_info")
+        if not sents and item.get("timestamp"):
+            sents = align_sentences(str(item.get("text") or ""), item["timestamp"])
+        if sents:
+            _publish_slice(on_slice, 0, 1, sents)
+    return item
 
 
-def _run_funasr_parallel(wav: Path, model, gen: dict, log, progress) -> dict:
+def _run_funasr_parallel(wav: Path, model, gen: dict, log, progress,
+                         on_slice=None) -> dict:
     """【新增 v2.4】Paraformer 分片并行：低能量处切片、多线程共用一个模型实例。
 
     为什么不用多实例：实测同一进程创建第 2 个 AutoModel 会原生段错误（exit 139）。
@@ -403,10 +487,18 @@ def _run_funasr_parallel(wav: Path, model, gen: dict, log, progress) -> dict:
             s["start"] = int(s.get("start") or 0) + off_ms
             s["end"] = int(s.get("end") or 0) + off_ms
             sents.append(s)
+        # 【新增 v2.12-p10】没有 sentence_info 时用字级时间戳分句。
+        # 实测 Paraformer 默认配置只返回 timestamp，不补这一步整片都不会推送。
+        if not sents and d.get("timestamp"):
+            ts_abs = [[int(a) + off_ms, int(b) + off_ms]
+                      for a, b in d["timestamp"]]
+            sents = align_sentences(str(d.get("text") or ""), ts_abs)
         with lock:
             done[0] += 1
             # 每片完成就上报，长课进度条真的会走，不再停在 12%
             _emit(progress, 12 + 78 * done[0] / total, f"识别 {done[0]}/{total}")
+        # 【新增 v2.12-p10】这一片识别完就推给实时预览（时间戳已是绝对毫秒）
+        _publish_slice(on_slice, i, total, sents)
         return {
             "text": str(d.get("text") or ""),
             "timestamp": [[int(a) + off_ms, int(b) + off_ms]
@@ -569,7 +661,8 @@ def _split_pcm(pcm, sr: int = 16000, max_chunk_sec: float = 170.0,
     return parts
 
 
-def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=None) -> dict:
+def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=None,
+               on_slice=None) -> dict:
     """Qwen3-ASR：LLM 架构精度高，字级时间戳由强制对齐模型给出"""
     import torch
     from qwen_asr import Qwen3ASRModel
@@ -631,6 +724,14 @@ def _run_qwen3(wav: Path, cfg: dict, device: str, language: str, log, progress=N
                 log(f"第 {i} 片出错，重试一次：{exc}")
         text = ((getattr(r, "text", "") or "") if r else "").strip()
         stamps = (getattr(r, "time_stamps", None) or []) if r else []
+        # 【新增 v2.12-p10】用本片的字级时间戳就地分句，推给实时预览。
+        # 与最终 write_outputs 的唯一差别在切片边界（整段拼接可能跨片合并句子），
+        # 预览先给更细的粒度，完成后由成稿统一替换。
+        if text and stamps and on_slice is not None:
+            off_ms = int(round(offset * 1000))
+            ts_ms = [[int(t.start_time * 1000) + off_ms,
+                      int(t.end_time * 1000) + off_ms] for t in stamps]
+            _publish_slice(on_slice, i, total, align_sentences(text, ts_ms))
         return i, text, stamps
 
     results = [None] * total
@@ -769,7 +870,8 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
                  language: str = "Chinese", log=print,
                  provider_key: str = None, use_script_track: bool = False,
                  itn: bool = True, termfix: bool = True,
-                 termfix_auto: bool = True, progress=None) -> dict:
+                 termfix_auto: bool = True, progress=None,
+                 on_slice=None) -> dict:
     """完整流程，命令行与图形界面共用。返回结构化结果。
 
     【修改 v1.3】新增 provider_key / use_script_track 两个可选参数，默认 None/False
@@ -802,6 +904,17 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
     # 避免「开了开关却没凭据」让日常转写全线失败；显式指定云端则明确报错。
     prov = (P.preferred_from_env() if provider_key is None
             else P.get_provider(provider_key))
+    # 【新增 v2.12-p10】实时预览：独立 Cleaner（同词表 / 同开关）逐片清理。
+    # 最终清理仍用它自己的实例，两条链路互不影响，成稿与以前逐字节一致。
+    live_cleaner = None
+    live_cb = None
+    if on_slice is not None:
+        if do_clean and prov.kind != "cloud":
+            live_cleaner = _make_cleaner(itn, termfix, termfix_auto)
+
+        def live_cb(i, total, sents):
+            _emit_live(on_slice, i, total, sents, live_cleaner)
+
     tracks = None
     if prov.kind == "cloud":
         log(f"识别源：{prov.name}（云端）")
@@ -818,7 +931,8 @@ def run_pipeline(src: Path, model_key: str = "paraformer", do_clean: bool = True
             log("云端已提供整理稿，跳过本地口语清理（避免双重改写）")
         _emit(progress, 88, "云端识别完成")
     else:
-        item = transcribe(wav, cfg, hotword, device, language, log, progress)
+        item = transcribe(wav, cfg, hotword, device, language, log, progress,
+                          on_slice=live_cb)
     dur = time.time() - t0
 
     meta = {

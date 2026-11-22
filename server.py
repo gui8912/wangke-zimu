@@ -87,6 +87,7 @@ import queue_state as QS       # noqa: E402  【新增 v2.3】夜间批量队列
 import glossary as GLOSS        # noqa: E402  【新增 v2.5】术语表可视化编辑
 import backup as BK            # noqa: E402  【新增 v2.5】配置与词库备份 / 迁移
 import edit_state as ES        # noqa: E402  【新增 v2.12-p9】校对中的编辑态落盘
+import live_state as LS        # noqa: E402  【新增 v2.12-p10】逐片实时预览缓冲
 
 REV = OUT / "rev"
 
@@ -387,7 +388,9 @@ def _persist(tid: str):
     task = TASKS.get(tid)
     if not task:
         return
-    data = {k: v for k, v in task.items() if k != "result"}
+    # 【新增 v2.12-p10】live 是逐片实时预览（可达上百 KB），只放内存：
+    # 每片落盘会把日志的 1 秒节流打回原形，job.json 也会越写越大。
+    data = {k: v for k, v in task.items() if k not in ("result", "live")}
     data["logs"] = (task.get("logs") or [])[-120:]
     p = _job_path(tid)
     # modified(v1.9): 临时名加随机后缀。原来固定 <id>.tmp，同时跑起两个实例
@@ -438,6 +441,7 @@ def _load_jobs():
             print(f"[jobs] 跳过损坏的任务文件 {p.name}: {exc}", flush=True)
             continue
         d["result"] = None
+        d["live"] = None      # 【新增 v2.12-p10】实时预览只存内存，重启即弃
         st = d.get("status")
         # 【修复 v2.7】先登记再落盘。原来 running 分支先调 _persist(tid)，
         # 而 _persist 从 TASKS 取任务——此时还没登记，直接 return，
@@ -573,6 +577,23 @@ def _queue_pos(tid: str) -> int:
         return 0
 
 
+# ─────────────── 【新增 v2.12-p10】逐片实时预览 ───────────────
+# 缓冲逻辑在 live_state.py（线程安全、可离线单测）；这里只负责挂到任务上。
+# 只放内存、不落盘：长课几十片、每片几十 KB，写盘会把识别拖慢。
+# 字幕文本已在识别层按当前词表清理过（错词 / 简称 / 数字 / 口语），
+# 预览里看到的用词就是成稿的用词。
+def _live_slice(task: dict, i: int, total: int, cues: list):
+    """识别线程每完成一片调用一次；回调出错绝不能影响识别本身。"""
+    try:
+        live = task.get("live")
+        if not isinstance(live, LS.LiveBuffer):
+            live = LS.LiveBuffer()
+            task["live"] = live
+        live.put(i, total, cues)
+    except Exception:
+        pass
+
+
 def _worker(task_id: str):
     task = TASKS.get(task_id)
     if task is None:
@@ -592,6 +613,8 @@ def _worker(task_id: str):
     # 【新增 v2.0】进度是纯瞬态数据：只放内存给 /api/tasks 轮询，不写 job.json。
     # 长课每片都会更新一次，落盘没有意义，还会把 v1.8 的 1 秒节流打回原形。
     task["progress"] = {"pct": 2, "stage": "启动", "at": task["started"]}
+    # 【新增 v2.12-p10】重试 / 重新排队时清掉上一次的实时片段
+    task["live"] = None
     _persist(task_id)
 
     def progress(pct, stage=""):
@@ -624,7 +647,9 @@ def _worker(task_id: str):
                            termfix=bool(task.get("termfix", True)),
                            termfix_auto=bool(task.get("termfix_auto", True)),
                            # 【新增 v2.0】逐片进度 → 任务栏进度条
-                           progress=progress)
+                           progress=progress,
+                           # 【新增 v2.12-p10】逐片实时预览 → 校对区边转边看
+                           on_slice=lambda i, total, cues: _live_slice(task, i, total, cues))
         raw_cues = parse_cues(r["raw_srt_text"])
         clean_cues = parse_cues(r["clean_srt_text"]) if r["clean_srt_text"] else None
 
@@ -1236,6 +1261,25 @@ async def task_status(tid: str):
             "created": t.get("created"), "position": _queue_pos(tid),
             "progress": t.get("progress"),
             "started": t.get("started"), "finished": t.get("finished")}
+
+
+@app.get("/api/task/{tid}/live")
+async def task_live(tid: str, since: int = 0):
+    """【新增 v2.12-p10】逐片实时预览（只读）。
+
+    since=0 返回全部已完成片；since=N 只返 revision>N 的片。
+    每片带独立 revision，前端按片号覆盖合并——4 路并行乱序完成也不会串位。
+    字幕已按当前词表清理（错词校正 / 简称展开 / 数字规整 / 口语删除），
+    所以预览与成稿用词一致。
+    """
+    t = TASKS.get(tid)
+    if not t:
+        return JSONResponse({"error": "任务不存在"}, status_code=404)
+    live = t.get("live")
+    data = (live.snapshot(since) if isinstance(live, LS.LiveBuffer)
+            else {"revision": 0, "since": since, "total": 0, "done": 0,
+                  "slices": [], "complete": False})
+    return {**data, "status": t.get("status")}
 
 
 @app.get("/api/task/{tid}/media")
@@ -1913,6 +1957,8 @@ def api_health():
             # 【新增 v2.12-p9】前端据此确认服务端是否已支持编辑态落盘。
             # 静态页会先于服务重启更新，没有这个标记时前端退回只写导出稿。
             "edit_state": True,
+            # 【新增 v2.12-p10】逐片实时预览能力标记
+            "live": True,
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

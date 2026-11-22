@@ -128,7 +128,9 @@ def unit():
 
     # 【修改 v2.4】run_pipeline 自 v2.0 起多传一个 progress 回调，
     # 假函数签名必须跟上，否则整条本地识别链路的用例会 TypeError。
-    def fake(wav, cfg, hotword, device, language, log, progress=None):
+    # 【修改 v2.12-p10】又多了 on_slice（逐片实时预览），同样补上默认值。
+    def fake(wav, cfg, hotword, device, language, log, progress=None,
+             on_slice=None):
         return {"text": "嗯，今天我们讲飞行检查。",
                 "timestamp": [[i * 300, i * 300 + 300] for i in range(12)]}
 

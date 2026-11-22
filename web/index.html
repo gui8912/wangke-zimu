@@ -150,6 +150,14 @@
   .cue{display:grid;grid-template-columns:62px 1fr;gap:10px;padding:7px 14px;
        cursor:pointer;border-left:3px solid transparent;position:relative}
   .cue:hover{background:var(--soft)}
+  /* 【新增 v2.12-p10】逐片实时预览条与只读行 */
+  #liveBar{display:flex;align-items:center;gap:8px;padding:7px 14px;
+           background:var(--primary-weak);border-bottom:1px solid var(--line);
+           color:var(--primary);font-size:var(--fs-12)}
+  #liveBar .grow{flex:1}
+  #liveBar .mini{color:var(--muted)}
+  .cue.live .x{cursor:default}
+  .cue.live .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .cue.active{background:var(--active);border-left-color:var(--active-line)}
   .cue .t{font-size:var(--fs-12);color:var(--faint);font-variant-numeric:tabular-nums;padding-top:1px}
   .cue.active .t{color:var(--warn);font-weight:600}
@@ -750,6 +758,12 @@
       <span id="findInfo"></span>
     </div>
     <div id="tipPanel" hidden></div>
+    <div id="liveBar" hidden>
+      <span class="dot run"></span>
+      <span id="liveText">实时预览</span>
+      <span class="grow"></span>
+      <span class="mini" id="liveHint">已按术语表 / 口语表校正 · 只读</span>
+    </div>
     <div id="cueList">
       <div class="empty">转写完成后，字幕会显示在这里。<br>
         点击任意一句可跳转播放，双击文字可直接修改。<br>
@@ -1268,7 +1282,10 @@ const state = {
   // 历史任务没有这份数据（result 不落盘），点一次「重新清理」即可生成。
   cueChanges:[],
   // 【新增 v2.0】任务栏勾选集合；用 Set 避免逐行重绘时丢选择
-  selected:new Set(), taskList:[]
+  selected:new Set(), taskList:[],
+  /* 【新增 v2.12-p10】逐片实时预览：rev 用于增量拉取，slices 按片号保存。
+     识别中只读；完成后由成稿替换，编辑态交给 v2.12-p9 那一层。 */
+  live:{rev:0,total:0,done:0,slices:{}}, liveMode:false
 };
 
 /* ---------- 主题与字号 ---------- */
@@ -1405,6 +1422,7 @@ function renderFileCard(d){
 function onUploaded(d, note){
   // 【新增 v2.4-p3】换了新素材就不再恢复旧任务，否则一刷新又跳回上一节课
   try{ localStorage.removeItem('asrLastTask'); }catch(e){}
+  resetLive();                       // 【新增 v2.12-p10】退出上一节课的实时预览
   state.taskId = null;
   state.fileId = d.file_id; state.kind = d.kind;
   // 【新增 v2.12-p9】换了素材就重置编辑态镜像，避免拿上一节课的修订号去保存
@@ -2920,6 +2938,9 @@ $('#btnStart').onclick = async ()=>{
     setStatus(d.error,'err'); setFileStatus('失败','err');
     $('#btnStart').disabled=false; $('#fcStart').disabled=false; return;
   }
+  // 【新增 v2.12-p10】进入只读实时预览：先落盘上一节课的改动，再清空旧稿。
+  // 必须在覆盖 state.taskId 之前调用，否则 flushEditState 会把旧稿写到新任务名下。
+  beginLive();
   state.taskId = d.task_id;
   refreshTasks();
   poll();
@@ -2960,6 +2981,8 @@ async function poll(){
   if(d.status === 'error'){
     setStatus('失败：'+(d.error||'未知错误'),'err');
     setFileStatus('识别失败','err');
+    // 【新增 v2.12-p10】已出的片段不删，标成「仅供核对」
+    if(state.liveMode) showLiveBar(`识别失败 · 已出的 ${liveCues().length} 句仅供核对`);
     $('#btnStart').disabled = false;
     $('#fcStart').disabled = false;
     refreshTasks();
@@ -2968,6 +2991,7 @@ async function poll(){
   if(d.status === 'interrupted' || d.status === 'cancelled'){
     setStatus(d.error || '任务中断','err');
     setFileStatus(d.status === 'cancelled' ? '已取消' : '已中断','err');
+    if(state.liveMode) showLiveBar(`已${d.status === 'cancelled' ? '取消' : '中断'} · 已出的 ${liveCues().length} 句仅供核对`);
     $('#btnStart').disabled = false;
     $('#fcStart').disabled = false;
     refreshTasks();
@@ -2982,11 +3006,15 @@ async function poll(){
   setStatus('识别中…' + pg + used + (isPara ? '（Paraformer 整段推理，完成前百分比不变）' : ''), 'run');
   setFileStatus('识别中…','run');
   refreshTasks();
+  // 【新增 v2.12-p10】拉这一轮新完成的片（只读预览，不阻塞下一轮轮询）
+  fetchLive();
   state.timer = setTimeout(poll, 2000);
 }
 
 function renderResult(res){
   if(!res){ setStatus('结果读取失败，可在任务里重试','err'); return; }
+  // 【新增 v2.12-p10】成稿到达，退出只读实时预览
+  resetLive();
   state.stem = res.stem || state.stem;
   state.raw = JSON.parse(JSON.stringify(res.cues || []));
   state.mode = res.clean_cues ? 'clean' : 'raw';
@@ -3037,6 +3065,86 @@ function renderResult(res){
     if(!got) restoreDraft();
   }, 80);
   toast(`完成：${state.cues.length} 句 / ${res.chars} 字，耗时 ${res.elapsed}s`);
+}
+
+/* ══════ 【新增 v2.12-p10】逐片实时预览：长课边转边看 ══════
+   识别每完成一片，服务端就把这一片的字幕放进任务的内存缓冲；
+   页面按 since=revision 拉增量，按片号合并、按时间排序。
+   识别中一律只读：最终成稿会重新分句、跑完整清理，边转边改会被覆盖，
+   与其假装保存，不如明确锁定；转写完成后交给 v2.12-p9 的编辑态层。 */
+
+function resetLive(){
+  state.live = {rev:0, total:0, done:0, slices:{}};
+  state.liveMode = false;
+  const bar = $('#liveBar'); if(bar) bar.hidden = true;
+}
+function showLiveBar(text){
+  const bar = $('#liveBar'); if(!bar) return;
+  bar.hidden = false;
+  const el = $('#liveText'); if(el) el.textContent = text;
+}
+function beginLive(){
+  // 先把上一节课没落盘的改动写掉，再清空校对区
+  try{ flushEditState(); }catch(e){}
+  clearTimeout(state.saveTimer);
+  state.dirty = false;
+  state.stem = '';                 // 识别中不写任何旧稿
+  state.cues = []; state.raw = []; state.cueChanges = [];
+  state.live = {rev:0, total:0, done:0, slices:{}};
+  state.liveMode = true;
+  // 正在识别的任务才是「当前任务」；清掉上次打开的历史记录，
+  // 刷新后 restoreLastTask 才会接回这次实时预览，而不是跳回旧课件。
+  try{ localStorage.removeItem('asrLastTask'); }catch(e){}
+  drawCues();
+  showLiveBar('实时预览 · 正在等待第一片');
+  // 预览清理跟随「清理口语」开关：关掉时不能还宣称「已按口语表校正」
+  const hint = $('#liveHint');
+  if(hint) hint.textContent = ($('#clean') && $('#clean').checked
+    ? '已按术语表 / 口语表校正' : '未启用口语清理') + ' · 只读';
+  ['btnSave','btnReclean','btnDownload','btnToRevise','btnQC','btnAlign','btnCleanDiff']
+    .forEach(id=>{ const b = $('#'+id); if(b) b.disabled = true; });
+  setSaveState('', '');
+}
+function liveCues(){
+  const out = [];
+  Object.keys(state.live.slices).forEach(k=>{
+    (state.live.slices[k] || []).forEach(c=>{
+      if(c && isFinite(c.start) && isFinite(c.end)) out.push(c);
+    });
+  });
+  out.sort((a, b)=>a.start - b.start || a.end - b.end);
+  return out;
+}
+function renderLive(){
+  if(!state.liveMode) return;
+  state.cues = liveCues();
+  drawCues();
+  const n = state.cues.length;
+  const total = state.live.total || 0;
+  const done = state.live.done || 0;
+  const tail = (total && done >= total) ? ' · 最后整理中' : '';
+  showLiveBar(`实时预览 · 已出 ${n} 句 · 第 ${done}/${total} 片${tail}`);
+}
+async function fetchLive(){
+  if(!state.taskId || !state.liveMode) return;
+  let d;
+  try{
+    const r = await fetch(`/api/task/${state.taskId}/live?since=${state.live.rev}`,
+                          {cache:'no-store'});
+    if(!r.ok) return;
+    d = await r.json();
+  }catch(e){ return; }
+  if(!d || !d.total) return;
+  state.live.total = d.total;
+  state.live.done = d.done || 0;
+  let got = 0;
+  (d.slices || []).forEach(s=>{
+    state.live.slices[s.i] = s.cues || [];
+    got++;
+  });
+  state.live.rev = Math.max(state.live.rev, d.revision || 0);
+  // 只有真的来了新片才重绘：1500 行每 2 秒重画一次没必要
+  if(got) renderLive();
 }
 
 /* ---------- 任务列表（持久化 + 队列） ---------- */
@@ -3317,10 +3425,18 @@ async function restoreLastTask(){
   let tid = '';
   try{ tid = localStorage.getItem('asrLastTask') || ''; }catch(e){}
   if(!tid){
-    // 兜底：旧版没有记录，就从最近一条已完成任务里挑一条自动载回，
-    // 免得升级后第一次刷新仍面对空白页。
+    // 【新增 v2.12-p10】正在识别时刷新：直接接回实时预览，不用等跑完再点任务。
+    // 只在没有「上次打开的任务」时这么做，避免抢走用户正在校对的历史课件。
     try{
       const d0 = await (await fetch('/api/tasks')).json();
+      const run = (d0.tasks || []).find(x=>x.status === 'running');
+      if(run && run.id){
+        state.taskId = run.id;
+        beginLive();
+        poll();
+        toast(`已接回正在识别的任务「${(run.name || '').slice(0, 18)}」`);
+        return;
+      }
       const t = (d0.tasks || []).find(x=>x.status === 'done' && x.stem);
       if(!t) return;
       tid = t.id;
@@ -3417,7 +3533,8 @@ function drawCues(){
   const frag = document.createDocumentFragment();
   state.cues.forEach((c, i)=>{
     const row = document.createElement('div');
-    row.className = 'cue';
+    // 【新增 v2.12-p10】实时预览行加 .live：不绑定编辑，只读
+    row.className = 'cue' + (state.liveMode ? ' live' : '');
     row.dataset.i = i;
     // 【新增 v1.5】单击整行跳到该句起点，配合视频/音频逐句校对。
     // 点时间输入框不跳（那是在改时间轴）；正在编辑文本时不跳（避免打断输入）。
@@ -3428,12 +3545,21 @@ function drawCues(){
 
     const times = document.createElement('div');
     times.className = 'times';
-    times.appendChild(timeInput(i, 'start', c.start));
-    const arrow = document.createElement('span');
-    arrow.className = 'arrow'; arrow.textContent = '→';
-    times.appendChild(arrow);
-    times.appendChild(timeInput(i, 'end', c.end));
-    if(c.similarity !== undefined && c.similarity < 0.8){
+    if(state.liveMode){
+      // 【新增 v2.12-p10】只读预览：时间不提供输入框，点整行仍可跳转播放
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = fmtTime(c.start);
+      t.title = fmtTimeMs(c.start) + ' → ' + fmtTimeMs(c.end);
+      times.appendChild(t);
+    }else{
+      times.appendChild(timeInput(i, 'start', c.start));
+      const arrow = document.createElement('span');
+      arrow.className = 'arrow'; arrow.textContent = '→';
+      times.appendChild(arrow);
+      times.appendChild(timeInput(i, 'end', c.end));
+    }
+    if(!state.liveMode && c.similarity !== undefined && c.similarity < 0.8){
       const b = document.createElement('span');
       b.className = 'diff';
       b.textContent = '差异';
@@ -3444,27 +3570,29 @@ function drawCues(){
 
     const x = document.createElement('div');
     x.className = 'x'; x.textContent = c.text;
-    x.ondblclick = e=>{
-      e.stopPropagation();
-      x.contentEditable = 'true'; x.focus();
-      document.execCommand && document.getSelection().selectAllChildren(x);
-    };
-    x.onblur = ()=>{
-      x.contentEditable = 'false';
-      const v = x.textContent.trim();
-      if(!v){                                    // 清空等于放弃修改，恢复原文
-        x.textContent = state.cues[i].text;
-        toast('内容为空，已还原');
-        return;
-      }
-      if(v !== state.cues[i].text){
-        state.cues[i].text = v;
-        row.classList.add('dirty'); state.dirty = true;
-        snapshot('修改字幕');
-        drawWave();
-      }
-    };
-    x.onkeydown = e=>{ if(e.key === 'Enter'){ e.preventDefault(); x.blur(); } };
+    if(!state.liveMode){
+      x.ondblclick = e=>{
+        e.stopPropagation();
+        x.contentEditable = 'true'; x.focus();
+        document.execCommand && document.getSelection().selectAllChildren(x);
+      };
+      x.onblur = ()=>{
+        x.contentEditable = 'false';
+        const v = x.textContent.trim();
+        if(!v){                                    // 清空等于放弃修改，恢复原文
+          x.textContent = state.cues[i].text;
+          toast('内容为空，已还原');
+          return;
+        }
+        if(v !== state.cues[i].text){
+          state.cues[i].text = v;
+          row.classList.add('dirty'); state.dirty = true;
+          snapshot('修改字幕');
+          drawWave();
+        }
+      };
+      x.onkeydown = e=>{ if(e.key === 'Enter'){ e.preventDefault(); x.blur(); } };
+    }
     row.appendChild(times); row.appendChild(x);
     row.onclick = ()=>{ seek(c.start); };
     frag.appendChild(row);
@@ -4225,7 +4353,7 @@ function resolveEditConflict(){
 }
 
 function scheduleSave(){
-  if(state.demo || !state.stem || !state.cues.length) return;
+  if(state.demo || state.liveMode || !state.stem || !state.cues.length) return;
   state.dirty = true;
   // 冲突未决时不再自动重试，免得两个标签页来回覆盖；点「保存」手动处理
   if(state.editConflict){ setSaveState('另一处已更新','warn'); return; }
