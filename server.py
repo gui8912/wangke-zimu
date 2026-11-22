@@ -86,6 +86,7 @@ import cloud_llm as CL         # noqa: E402  【新增 v2.2】免费 / 低价云
 import queue_state as QS       # noqa: E402  【新增 v2.3】夜间批量队列
 import glossary as GLOSS        # noqa: E402  【新增 v2.5】术语表可视化编辑
 import backup as BK            # noqa: E402  【新增 v2.5】配置与词库备份 / 迁移
+import edit_state as ES        # noqa: E402  【新增 v2.12-p9】校对中的编辑态落盘
 
 REV = OUT / "rev"
 
@@ -1760,6 +1761,77 @@ async def get_draft(stem: str):
             "raw_mtime": raw.stat().st_mtime if raw.exists() else 0}
 
 
+# ─────────────── 【新增 v2.12-p9】编辑态落盘（刷新 / 关页不丢校对稿） ───────────────
+# 与 /api/draft 的分工：
+#   · /api/draft  读 <stem>.edited.srt —— 导出产物，兼容旧版、供人工检查；
+#   · /api/edit   读 out/_edit/<key>.json —— 校对中的真相源，带修订号与保存时间。
+# 前端恢复时优先走 /api/edit，只有它不存在（旧稿）才退回 /api/draft。
+
+def _edit_public(d: dict, key: str) -> dict:
+    """只回前端需要的字段，schema 等内部结构不往外抛。"""
+    return {"exists": True, "key": key,
+            "revision": int(d.get("revision") or 0),
+            "saved_at": d.get("saved_at") or 0,
+            "saved_at_text": d.get("saved_at_text") or "",
+            "cues": d.get("cues") or [],
+            "mode": d.get("mode") or "clean",
+            "chars": d.get("chars") or 0,
+            "task_id": d.get("task_id") or "",
+            "stem": d.get("stem") or ""}
+
+
+@app.get("/api/edit")
+def api_edit_get(task_id: str = "", stem: str = ""):
+    """取编辑态；没有就 exists=False，让前端安静地回退到旧草稿。"""
+    key = ES.key_for(task_id, stem)
+    if not key:
+        return JSONResponse({"error": "缺少 task_id 或 stem"}, status_code=400)
+    d = ES.load(key)
+    if not d:
+        return {"exists": False, "key": key, "revision": 0}
+    return _edit_public(d, key)
+
+
+@app.post("/api/edit")
+def api_edit_save(payload: dict):
+    """写编辑态。
+
+    校验复用 /api/save 的 _normalize_cues：倒挂的时间轴会被摆正、零时长补到
+    1ms，保证刷新后拿到的数据一定能直接画出来，不会在 drawCues() 里炸。
+    base_revision 落后时返回 409 + 对方版本，由用户决定覆盖还是载入。
+    """
+    tid = str(payload.get("task_id") or "")
+    stem = str(payload.get("stem") or "")
+    key = ES.key_for(tid, stem)
+    if not key:
+        return JSONResponse({"error": "缺少 task_id 或 stem，无法定位编辑态"},
+                            status_code=400)
+    try:
+        cues = _normalize_cues(payload.get("cues"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    mode = str(payload.get("mode") or "clean")
+    if mode not in ("clean", "raw"):
+        mode = "clean"
+    try:
+        rec = ES.save(key, cues=cues, task_id=tid, stem=stem, mode=mode,
+                      base_revision=payload.get("base_revision"))
+    except ES.Conflict as exc:
+        # 对方版本一并回给前端：用户选「载入对方」时不必再请求一次
+        return JSONResponse(
+            {"error": "编辑态已被另一处更新", "conflict": True,
+             **_edit_public(exc.current, key)}, status_code=409)
+    except ES.TooLarge as exc:
+        return JSONResponse({"error": str(exc)}, status_code=413)
+    except ES.EditError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except OSError as exc:
+        return JSONResponse({"error": f"编辑态写入失败：{exc}"}, status_code=500)
+
+    return {"ok": True, "key": key, **rec}
+
+
 @app.post("/api/export")
 def export_file(payload: dict):
     """按当前校对内容即时生成下载文件（不落盘，避免覆盖历史稿）"""
@@ -1838,6 +1910,9 @@ def api_health():
     """
     running = [t for t in TASKS.values() if t.get("status") == "running"]
     return {"ok": True, "version": "2.12",      # modified(v2.12): 新增两家润色模型预设 + 各家关思考适配
+            # 【新增 v2.12-p9】前端据此确认服务端是否已支持编辑态落盘。
+            # 静态页会先于服务重启更新，没有这个标记时前端退回只写导出稿。
+            "edit_state": True,
             "queued": sum(1 for t in TASKS.values() if t.get("status") == "queued"),
             "running": len(running),
             "tasks": len(TASKS), "uploads": len(UPLOADS),

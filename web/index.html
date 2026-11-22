@@ -1255,6 +1255,12 @@ const state = {
   peaks:null, waveBase:null, waveView:{start:0, end:0}, waveDragging:false,
   align:null, alignMode:'script',
   saveTimer:null, saving:false,
+  /* 【新增 v2.12-p9】编辑态落盘的本地镜像：
+     editRev      服务端当前修订号（冲突检测用，0 表示未知）
+     editSavedAt  上次成功保存的时间戳
+     editConflict 409 时对方版本的完整内容，等用户决定覆盖还是载入
+     editOff      服务端还是旧版（/api/edit 404）时置真，本次只写导出稿 */
+  editRev:0, editSavedAt:0, editConflict:null, editOff:false,
   // 【新增 v1.3】双轨整理稿状态；本地识别时全为空/false，界面与 v1.2 一致
   provider:'local-qwen3', scriptText:'', scriptSource:'', hasScript:false,
   subtitleText:'', docText:'', tracksDiff:[], adopted:false,
@@ -1401,6 +1407,8 @@ function onUploaded(d, note){
   try{ localStorage.removeItem('asrLastTask'); }catch(e){}
   state.taskId = null;
   state.fileId = d.file_id; state.kind = d.kind;
+  // 【新增 v2.12-p9】换了素材就重置编辑态镜像，避免拿上一节课的修订号去保存
+  state.editRev = 0; state.editSavedAt = 0; state.editConflict = null;
   state.stem = (d.name||'transcript').replace(/\.[^.]+$/,'');
   state.peaks = null; state.waveBase = null; state.align = null;
   $('#waveWrap').hidden = true;
@@ -3014,10 +3022,20 @@ function renderResult(res){
   // 还会与 80ms 后的 restoreDraft 竞态，并误报「未保存」拦住离开页面。
   clearTimeout(state.saveTimer);
   state.dirty = false;
+  // 【新增 v2.12-p9】新结果不继承上一节课的修订号 / 冲突状态，
+  // 否则会把「第 3 讲的修订 7」当成这一节的起点，保存时莫名 409。
+  state.editRev = 0; state.editSavedAt = 0; state.editConflict = null;
   setSaveState('', '');
   try{ snapshot('转写完成', {autosave:false}); }catch(e){ console.warn('history', e); }
   loadPeaks();
-  if(!state.demo) setTimeout(()=>restoreDraft(), 80);
+  /* 【修改 v2.12-p9】恢复顺序：先读编辑态（真相源，带修订号），
+     只有它不存在才退回旧版 `.edited.srt` 草稿。
+     旧逻辑一上来就 restoreDraft()，而它靠 mtime 判新旧，遇到重识别、
+     同名课件或别的工具碰过时间戳，就会静默不恢复——正是「刷新丢校对稿」。 */
+  if(!state.demo) setTimeout(async ()=>{
+    const got = await restoreEditState();
+    if(!got) restoreDraft();
+  }, 80);
   toast(`完成：${state.cues.length} 句 / ${res.chars} 字，耗时 ${res.elapsed}s`);
 }
 
@@ -4005,9 +4023,212 @@ function setSaveState(text, cls){
   el.textContent = text;
   el.className = 'save-state' + (cls ? ' ' + cls : '');
 }
+/* ══════ 【新增 v2.12-p9】编辑态落盘：服务端持有真相，前端只是渲染器 ══════
+   背景（参考 AudioScript 的 SPEC §1.2 / 段落三态设计）：
+   原先字幕只活在页面内存里，靠 1.2 秒防抖写 <stem>.edited.srt；
+   刷新后 /api/draft 又按 mtime 判新旧，遇到重识别或同名课件就静默不恢复。
+   现在改为：每次保存先写 out/_edit/<task_id>.json（带 revision），
+   恢复时只看它；.edited.srt 保留为导出产物与旧稿兜底。 */
+
+function editIdentity(){
+  return {task_id: state.taskId || '', stem: state.stem || ''};
+}
+function editTimeText(d){
+  // 统一用 epoch 格式化：服务端与本地镜像两条来源的显示才能一致
+  // （saved_at_text 是服务端本地时间字符串，镜像没有这个字段）
+  if(d && d.saved_at){
+    const t = new Date(d.saved_at * 1000);
+    const p = n=>String(n).padStart(2, '0');
+    return `${p(t.getMonth() + 1)}-${p(t.getDate())} ${p(t.getHours())}:${p(t.getMinutes())}`;
+  }
+  return '';
+}
+function markEditSaved(d){
+  const stamp = editTimeText(d) || new Date().toTimeString().slice(0, 8);
+  setSaveState('已保存 ' + stamp, 'ok');
+  const el = $('#saveState');
+  if(el) el.title = `编辑态修订 ${(d && d.revision) || 0} · 刷新 / 关页后可原样恢复`;
+}
+/* 逐条比较字幕。不直接 JSON.stringify：结果里的时间码可能是
+   0.08000000000000002，而服务端落盘时 round 到 0.08，串比较会误判成
+   「有变化」，每次刷新都无谓重绘一遍。 */
+function cuesSame(a, b){
+  if(!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for(let i = 0; i < a.length; i++){
+    if(!a[i] || !b[i]) return false;
+    if(String(a[i].text || '') !== String(b[i].text || '')) return false;
+    if(Math.abs((a[i].start || 0) - (b[i].start || 0)) > 0.0011) return false;
+    if(Math.abs((a[i].end || 0) - (b[i].end || 0)) > 0.0011) return false;
+  }
+  return true;
+}
+
+async function saveEditState(){
+  if(state.demo || state.editOff) return {skipped:true};
+  const id = editIdentity();
+  if(!id.task_id && !id.stem) return {skipped:true};
+  if(!Array.isArray(state.cues) || !state.cues.length) return {skipped:true};
+  const r = await fetch('/api/edit', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({...id, cues:state.cues, mode:state.mode,
+                         base_revision: state.editRev || null})});
+  const d = await r.json().catch(()=>({}));
+  // 【兼容】服务端还没重启到 p9：本次退回只写导出稿，重启 + 刷新后自动启用
+  if(r.status === 404){
+    state.editOff = true;
+    console.warn('编辑态接口未启用（服务端版本较旧），本次只写导出稿');
+    return {skipped:true};
+  }
+  if(r.status === 409 && d.conflict){
+    state.editConflict = d;
+    return d;
+  }
+  if(!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+  state.editRev = d.revision || 0;
+  state.editSavedAt = d.saved_at || 0;
+  clearEditMirror();               // 服务端已经有这份了，本地备份没必要再留着
+  return d;
+}
+
+/* 【新增 v2.12-p9】本地镜像：keepalive 请求有浏览器配额（本机实测约 28KB
+   能过、39KB 就被拒），长课 700+ 句必然超限；而且刷新/关页时普通请求可能
+   被直接掐断。所以关页前先把当前稿同步写进 localStorage（同步 API，
+   不会被卸载打断），下次打开时谁的 saved_at 更新就用谁，再补推到服务端。
+   这条路径也让「服务端当时没开」不至于丢掉最后一段校对。 */
+const EDIT_MIRROR = 'asrEditMirror:';
+const KEEPALIVE_MAX = 24 * 1024;   // 留足余量：实测 27.8KB 可过、39KB 失败
+
+function editMirrorKey(){
+  const id = editIdentity();
+  if(id.task_id) return EDIT_MIRROR + 't_' + id.task_id;
+  if(id.stem) return EDIT_MIRROR + 's_' + id.stem;
+  return '';
+}
+function mirrorEditState(){
+  const mk = editMirrorKey(); if(!mk) return;
+  if(!Array.isArray(state.cues) || !state.cues.length) return;
+  const text = JSON.stringify({
+    task_id: state.taskId || '', stem: state.stem || '', cues: state.cues,
+    mode: state.mode, saved_at: Date.now() / 1000, revision: state.editRev || 0});
+  try{ localStorage.setItem(mk, text); return; }catch(e){}
+  // 配额满：先清掉其它任务的备份再试一次——当前这节课才是要救的
+  try{
+    const drop = [];
+    for(let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i);
+      if(k && k.startsWith(EDIT_MIRROR) && k !== mk) drop.push(k);
+    }
+    drop.forEach(k=>localStorage.removeItem(k));
+    localStorage.setItem(mk, text);
+  }catch(e){}
+}
+function readEditMirror(){
+  const mk = editMirrorKey(); if(!mk) return null;
+  try{
+    const d = JSON.parse(localStorage.getItem(mk) || 'null');
+    if(!d || !Array.isArray(d.cues) || !d.cues.length) return null;
+    return d;
+  }catch(e){ return null; }
+}
+function clearEditMirror(){
+  const mk = editMirrorKey(); if(!mk) return;
+  try{ localStorage.removeItem(mk); }catch(e){}
+}
+
+async function restoreEditState(){
+  if(state.demo || state.editOff) return false;
+  const id = editIdentity();
+  if(!id.task_id && !id.stem) return false;
+  let d = null;
+  try{
+    const r = await fetch('/api/edit?task_id=' + encodeURIComponent(id.task_id)
+                          + '&stem=' + encodeURIComponent(id.stem),
+                          {cache:'no-store'});
+    if(r.status === 404){ state.editOff = true; return false; }
+    if(r.ok) d = await r.json();
+  }catch(e){ /* 服务端不可达时，下面还有本地镜像兜底 */ }
+
+  const mirror = readEditMirror();
+  const srvExists = !!(d && d.exists);
+  // 谁的 saved_at 更新就用谁：服务端可能被另一处更新过，不能被旧备份盖回去
+  const useMirror = !!(mirror && (!srvExists ||
+                    (mirror.saved_at || 0) > (d.saved_at || 0) + 0.001));
+  const src = useMirror ? mirror : (srvExists ? d : null);
+  if(!src || !Array.isArray(src.cues) || !src.cues.length){
+    if(d && !srvExists) clearEditMirror();
+    return false;
+  }
+
+  state.editRev = srvExists ? (d.revision || 0) : 0;
+  state.editSavedAt = src.saved_at || 0;
+  const pushMirror = ()=>{
+    // 内容一致也要推：服务端可能还没有这份（上次关页时请求被掐断）
+    saveEditState().catch(()=>{});
+  };
+
+  if(cuesSame(src.cues, state.cues)){
+    markEditSaved(src);
+    if(useMirror) pushMirror();
+    return true;
+  }
+  state.cues = src.cues;
+  if(src.mode === 'raw' || src.mode === 'clean') state.mode = src.mode;
+  state.dirty = false;
+  clearTimeout(state.saveTimer);
+  drawCues();
+  snapshot('恢复上次编辑', {autosave:false});
+  drawWave();
+  markEditSaved(src);
+  if(useMirror){
+    toast(`已恢复上次编辑（含关页前的改动）· ${src.cues.length} 句`);
+    pushMirror();
+  }else{
+    toast(`已恢复上次编辑 · ${src.cues.length} 句 · ${editTimeText(src)}`);
+  }
+  return true;
+}
+
+/* 两个标签页同时改同一节课时的出口：默认不覆盖，由人决定。
+   自动保存遇到冲突只亮黄标、不弹窗（正在打字，弹窗会打断输入）；
+   手动点「保存」才问。 */
+function resolveEditConflict(){
+  const c = state.editConflict;
+  if(!c) return;
+  if(!Array.isArray(c.cues) || !c.cues.length){
+    toast('另一处的版本读取失败，请刷新页面后再试');
+    return;
+  }
+  const when = editTimeText(c) || '刚才';
+  const overwrite = confirm(
+    `这个课件在另一处（另一个标签页 / 窗口）已经保存过：修订 ${c.revision || '?'} · ${when}。\n\n`
+    + '点「确定」＝用当前页面的内容覆盖它；\n'
+    + '点「取消」＝放弃当前页面的修改，载入另一处的版本。');
+  if(overwrite){
+    state.editConflict = null;
+    state.editRev = 0;                 // 强制覆盖：不再带 base_revision
+    state.dirty = true;
+    clearTimeout(state.saveTimer);
+    setTimeout(()=>doSave(true), 0);
+    return;
+  }
+  state.cues = c.cues;
+  if(c.mode === 'raw' || c.mode === 'clean') state.mode = c.mode;
+  state.editRev = c.revision || 0;
+  state.editConflict = null;
+  state.dirty = false;
+  clearTimeout(state.saveTimer);
+  drawCues();
+  snapshot('载入另一处的版本', {autosave:false});
+  drawWave();
+  markEditSaved(c);
+  toast('已载入另一处的版本（修订 ' + (c.revision || '?') + '）');
+}
+
 function scheduleSave(){
   if(state.demo || !state.stem || !state.cues.length) return;
   state.dirty = true;
+  // 冲突未决时不再自动重试，免得两个标签页来回覆盖；点「保存」手动处理
+  if(state.editConflict){ setSaveState('另一处已更新','warn'); return; }
   setSaveState('未保存','dirty');
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(()=>doSave(false), 1200);
@@ -4015,32 +4236,87 @@ function scheduleSave(){
 async function doSave(manual){
   if(!state.stem || !state.cues.length) return;
   if(state.saving) return;
+  if(state.editConflict){
+    if(manual) resolveEditConflict();
+    else setSaveState('另一处已更新','warn');
+    return;
+  }
   state.saving = true;
   setSaveState('保存中…','dirty');
+  let ed = null, editErr = null, fileErr = null, conflict = null;
   try{
-    const r = await fetch('/api/save', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({stem:state.stem, cues:state.cues})});
-    const d = await r.json();
-    if(d.ok){
-      state.dirty = false;
-      const t = new Date();
-      setSaveState('已保存 '+t.toTimeString().slice(0,8),'ok');
-      if(manual) toast('已保存校对稿');
-    }else{
-      setSaveState('保存失败','err');
-      if(manual) toast('保存失败');
+    // ① 编辑态（真相源）先写
+    try{
+      ed = await saveEditState();
+      if(ed && ed.conflict) conflict = ed;
+    }catch(e){ editErr = e; }
+    // ② 导出稿（.edited.srt/.txt）照旧写，供下载与修订学习；冲突时不写
+    if(!conflict){
+      try{
+        const r = await fetch('/api/save', {method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({stem:state.stem, cues:state.cues})});
+        const d = await r.json().catch(()=>({}));
+        if(!r.ok || !d.ok) throw new Error(d.error || ('HTTP ' + r.status));
+      }catch(e){ fileErr = e; }
     }
-  }catch(e){
-    setSaveState('保存失败','err');
-    if(manual) toast('保存失败');
+    if(!conflict){
+      if(editErr){
+        setSaveState('保存失败','err');
+        toast('保存失败：' + (editErr.message || editErr));
+      }else if(fileErr){
+        state.dirty = false;
+        setSaveState('已存编辑态 · 导出失败','warn');
+        if(manual) toast('编辑态已保存；导出稿写入失败：' + (fileErr.message || fileErr));
+      }else{
+        state.dirty = false;
+        if(ed && !ed.skipped) markEditSaved(ed);
+        else {
+          const t = new Date();
+          setSaveState('已保存 ' + t.toTimeString().slice(0, 8), 'ok');
+        }
+        if(manual) toast('已保存校对稿');
+      }
+    }
   }finally{
     state.saving = false;
     // modified(v1.2): 保存进行中产生的新编辑，其定时器会被 state.saving
     // 挡掉且不再重试，那次改动就永远丢盘；这里补一次排程。
-    if(state.dirty) scheduleSave();
+    if(state.dirty && !state.editConflict) scheduleSave();
+  }
+  // 冲突放在 finally 之后处理：此刻 state.saving 已复位，
+  // 「覆盖」分支里的 doSave(true) 才不会被 state.saving 挡掉。
+  if(conflict){
+    if(manual) resolveEditConflict();
+    else setSaveState('另一处已更新','warn');
   }
 }
+
+/* 【新增 v2.12-p9】页面隐藏 / 关闭时补一次编辑态。
+   自动保存有 1.2 秒防抖，改完立刻切走或刷新，最后那一两秒会丢；
+   keepalive 让请求在页面卸载后仍能发完。
+   注意 keepalive 拿不到回包，发完把修订号置 0（未知）：下次保存按
+   「最后写入者获胜」，否则会和自己刚才这次写入撞出假冲突。 */
+function flushEditState(){
+  if(state.demo || state.editOff || state.saving || state.editConflict) return;
+  if(!state.dirty) return;
+  const id = editIdentity();
+  if((!id.task_id && !id.stem) || !Array.isArray(state.cues) || !state.cues.length) return;
+  mirrorEditState();                 // 先落本地：网络请求失败 / 被掐断也不丢
+  const body = JSON.stringify({...id, cues:state.cues, mode:state.mode,
+                               base_revision: state.editRev || null});
+  try{
+    // 小稿走 keepalive（页面卸载后仍能发完）；大稿超过浏览器配额，
+    // 改发普通请求——只是切到后台时能完成，真关页则由本地镜像兜底。
+    fetch('/api/edit', {method:'POST', headers:{'Content-Type':'application/json'},
+                        body, keepalive: body.length <= KEEPALIVE_MAX}).catch(()=>{});
+    state.editRev = 0;
+  }catch(e){}
+}
+window.addEventListener('pagehide', flushEditState);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'hidden') flushEditState();
+});
 async function restoreDraft(){
   if(state.demo || !state.stem) return;
   try{
