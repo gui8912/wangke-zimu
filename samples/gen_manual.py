@@ -153,7 +153,7 @@ def main():
     doc = ("<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n"
            "<meta charset=\"utf-8\">\n"
            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n"
-           "<title>网课转字幕 · 使用说明书</title>\n"
+           "<title>课理成章 · 使用说明书</title>\n"
            f"<style>{CSS}</style>\n</head>\n<body>\n<div class=\"wrap\">\n"
            + body +
            "\n<p class=\"foot\">本页由 samples/gen_manual.py 从 使用说明书.md 生成；"

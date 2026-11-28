@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-药品监管网课转字幕 · 图形界面
+课理成章 · 药品监管网课字幕图形界面
 ==============================
 双击 启动界面.bat，或运行：python gui.py
 浏览器会自动打开 http://127.0.0.1:7860
@@ -64,7 +64,7 @@ def run(file_path, model_key, do_clean, language):
         return ("\n".join(logs), "", "", "", "", "", None, None)
 
 
-with gr.Blocks(theme=gr.themes.Soft(), css=CSS, title="药品监管网课转字幕") as demo:
+with gr.Blocks(theme=gr.themes.Soft(), css=CSS, title="课理成章 · 药品监管网课字幕") as demo:
     with gr.Column(elem_id="hd"):
         gr.Markdown(
             "# 药品监管网课 · 语音转字幕\n"

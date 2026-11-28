@@ -27,6 +27,11 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 BACKUP_DIR = BASE / "backups"
 
+# 【新增 2026-11-28】项目改名「课理成章」。旧备份包 manifest.app 记的是旧名
+# 「网课转字幕」，导入时一并认，免得用户手上的历史备份包全部作废。
+APP_NAME = "课理成章"
+LEGACY_APP_NAMES = ("网课转字幕",)
+
 TEXT_ITEMS = [
     "terms/corrections.txt",
     "terms/aliases.txt",
@@ -58,7 +63,7 @@ def export_zip(include_key: bool = False, include_queue: bool = True):
     """生成备份包，返回 (zip 字节, 建议文件名, manifest)。"""
     buf = io.BytesIO()
     manifest = {
-        "app": "网课转字幕",
+        "app": APP_NAME,
         "kind": "config-backup",
         "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "contains_key": False,
@@ -98,7 +103,7 @@ def export_zip(include_key: bool = False, include_queue: bool = True):
         z.writestr("manifest.json",
                    json.dumps(manifest, ensure_ascii=False, indent=2))
 
-    name = f"网课转字幕-配置备份-{time.strftime('%Y%m%d-%H%M')}.zip"
+    name = f"{APP_NAME}-配置备份-{time.strftime('%Y%m%d-%H%M')}.zip"
     return buf.getvalue(), name, manifest
 
 
@@ -120,8 +125,8 @@ def import_zip(data: bytes) -> dict:
         manifest = json.loads(z.read("manifest.json").decode("utf-8"))
     except Exception:
         raise ValueError("manifest.json 已损坏，无法识别备份内容")
-    if manifest.get("app") != "网课转字幕":
-        raise ValueError("这不是「网课转字幕」的备份包")
+    if manifest.get("app") not in (APP_NAME,) + LEGACY_APP_NAMES:
+        raise ValueError(f"这不是「{APP_NAME}」的备份包")
 
     # 白名单：包里的其它路径（含 ../ 之类的穿越）一律忽略
     todo = sorted(n for n in names if n in ALL_ITEMS)

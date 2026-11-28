@@ -133,20 +133,20 @@ def guard_cases(tmp: Path):
 
     b3 = io.BytesIO()
     with zipfile.ZipFile(b3, "w") as z:
-        z.writestr("manifest.json", json.dumps({"app": "网课转字幕"}))
+        z.writestr("manifest.json", json.dumps({"app": BK.APP_NAME}))
         z.writestr("rules/filler_words.json", "{坏 JSON")
     bad(b3.getvalue(), "损坏 JSON 被拒")
 
     b4 = io.BytesIO()
     with zipfile.ZipFile(b4, "w") as z:
-        z.writestr("manifest.json", json.dumps({"app": "网课转字幕"}))
+        z.writestr("manifest.json", json.dumps({"app": BK.APP_NAME}))
         z.writestr("../../evil.txt", "逃逸")
     bad(b4.getvalue(), "只有越权路径时被拒")
 
     # 混合包：白名单文件导入，越权路径必须被忽略且不落盘
     b5 = io.BytesIO()
     with zipfile.ZipFile(b5, "w") as z:
-        z.writestr("manifest.json", json.dumps({"app": "网课转字幕"}))
+        z.writestr("manifest.json", json.dumps({"app": BK.APP_NAME}))
         z.writestr("terms/aliases.txt", "# 新简称\nGSP=>药品经营质量管理规范\n")
         z.writestr("../../evil.txt", "逃逸")
     r = BK.import_zip(b5.getvalue())
@@ -156,6 +156,16 @@ def guard_cases(tmp: Path):
 
     ok("失败时不动现有文件", before ==
        (tmp / "terms" / "corrections.txt").read_bytes())
+
+    # 【新增 2026-11-28】项目改名「课理成章」；旧名 manifest 的历史备份包
+    # 不能作废，导入时按 LEGACY_APP_NAMES 放行。
+    b6 = io.BytesIO()
+    with zipfile.ZipFile(b6, "w") as z:
+        z.writestr("manifest.json", json.dumps({"app": "网课转字幕"}))
+        z.writestr("terms/aliases.txt", "# 旧包\nGSP=>药品经营质量管理规范\n")
+    r6 = BK.import_zip(b6.getvalue())
+    ok("旧名（网课转字幕）备份包仍可导入",
+       "terms/aliases.txt" in r6["imported"], r6.get("imported"))
 
 
 def frontend():

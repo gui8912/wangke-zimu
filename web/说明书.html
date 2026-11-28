@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>网课转字幕 · 使用说明书</title>
+<title>课理成章 · 使用说明书</title>
 <style>
 :root{--fg:#1f2328;--muted:#5b6572;--line:#dfe3e8;--bg:#fff;--soft:#f6f8fa;
       --accent:#1a5fb4;--accent-soft:#eaf2fc}
@@ -43,12 +43,12 @@ a{color:var(--accent)}
 </head>
 <body>
 <div class="wrap">
-<h1>网课转字幕 · 使用说明书</h1>
-<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.12-p10 ｜ 2026-11-22 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>网课转字幕.txt</code>（速查）、<br><code>tools/自检与模型清单.txt</code>（环境自检）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
+<h1>课理成章 · 使用说明书</h1>
+<blockquote>面向药品 / 医疗器械监管网课：本地识别、术语校正、双轨字幕与讲稿、批量夜间跑。<br>版本 2.12-p10 ｜ 2026-11-22 ｜ 配套：<code>README.md</code>（版本变更）、<code>DESIGN.md</code>（界面约定）、<br><code>批量任务说明.txt</code>（命令行批量）、<code>课理成章.txt</code>（速查）、<br><code>tools/自检与模型清单.txt</code>（环境自检）。<br>本说明书已挂到工具首页顶栏的 <strong>「使用说明」</strong> 按钮，随时可查、可打印。</blockquote>
 <hr>
 <nav class="toc"><b>目录</b><a href="#s1">一、三分钟上手</a><a href="#s2">二、单节课的完整流程</a><a href="#s3">三、批量 / 夜间无人值守（重点）</a><a href="#s4">四、讲稿润色：本地模型 / 免费模型怎么选</a><a href="#s5">五、性能：CPU 到底用满了没有</a><a href="#s6">六、参数速查（环境变量，改完重启服务）</a><a href="#s7">七、常见问题</a><a href="#s8">八、目录与产物</a><a href="#s9">九、备份与迁移（重装电脑 / 换机）</a><a href="#s10">十、环境自检（换机 / 清理缓存 / 识别突然报错先跑它）</a></nav>
 <h2 id="s1">一、三分钟上手</h2>
-<ol><li>双击 <code>启动界面.bat</code>（或在「服务台」里启动「网课转字幕」），浏览器自动打开</li></ol>
+<ol><li>双击 <code>启动界面.bat</code>（或在「服务台」里启动「课理成章」），浏览器自动打开</li></ol>
 <p><code>http://127.0.0.1:7870/</code>（端口被占用会自动顺延，以启动行打印的地址为准）。</p>
 <ol><li>点「批量导入本机课件…（拖放 / 多选）」选一节课（或左下「批量添加课件…」）→ 点「开始转写」。</li><li>跑完在右侧逐句校对 → 点「保存」→「下载字幕」选 SRT / VTT / TXT / Markdown。</li></ol>
 <p>顶栏最右侧的 <strong>「使用说明」</strong> 随时打开本手册（带目录、可新窗口打印 / 搜索），</p>
@@ -418,7 +418,7 @@ samples/          回归测试与真机验证脚本</code></pre>
 <tr><td>其他</td><td>服务端口、磁盘剩余、云端润色配置（只报哪些预设存了 Key，<strong>不打印 Key</strong>）</td></tr>
 </tbody></table>
 <p>结果分四级：<strong>PASS / WARN / FAIL / SKIP</strong>。只有 FAIL 会让退出码变成 1，方便挂到</p>
-<p>计划任务里。报告同时写 <code>out/_selfcheck.json</code>（实体在 <code>D:\temp\网课转字幕\out</code>），</p>
+<p>计划任务里。报告同时写 <code>out/_selfcheck.json</code>（实体在 <code>D:\temp\课理成章\out</code>），</p>
 <p>里面有 <code>summary</code> / <code>env</code> / <code>models</code> / <code>checks</code> 四段。</p>
 <p>模型清单在 <code>assets/model-catalog.json</code>：每项写 <code>path</code>（登记位置）、<code>find</code>（目录名兜底搜索）、</p>
 <p><code>files</code>（必需文件 + <code>minBytes</code>）、<code>required</code>（缺了算 FAIL 还是 WARN）。换机器、换模型目录时</p>

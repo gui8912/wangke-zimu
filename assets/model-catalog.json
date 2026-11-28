@@ -1,7 +1,7 @@
 {
   "version": 1,
   "_说明": "本机模型与运行资产的清单。自检脚本 tools/selfcheck.py 逐项核对：目录是否存在、必需文件是否齐全、体积是否达到下限。path 是登记位置；找不到时用 find 在 modelRoots 下按目录名兜底搜索（ModelScope 缓存目录名会把小数点转义成下划线，不能硬编码）。required=true 缺失算 FAIL，false 只算 WARN。sha256 留空表示未登记，跑 selfcheck.py --hash 时才校验已登记项。",
-  "generatedFor": "网课转字幕 2.12-p8",
+  "generatedFor": "课理成章 2.12-p10",
   "modelRoots": [
     "D:/AI/models"
   ],

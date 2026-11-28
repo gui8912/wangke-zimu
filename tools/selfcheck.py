@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""网课转字幕 · 环境自检与模型清单校验（v2.12-p8）
+"""课理成章 · 环境自检与模型清单校验（v2.12-p8）
 
 只读检查，不改任何业务文件、不启动服务、不加载模型权重。
 逐项核对：Python / CPU 指令集 / 内存 / 第三方包 / ffmpeg / 模型清单 /
@@ -368,7 +368,7 @@ def check_service(rep):
         rep.env["service_port"] = port
         rep.env["service_version"] = info.get("version")
     else:
-        rep.add("WARN", "服务", "未运行", "自检本身不需要服务；双击「启动网课转字幕.bat」可启动")
+        rep.add("WARN", "服务", "未运行", "自检本身不需要服务；双击「启动课理成章.bat」可启动")
 
 
 def check_disk(rep):
@@ -426,7 +426,7 @@ ORDER = {"FAIL": 0, "WARN": 1, "PASS": 2, "SKIP": 3}
 
 def print_report(rep, quiet=False):
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n网课转字幕 · 环境自检   {stamp}")
+    print(f"\n课理成章 · 环境自检   {stamp}")
     print("=" * 62)
     section = None
     for row in rep.rows:
@@ -462,7 +462,7 @@ def write_json(rep, path):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="网课转字幕 · 环境自检与模型清单校验")
+    ap = argparse.ArgumentParser(description="课理成章 · 环境自检与模型清单校验")
     ap.add_argument("--json", default=str(DEFAULT_REPORT), help="报告输出路径")
     ap.add_argument("--quiet", action="store_true", help="只显示汇总与失败/警告项")
     ap.add_argument("--hash", action="store_true", help="校验 catalog 里已登记的 sha256")

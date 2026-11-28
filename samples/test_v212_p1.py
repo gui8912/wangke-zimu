@@ -116,7 +116,7 @@ def main():
     ok("文件卡仍照常显示", "$('#fileCard').hidden = false" in web)
     ok("自动载回逻辑仍保留", "async function restoreLastTask()" in web)
     manual = (BASE / "使用说明书.md").read_text(encoding="utf-8")
-    quick = (BASE / "网课转字幕.txt").read_text(encoding="utf-8-sig")
+    quick = (BASE / "课理成章.txt").read_text(encoding="utf-8-sig")
     ok("说明书不再写含糊的「上方虚线框」", "上方虚线框" not in manual)
     ok("说明书改按按钮指路", "点「批量导入本机课件…（拖放 / 多选）」选一节课" in manual)
     ok("速查不再提左上角拖放框",

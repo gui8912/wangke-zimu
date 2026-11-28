@@ -135,8 +135,8 @@ def hub_pattern():
         print("  SKIP 没装服务台，跳过联动检查")
         return
     svc = json.loads(hub.read_text(encoding="utf-8"))
-    item = next((s for s in svc.get("services", []) if s.get("id") == "asr-pipeline"), None)
-    ok("服务台有网课转字幕条目", item is not None)
+    item = next((s for s in svc.get("services", []) if s.get("id") == "ke-li-cheng-zhang"), None)
+    ok("服务台有课理成章条目", item is not None)
     if not item:
         return
     ok("不再写死端口", not item.get("port"))
@@ -163,7 +163,7 @@ def source_contract():
     ok("不设 SO_REUSEADDR（Windows 下会失真）", "setsockopt" not in pr)
     ok("复用已有实例不再起第二份", "不再重复启动" in pr)
 
-    bat = (BASE / "启动网课转字幕.bat").read_bytes()
+    bat = (BASE / "启动课理成章.bat").read_bytes()
     ok("bat 仍是纯 ASCII", all(b < 128 for b in bat), max(bat))
     ok("bat 不再宣称固定 7870", b"URL: http://127.0.0.1:7870" not in bat)
 

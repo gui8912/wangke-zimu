@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-药品监管网课转字幕 · 后台服务（FastAPI）
+课理成章 · 药品监管网课字幕后台服务（FastAPI）
 ========================================
 提供：上传、转写（后台任务）、媒体流、口语词维护、重新清理、保存校对稿。
 
@@ -103,7 +103,7 @@ if QSTATE.get("start_at") and float(QSTATE["start_at"]) <= time.time():
 QGATE = QS.Gate(QSTATE)
 PERSIST_LOCK = threading.Lock()
 
-app = FastAPI(title="药品监管网课转字幕")
+app = FastAPI(title="课理成章 · 药品监管网课字幕")
 
 # 任务表：task_id -> {status, logs, result, error}
 TASKS = {}

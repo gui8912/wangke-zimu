@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>药品监管网课 · 语音转字幕</title>
+<title>课理成章 · 药品监管网课字幕</title>
 <script>
 /* 主题要在首屏前定下来，否则会闪一下白 */
 (function(){
@@ -530,7 +530,7 @@
 <body>
 
 <div class="topbar">
-  <div class="brand">药品监管网课 · 语音转字幕<small id="brandSub">本地优先 · 可选云端</small></div>
+  <div class="brand">课理成章 · 药品监管网课字幕<small id="brandSub">本地优先 · 可选云端</small></div>
   <div class="tabs">
     <button class="tab active" id="tabTranscribe">转写</button>
     <button class="tab" id="tabRevise">改稿</button>
@@ -3920,7 +3920,7 @@ $('#backupExport').onclick = async ()=>{
     const blob = await r.blob();
     const cd = r.headers.get('Content-Disposition') || '';
     const m = /filename\*=UTF-8''([^;]+)/.exec(cd);
-    const name = m ? decodeURIComponent(m[1]) : '网课转字幕-配置备份.zip';
+    const name = m ? decodeURIComponent(m[1]) : '课理成章-配置备份.zip';
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name; a.click();

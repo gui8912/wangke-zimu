@@ -178,7 +178,7 @@ def config_and_docs():
 
     # 明文密钥绝不能出现在任何会被 git 跟踪的源码 / 文档里
     scan = ("cloud_llm.py", "server.py", "web/index.html", "web/说明书.html",
-            "README.md", "使用说明书.md", "网课转字幕.txt", ".gitignore",
+            "README.md", "使用说明书.md", "课理成章.txt", ".gitignore",
             "samples/test_v212.py")
     for name, key in keys.items():
         leaks = [f for f in scan if key in txt(f)]
@@ -198,7 +198,7 @@ def config_and_docs():
     ok("网页说明书已同步", "硅基流动" in txt("web/说明书.html"))
     ok("README 2.12 核对表", "## 2.12" in txt("README.md")
        and "invalid_api_key" in txt("README.md"))
-    ok("速查已加两家", "Qwen/Qwen3-8B（免费）" in txt("网课转字幕.txt"))
+    ok("速查已加两家", "Qwen/Qwen3-8B（免费）" in txt("课理成章.txt"))
     ok("服务端版本 2.12", '"version": "2.12"' in txt("server.py"))
     hub = Path("D:/Tools/服务台/services.json")
     if hub.exists():
