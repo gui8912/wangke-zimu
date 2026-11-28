@@ -134,7 +134,9 @@ def hub_pattern():
     if not hub.exists():
         print("  SKIP 没装服务台，跳过联动检查")
         return
-    svc = json.loads(hub.read_text(encoding="utf-8"))
+    # 【修改 2026-11-28】services.json 是 Windows 下编辑的，可能带 UTF-8 BOM；
+    # 用 utf-8-sig 读，避免 BOM 让 json.loads 直接抛异常（服务台自己能读）。
+    svc = json.loads(hub.read_text(encoding="utf-8-sig"))
     item = next((s for s in svc.get("services", []) if s.get("id") == "ke-li-cheng-zhang"), None)
     ok("服务台有课理成章条目", item is not None)
     if not item:
